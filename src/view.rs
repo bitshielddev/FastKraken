@@ -1797,20 +1797,17 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     let group = pick
                         .as_ref()
                         .filter(|(paths, picked)| *picked == side && paths.contains(&f.path))
-                        .map(|(paths, _)| paths.clone());
-                    let target = match &group {
-                        Some(paths) => crate::commands::Target::Files { paths: paths.clone(), side },
-                        None => crate::commands::Target::File { path: f.path.clone(), side },
-                    };
+                        .map(|(paths, _)| paths.len());
+                    let target = crate::commands::Target::File { path: f.path.clone(), side };
                     let selected = ui.selection.as_ref() == Some(&choice) || group.is_some();
-                    let (discard_action, stage_action, unstage_action, discard_tip, stage_tip, unstage_tip) = match &group {
-                        Some(paths) => (
-                            Action::Picked(crate::picked::Action::AskDiscard(paths.clone())),
-                            Action::Picked(crate::picked::Action::Stage(paths.clone())),
-                            Action::Picked(crate::picked::Action::Unstage(paths.clone())),
-                            format!("Discard {} files…", paths.len()),
-                            crate::picked::file_tip("Stage", paths.len(), "S"),
-                            crate::picked::file_tip("Unstage", paths.len(), "U"),
+                    let (discard_action, stage_action, unstage_action, discard_tip, stage_tip, unstage_tip) = match group {
+                        Some(count) => (
+                            Action::Run("file.discard"),
+                            Action::Run("file.stage"),
+                            Action::Run("file.unstage"),
+                            format!("Discard {count} files…"),
+                            crate::picked::file_tip("Stage", count, "S"),
+                            crate::picked::file_tip("Unstage", count, "U"),
                         ),
                         None => (
                             Action::AskDiscard(Discard::File(f.path.clone())),
@@ -1848,6 +1845,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         });
                     let (path, staged) = (f.path.clone(), f.staged);
                     let menu_choice = choice.clone();
+                    let row_path = f.path.clone();
                     let picked_row = group.is_some();
                     kit::row(("file", index), selected)
                         .group("file-row")
@@ -1879,7 +1877,14 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                 if !picked_row && app.ui().selection.as_ref() != Some(&menu_choice) {
                                     select(app, menu_choice.clone(), w, cx);
                                 }
-                                let target = target.clone();
+                                let target = crate::picked::files(app.ui())
+                                    .filter(|(paths, picked)| {
+                                        picked_row
+                                            && (*picked == crate::commands::Side::Staged) == staged
+                                            && paths.contains(&row_path)
+                                    })
+                                    .map(|(paths, side)| crate::commands::Target::Files { paths, side })
+                                    .unwrap_or_else(|| target.clone());
                                 app.dispatch(
                                     Action::Menu(Some(Menu::Object { target, at: event.position })),
                                     w,

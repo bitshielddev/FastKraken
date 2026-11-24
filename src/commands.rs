@@ -755,6 +755,9 @@ pub(crate) fn not_about(ui: &Ui, id: &str) -> String {
                 return format!("Select {name} under Staged to unstage it");
             }
             ("file.unstage", Side::Unstaged) => return format!("{name} has no staged changes"),
+            ("file.pick-all", Side::Unstaged | Side::Staged) => {
+                return format!("{name} is the only file in its list");
+            }
             _ => {}
         }
     }
