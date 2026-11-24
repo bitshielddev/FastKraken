@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 const SHOWN: usize = 4;
 const FADE: Duration = Duration::from_secs(5);
 const BRIEF: Duration = Duration::from_secs(2);
+const WITH_OUTPUT: Duration = Duration::from_secs(12);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tone {
@@ -161,6 +162,9 @@ impl Outcome {
 
     pub(crate) fn notice(self) -> Notice {
         let mut shown = Notice::new(Tone::Success, self.title, self.detail);
+        if self.output.is_some() {
+            shown = shown.lasting(WITH_OUTPUT);
+        }
         if self.sticky {
             shown = shown.sticky();
         }
@@ -187,11 +191,13 @@ pub(crate) struct Failure {
     pub actions: Vec<Offer>,
     pub output: Option<String>,
     pub plain: Option<(String, String)>,
+    pub tone: Tone,
+    pub expanded: bool,
 }
 
 impl From<String> for Failure {
     fn from(text: String) -> Self {
-        Self { text, actions: Vec::new(), output: None, plain: None }
+        Self { text, actions: Vec::new(), output: None, plain: None, tone: Tone::Error, expanded: false }
     }
 }
 
@@ -216,15 +222,21 @@ impl Failure {
         self
     }
 
+    pub(crate) fn expanded(mut self) -> Self {
+        self.expanded = true;
+        self
+    }
+
     pub(crate) fn notice(self) -> Notice {
         let mut notice = match self.plain {
-            Some((title, detail)) => Notice::new(Tone::Error, title, detail),
-            None => Notice::from_text(Tone::Error, &self.text),
+            Some((title, detail)) => Notice::new(self.tone, title, detail),
+            None => Notice::from_text(self.tone, &self.text),
         };
         notice.actions = self.actions;
         if self.output.is_some() {
             notice.output = self.output;
         }
+        notice.expanded = self.expanded && notice.output.is_some();
         notice
     }
 }
@@ -393,6 +405,8 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::ToggleOutput(id) => {
             if let Some(notice) = tab.ui.notices.items.iter_mut().find(|n| n.id == id) {
                 notice.expanded = !notice.expanded;
+                notice.lasts = None;
+                notice.expires = None;
             }
         }
         Action::Take(_, _) if tab.ui.busy() || tab.ui.dialog_open() => {}
@@ -470,6 +484,15 @@ pub(crate) fn parts(text: &str) -> (String, String) {
     (title, lines.collect::<Vec<_>>().join(" "))
 }
 
+
+pub(crate) fn output_label(notice: &Notice) -> &'static str {
+    match (notice.tone, notice.expanded) {
+        (Tone::Success, false) => "Show output",
+        (Tone::Success, true) => "Hide output",
+        (_, false) => "Show Git output",
+        (_, true) => "Hide Git output",
+    }
+}
 
 pub(crate) fn stack<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoElement + use<T>> {
     let busy = app.ui().busy() || app.ui().dialog_open();
@@ -598,10 +621,7 @@ fn card<T: Desk>(notice: &Notice, busy: bool, cx: &mut Context<T>) -> impl IntoE
                     }
                     if let Some(raw) = output {
                         row = row.child(
-                            kit::btn(
-                                "notice-output-toggle",
-                                if notice.expanded { "Hide Git output" } else { "Show Git output" },
-                            )
+                            kit::btn("notice-output-toggle", output_label(notice))
                             .small()
                             .ghost()
                             .on(view::Action::Notice(Action::ToggleOutput(id)), cx),
@@ -649,6 +669,20 @@ mod tests {
         assert_eq!(Notice::new(Tone::Info, "Copied SHA", "").log, None);
         let shown = Outcome::titled("Pushed main", "").output("remote: hello\n").notice();
         assert_eq!((shown.tone, shown.output.as_deref()), (Tone::Success, Some("remote: hello")));
+    }
+
+    #[test]
+    fn a_hook_failure_opens_its_output_and_a_cancel_is_calm() {
+        let failure = Failure::from("pre-commit stopped the commit".to_owned()).output("line 1\nline 200").expanded().notice();
+        assert!(failure.expanded && failure.tone == Tone::Error);
+        assert_eq!(output_label(&failure), "Hide Git output");
+        assert!(!Failure::from("Nothing to show".to_owned()).expanded().notice().expanded);
+        let calm = Failure { tone: Tone::Info, plain: Some(("Commit cancelled".into(), "No commit was made.".into())), ..Failure::from(String::new()) };
+        let calm = calm.notice();
+        assert_eq!((calm.tone, calm.lasts), (Tone::Info, Some(FADE)));
+        let told = Outcome::titled("Changes committed", "Pitch the tent").output("lint: fine").notice();
+        assert_eq!((output_label(&told), told.lasts), ("Show output", Some(WITH_OUTPUT)));
+        assert_eq!(Outcome::titled("Changes committed", "").notice().lasts, Some(FADE));
     }
 
     #[test]

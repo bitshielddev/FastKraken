@@ -20,6 +20,7 @@ mod github;
 mod guard;
 mod handoff;
 mod help;
+mod hooks;
 mod identity;
 mod ignore;
 mod init;
@@ -761,13 +762,13 @@ impl Tab {
                     identity::still(&repo, shown)?;
                 }
                 let pending = autostash::pending(&repo);
-                let skipped = match amend {
+                let committed = match amend {
                     Some((head, reference, unchanged)) => {
                         repo.amend(&head, reference.as_deref(), (!unchanged).then_some(message.as_str()))?
                     }
                     None => repo.commit(&message)?,
                 };
-                let outcome = explain::skipped(notice::Outcome::titled(notice, summary), &skipped);
+                let outcome = hooks::told(notice::Outcome::titled(notice, summary), &committed);
                 autostash::settled(&repo, pending, &kept, outcome)
             },
             move |tab, cx| {
@@ -804,8 +805,8 @@ impl Tab {
                     identity::still(&repo, shown)?;
                 }
                 let pending = autostash::pending(&repo);
-                let skipped = repo.commit_all(head.as_deref(), reference.as_deref(), &message)?;
-                let outcome = explain::skipped(notice::Outcome::titled("Changes committed", summary), &skipped);
+                let committed = repo.commit_all(head.as_deref(), reference.as_deref(), &message)?;
+                let outcome = hooks::told(notice::Outcome::titled("Changes committed", summary), &committed);
                 autostash::settled(&repo, pending, &kept, outcome)
             },
             move |tab, cx| {
@@ -899,8 +900,13 @@ impl Tab {
             return self.take_over(kind, start, cx);
         }
         let about = explain::About { push: spec.kind == jobs::Kind::Push, ..self.about(spec.remote.clone()) };
+        let stop = (spec.kind == jobs::Kind::Push).then_some(&hooks::PUSHING);
         let Some((repo, link, id, spinner)) = self.start_network(spec, progress, cx) else { return };
-        let work = move || link.enter(|| job(repo.clone()).map_err(|error| about.explain(&repo, error.into())));
+        let work = move || {
+            link.enter(|| {
+                job(repo.clone()).map_err(|error| about.explain(&repo, hooks::named(error.into(), &link.ran(), stop)))
+            })
+        };
         Self::work(cx, work, move |tab, result, cx| {
             let Some(job) = tab.ui.jobs.end_network(id) else { return };
             let result = result.map(Into::into);
@@ -1204,7 +1210,9 @@ impl Tab {
         let about = explain::About { local: true, ..self.about(None) };
         Self::work(
             cx,
-            move || link.enter(|| job(repo.clone()).map_err(|error| about.explain(&repo, error.into()))),
+            move || {
+                link.enter(|| job(repo.clone()).map_err(|error| about.explain(&repo, hooks::named(error.into(), &link.ran(), None))))
+            },
             move |tab, result, cx| {
                 let spinner = tab.ui.jobs.end_write().and_then(|job| job.notice);
                 if tab.conclude(spinner, notice, result.map(Into::into)) {

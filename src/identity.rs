@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(reason(&identity.effective).as_deref(), Some("Set your name and email to commit"));
         fs::write(f.dir.join("trail.txt"), "Start\n").unwrap();
         f.git(&["add", "--", "trail.txt"]);
-        let error = f.repo.commit("Start the trail").unwrap_err();
+        let error = f.repo.commit("Start the trail").unwrap_err().text;
         assert!(error.contains("auto-detection is disabled"), "{error}");
         assert_eq!(crate::explain::classify(&error), Some(crate::explain::Cause::Identity));
         let head = repository::run(f.repo.read_command().args(["rev-parse", "--verify", "--quiet", "HEAD"])).unwrap();

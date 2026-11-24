@@ -160,13 +160,11 @@ pub(crate) fn discard_picked(
     let kept = repo.keep_files(&paths, untracked)?;
     if let Err(err) = repo.remove_file_changes(&paths, untracked) {
         let failure = Failure {
-            text: err.clone(),
-            actions: Vec::new(),
-            output: None,
             plain: Some((
                 "Some changes could not be discarded".to_owned(),
                 "Restore brings back the changes that were discarded.".to_owned(),
             )),
+            ..Failure::from(err.clone())
         };
         return Err(failure
             .output(err)

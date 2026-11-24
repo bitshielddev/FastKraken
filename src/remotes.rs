@@ -637,8 +637,8 @@ pub(crate) fn push(
         command.arg("--set-upstream");
     }
     recheck(repo)?;
-    let output = crate::repository::run(command.arg("--").arg(&request.remote).args(&request.refspecs))
-        .map_err(|e| format!("Run bundled Git: {e}"))?;
+    let (output, ran) = crate::repository::run_watching_hooks(command.arg("--").arg(&request.remote).args(&request.refspecs));
+    let output = output.map_err(|e| format!("Run bundled Git: {e}"))?;
     let report = PushReport::parse(&output.stdout, &output.stderr);
     if output.status.success() {
         return Ok(report);
@@ -646,11 +646,21 @@ pub(crate) fn push(
     if report.refs.iter().any(|pushed| pushed.flag == Flag::Rejected) {
         return Err(PushError::Refused(report));
     }
-    Err(PushError::Failed(if report.output.is_empty() {
-        format!("Git exited with {}", output.status)
-    } else {
-        report.output
-    }))
+    let hook_failed = ran.is_some_and(|ran| ran.iter().any(|ran| ran.hook == "pre-push" && ran.code.is_some_and(|code| code != 0)));
+    let printed = if hook_failed { hook_printed(&output.stdout) } else { String::new() };
+    let said = [printed.as_str(), report.output.as_str()].into_iter().filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n");
+    Err(PushError::Failed(if said.is_empty() { format!("Git exited with {}", output.status) } else { said }))
+}
+
+fn hook_printed(stdout: &[u8]) -> String {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter(|line| {
+            let porcelain = line.split_once('\t').is_some_and(|(flag, _)| matches!(flag, " " | "+" | "-" | "*" | "!" | "="));
+            !porcelain && !line.starts_with("To ") && *line != "Done" && !line.trim().is_empty()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) fn push_branch(
@@ -1254,6 +1264,20 @@ mod tests {
         assert_eq!(err.rejection(), None);
         assert!(matches!(&err, PushError::Failed(text) if text.contains("Not today")), "{err:?}");
         assert!(remote_refs(&url, &f).is_empty());
+
+        fs::write(&hook, "#!/bin/sh\necho 'pre-push: 2 tests failed'\necho 'see the log' >&2\nexit 3\n").unwrap();
+        let link = crate::jobs::Link::new(true);
+        let err = link.enter(|| push(&f.repo, &main, |_| Ok(()))).unwrap_err();
+        let PushError::Failed(said) = &err else { panic!("{err:?}") };
+        assert!(said.starts_with("pre-push: 2 tests failed\nsee the log\n"), "{said}");
+        let failure = crate::hooks::named(crate::notice::Failure::from(format!("Push Failed — {said}")), &link.ran(), Some(&crate::hooks::PUSHING)).notice();
+        assert_eq!((failure.title.as_str(), failure.detail.as_str()), ("pre-push stopped the push", "Nothing was pushed. It exited with code 3."));
+        assert!(failure.output.as_deref().is_some_and(|output| output.starts_with("pre-push: 2 tests failed")));
+        assert!(remote_refs(&url, &f).is_empty());
+        fs::remove_file(&hook).unwrap();
+        push(&f.repo, &main, |_| Ok(())).unwrap();
+        assert!(!remote_refs(&url, &f).is_empty());
+        assert_eq!(hook_printed(b"*\trefs/heads/main:refs/heads/release\t[new branch]\nTo ../x.git\nDone\nlint ok\n"), "lint ok");
     }
 
     #[test]

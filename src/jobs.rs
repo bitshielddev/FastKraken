@@ -110,6 +110,17 @@ struct Shared {
 struct Heard {
     progress: Option<Progress>,
     at: Instant,
+    latest: Option<String>,
+    hooks: Hooks,
+}
+
+#[derive(Default)]
+struct Hooks {
+    expected: Vec<String>,
+    since: Option<Instant>,
+    running: Option<(String, Instant)>,
+    started: bool,
+    ran: Vec<crate::hooks::Ran>,
 }
 
 thread_local! {
@@ -138,7 +149,7 @@ impl Link {
         Self(Arc::new(Shared {
             cancel: AtomicBool::new(false),
             cancellable: AtomicBool::new(cancellable),
-            heard: Mutex::new(Heard { progress: None, at: Instant::now() }),
+            heard: Mutex::new(Heard { progress: None, at: Instant::now(), latest: None, hooks: Hooks::default() }),
             asking,
         }))
     }
@@ -181,21 +192,90 @@ impl Link {
         self.0.cancellable.store(false, Ordering::SeqCst);
     }
 
+    pub(crate) fn release(&self) {
+        self.0.cancellable.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn settle(&self) -> bool {
+        self.hold();
+        self.0.cancel.swap(false, Ordering::SeqCst)
+    }
+
+    fn heard_mut(&self) -> std::sync::MutexGuard<'_, Heard> {
+        self.0.heard.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub(crate) fn heard(&self, line: &str) {
         let progress = Progress::parse(line);
-        let mut heard = self.0.heard.lock().unwrap_or_else(|e| e.into_inner());
+        let mut heard = self.heard_mut();
         heard.at = Instant::now();
         if progress.is_some() {
             heard.progress = progress;
+        } else if !is_progress(line) && !line.trim_start().starts_with("hint:") && !line.trim().is_empty() {
+            heard.latest = Some(line.trim().to_owned());
         }
     }
 
+    pub(crate) fn printed(&self, bytes: &[u8]) {
+        let mut heard = self.heard_mut();
+        if heard.hooks.running.is_none() {
+            return;
+        }
+        let text = String::from_utf8_lossy(bytes);
+        if let Some(line) = text.lines().map(str::trim).filter(|line| !line.is_empty()).last() {
+            heard.latest = Some(line.to_owned());
+        }
+    }
+
+    pub(crate) fn latest(&self) -> Option<String> {
+        self.heard_mut().latest.clone()
+    }
+
+    pub(crate) fn expect_hooks(&self, hooks: &[String]) {
+        let mut heard = self.heard_mut();
+        heard.hooks.expected = hooks.to_vec();
+        heard.hooks.since = Some(Instant::now());
+    }
+
+    pub(crate) fn hook_started(&self, hook: &str) {
+        if hook.starts_with("post-") {
+            self.hold();
+        }
+        let mut heard = self.heard_mut();
+        heard.at = Instant::now();
+        heard.hooks.started = true;
+        heard.hooks.running = Some((hook.to_owned(), Instant::now()));
+    }
+
+    pub(crate) fn hook_ended(&self) {
+        let mut heard = self.heard_mut();
+        heard.at = Instant::now();
+        heard.hooks.running = None;
+    }
+
+    pub(crate) fn hook(&self) -> Option<(String, Instant)> {
+        let heard = self.heard_mut();
+        let hooks = &heard.hooks;
+        hooks.running.clone().or_else(|| {
+            let first = hooks.expected.first().filter(|_| !hooks.started)?;
+            Some((first.clone(), hooks.since?))
+        })
+    }
+
+    pub(crate) fn hooks_ran(&self, ran: &[crate::hooks::Ran]) {
+        self.heard_mut().hooks.ran.extend_from_slice(ran);
+    }
+
+    pub(crate) fn ran(&self) -> Vec<crate::hooks::Ran> {
+        self.heard_mut().hooks.ran.clone()
+    }
+
     pub(crate) fn alive(&self) {
-        self.0.heard.lock().unwrap_or_else(|e| e.into_inner()).at = Instant::now();
+        self.heard_mut().at = Instant::now();
     }
 
     pub(crate) fn snapshot(&self) -> (Option<Progress>, Instant) {
-        let heard = self.0.heard.lock().unwrap_or_else(|e| e.into_inner());
+        let heard = self.heard_mut();
         let at = match self.session().map(|session| session.touched()) {
             Some(answered) => heard.at.max(answered),
             None => heard.at,
@@ -375,13 +455,17 @@ pub(crate) fn cancelled(spec: &Spec) -> Notice {
 fn shown(job: &Job, now: Instant) -> (String, String, Option<u8>, Option<u64>) {
     let (progress, heard) = job.link.snapshot();
     let asking = job.link.asking();
+    let hook = job.link.hook();
     let silent = job.spec.kind != Kind::Write
         && !job.waiting
         && !asking
+        && hook.is_none()
         && job.link.cancellable()
         && now.saturating_duration_since(heard) >= SILENCE;
     let title = if silent {
         format!("No response from {} for {} seconds", job.spec.remote(), SILENCE.as_secs())
+    } else if let Some((name, _)) = &hook {
+        format!("Running {name}…")
     } else {
         job.title.clone()
     };
@@ -392,12 +476,33 @@ fn shown(job: &Job, now: Instant) -> (String, String, Option<u8>, Option<u64>) {
         "Fetched. Waiting for the current operation to finish…".to_owned()
     } else if asking {
         "Waiting for your answer…".to_owned()
+    } else if let Some((_, since)) = &hook {
+        hook_detail(job.link.latest(), now.saturating_duration_since(*since))
     } else {
         progress.as_ref().map(Progress::text).unwrap_or_default()
     };
-    let bar = progress.and_then(|progress| progress.percent).filter(|_| !cancelling && !job.waiting);
+    let bar = progress.and_then(|progress| progress.percent).filter(|_| !cancelling && !job.waiting && hook.is_none());
     let cancel = (job.link.cancellable() && !cancelling).then_some(job.id);
     (title, detail, bar, cancel)
+}
+
+pub(crate) const ELAPSED_AFTER: Duration = Duration::from_secs(3);
+
+fn hook_detail(latest: Option<String>, elapsed: Duration) -> String {
+    let mut lines: Vec<String> = latest.into_iter().collect();
+    if elapsed >= ELAPSED_AFTER {
+        lines.push(format!("Running for {}", elapsed_text(elapsed)));
+    }
+    lines.join("\n")
+}
+
+pub(crate) fn elapsed_text(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        format!("{seconds} s")
+    } else {
+        format!("{} min {:02} s", seconds / 60, seconds % 60)
+    }
 }
 
 pub(crate) fn tick(ui: &mut Ui, now: Instant) -> bool {
@@ -442,7 +547,8 @@ pub(crate) enum Action {
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<Tab>) {
     match action {
         Action::Cancel(id) => {
-            let Some(job) = tab.ui.jobs.network.as_ref().filter(|job| job.id == id) else { return };
+            let jobs = [tab.ui.jobs.network.as_ref(), tab.ui.jobs.write.as_ref()];
+            let Some(job) = jobs.into_iter().flatten().find(|job| job.id == id) else { return };
             if job.link.cancel() {
                 tick(&mut tab.ui, Instant::now());
             }
@@ -574,6 +680,54 @@ mod tests {
         assert_eq!(pull.text(), "Pull cancelled — Nothing was changed locally.");
         let clone = cancelled(&Spec::clone_from(Some("github.com".into())));
         assert_eq!(clone.text(), "Clone cancelled — Nothing it cloned was kept.");
+    }
+
+    #[test]
+    fn a_commit_names_the_hook_it_runs_shows_its_latest_line_and_time_and_offers_cancel_until_post_commit() {
+        let mut jobs = State::default();
+        let link = Link::new(false);
+        let id = jobs.start_write("Committing…", link.clone(), Some(1));
+        let job = jobs.write.as_ref().unwrap();
+        let now = Instant::now();
+        assert_eq!(shown(job, now), ("Committing…".to_owned(), String::new(), None, None));
+        link.expect_hooks(&["pre-commit".to_owned(), "commit-msg".to_owned()]);
+        link.release();
+        let (title, detail, _, cancel) = shown(job, Instant::now());
+        assert_eq!((title.as_str(), detail.as_str(), cancel), ("Running pre-commit…", "", Some(id)));
+        link.hook_started("pre-commit");
+        link.heard("hint: The '.git/hooks/commit-msg' hook was ignored because it's not set as executable.");
+        link.heard("lint: checking 40 files");
+        let (_, since) = link.hook().unwrap();
+        assert_eq!(shown(job, since + Duration::from_secs(2)).1, "lint: checking 40 files");
+        assert_eq!(shown(job, since + Duration::from_secs(3)).1, "lint: checking 40 files\nRunning for 3 s");
+        assert_eq!(shown(job, since + Duration::from_secs(75)).1, "lint: checking 40 files\nRunning for 1 min 15 s");
+        link.hook_ended();
+        assert_eq!(shown(job, Instant::now()).0, "Committing…");
+        link.printed(b"quiet\n");
+        assert_eq!(link.latest().as_deref(), Some("lint: checking 40 files"));
+        link.hook_started("commit-msg");
+        link.printed(b"msg: ok\nmsg: subject fine\n");
+        let (title, detail, _, cancel) = shown(job, Instant::now());
+        assert_eq!((title.as_str(), detail.as_str(), cancel), ("Running commit-msg…", "msg: subject fine", Some(id)));
+        link.hook_ended();
+        link.hook_started("post-commit");
+        let (title, _, _, cancel) = shown(job, Instant::now());
+        assert_eq!((title.as_str(), cancel), ("Running post-commit…", None));
+        assert!(!link.cancel());
+    }
+
+    #[test]
+    fn a_quiet_hook_during_a_push_is_not_called_a_quiet_remote() {
+        let mut jobs = State::default();
+        let link = Link::new(true);
+        jobs.start_network(Spec::push(Some("origin".into())), "Pushing to upstream…", link.clone(), Some(1));
+        link.hook_started("pre-push");
+        let (_, since) = link.hook().unwrap();
+        let job = jobs.network.as_ref().unwrap();
+        let (title, detail, _, cancel) = shown(job, since + SILENCE);
+        assert_eq!((title.as_str(), detail.as_str(), cancel), ("Running pre-push…", "Running for 20 s", Some(job.id)));
+        link.hook_ended();
+        assert_eq!(shown(job, Instant::now()).0, "Pushing to upstream…");
     }
 
     #[test]

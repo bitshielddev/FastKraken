@@ -1311,7 +1311,7 @@ mod tests {
         f.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
         fs::write(f.dir.join("camp.txt"), "tent\n").unwrap();
         f.git(&["add", "camp.txt"]);
-        let skipped = f.repo.commit("Pitch the tent").unwrap();
+        let skipped = f.repo.commit("Pitch the tent").unwrap().skipped;
         assert_eq!(skipped, [hooks.join("pre-commit")]);
         assert_eq!(f.git(&["log", "-1", "--format=%s"]), b"Pitch the tent\n");
         let outcome = skipped_outcome(&skipped);
@@ -1325,7 +1325,7 @@ mod tests {
         assert_eq!(f.git(&["rev-parse", "HEAD"]), tip);
         fs::set_permissions(hooks.join("pre-commit"), std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
         fs::remove_file(hooks.join("pre-commit")).unwrap();
-        assert!(f.repo.commit_all(Some(head.trim()), Some(std::ffi::OsStr::new("refs/heads/main")), "Swap").unwrap().is_empty());
+        assert!(f.repo.commit_all(Some(head.trim()), Some(std::ffi::OsStr::new("refs/heads/main")), "Swap").unwrap().skipped.is_empty());
         assert_eq!(skipped_outcome(&[]).detail, "Pitch the tent");
     }
 
@@ -1344,7 +1344,7 @@ mod tests {
         f.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
         fs::write(f.dir.join("camp.txt"), "tent\n").unwrap();
         f.git(&["add", "camp.txt"]);
-        let said = f.repo.commit("Pitch the tent").unwrap_err();
+        let said = f.repo.commit("Pitch the tent").unwrap_err().text;
         assert!(f.repo.status().unwrap().head.is_none(), "nothing was committed");
         assert_eq!(f.git(&["diff", "--cached", "--name-only"]), b"camp.txt\n", "the index is as it was");
         let commit = About { again: Some(view::Action::Commit), local: true, ..About::default() };

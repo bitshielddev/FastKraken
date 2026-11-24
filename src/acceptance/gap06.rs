@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     commands::{self, Side, Target},
+    jobs,
     view::commit_input,
     notice,
     picked::{self, How},
@@ -35,6 +36,23 @@ fn renamed_row(tab: &Tab, path: &str, from: &str, staged: bool) -> bool {
     })
 }
 
+fn committing(tab: &Tab) -> Option<&notice::Notice> {
+    let id = tab.ui.jobs.write.as_ref()?.notice?;
+    tab.ui.notices.get(id).filter(|notice| notice.tone == Tone::Progress)
+}
+
+fn hooked(dir: &Path, root: &Path, name: &str) -> Result<PathBuf> {
+    let hooks = dir.join(format!("{name}-hooks"));
+    fs::create_dir(&hooks)?;
+    let path = hooks.to_str().ok_or("The sandbox path is not UTF-8")?;
+    git(root, &["config", "--local", "core.hooksPath", path])?;
+    Ok(hooks)
+}
+
+fn alive(pid: libc::pid_t) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
 fn picked_paths(tab: &Tab) -> Option<Vec<String>> {
     picked::files(&tab.ui).map(|(paths, _)| paths.iter().map(|path| path.to_string_lossy().into_owned()).collect())
 }
@@ -48,7 +66,9 @@ impl Replay<'_> {
         self.ignore_tracked(dir).await?;
         self.staged_rename(dir).await?;
         self.history_across_a_rename(dir).await?;
-        self.editing_the_summary(dir).await
+        self.editing_the_summary(dir).await?;
+        self.cancel_a_slow_hook(dir).await?;
+        self.failing_hook_output(dir).await
     }
 
     async fn asked_about(&mut self, title: &str) -> Result<(Vec<String>, bool)> {
@@ -637,6 +657,138 @@ impl Replay<'_> {
         git_is(&root, &["diff", "--cached", "--name-only"], "")?;
         self.tab.update(self.cx, |tab, _, cx| tab.ui.input.update(cx, |field, cx| field.clear(cx)))?;
         self.key("escape")?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn staged_for_commit(&mut self, root: &Path, name: &str, file: &str, text: &str) -> Result<()> {
+        fs::write(root.join(file), text)?;
+        self.open(root)?;
+        self.until(&format!("{name} open with {file} edited"), |tab| tab.ui.repo == name && files(tab, &[], &[file])).await?;
+        self.action(Action::StageAll)?;
+        self.until(&format!("{file} staged"), |tab| files(tab, &[file], &[])).await
+    }
+
+    async fn gone(&mut self, pid: libc::pid_t, what: &str) -> Result<()> {
+        let start = Instant::now();
+        while alive(pid) {
+            if start.elapsed() > Duration::from_secs(5) {
+                return Err(format!("{what} (process {pid}) is still running after the cancel").into());
+            }
+            self.cx.background_executor().timer(Duration::from_millis(20)).await;
+        }
+        Ok(())
+    }
+
+    async fn cancel_a_slow_hook(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0609");
+        let root = init(dir, "Lantern")?;
+        record(&root, "wick.txt", "Wick: long\n", "Light the lantern")?;
+        let head = oid(&root, "HEAD")?;
+        let hooks = hooked(dir, &root, "Lantern")?;
+        let (own, child) = (dir.join("lantern-hook.pid"), dir.join("lantern-sleep.pid"));
+        gap04::script(
+            &hooks.join("pre-commit"),
+            &format!(
+                "echo 'checking the lantern glass'\n/bin/sleep 120 &\necho $! > '{child}'\necho $$ > '{own}'\nwait\n",
+                own = own.display(),
+                child = child.display()
+            ),
+        )?;
+        self.staged_for_commit(&root, "Lantern", "wick.txt", "Wick: trimmed\n").await?;
+        self.type_commit("Trim the wick")?;
+        self.during("the commit naming its hook", |tab| {
+            committing(tab).is_some_and(|notice| {
+                notice.title == "Running pre-commit…" && notice.detail.starts_with("checking the lantern glass") && notice.job.is_some()
+            }) && own.exists()
+                && child.exists()
+        })
+        .await?;
+        let read = |path: &Path| -> Result<libc::pid_t> { Ok(fs::read_to_string(path)?.trim().parse()?) };
+        let (hook_pid, sleep_pid) = (read(&own)?, read(&child)?);
+        if !alive(hook_pid) || !alive(sleep_pid) {
+            return Err("The hook was not running while its notice was shown".into());
+        }
+        self.during("the elapsed time after three seconds", |tab| {
+            committing(tab).is_some_and(|notice| notice.detail == "checking the lantern glass\nRunning for 3 s")
+        })
+        .await?;
+        let job = self
+            .tab
+            .read_with(self.cx, |tab, _| committing(tab).and_then(|notice| notice.job))?
+            .ok_or("The commit's notice has no Cancel button")?;
+        self.action(Action::Jobs(jobs::Action::Cancel(job)))?;
+        self.until("the commit cancelled", |tab| {
+            tab.ui.notices.newest().is_some_and(|notice| {
+                notice.tone == Tone::Info && notice.title == "Commit cancelled" && notice.detail == "No commit was made."
+            })
+        })
+        .await?;
+        self.gone(hook_pid, "The pre-commit hook").await?;
+        self.gone(sleep_pid, "The program the hook started").await?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "wick.txt\n")?;
+        if root.join(".git/index.lock").exists() {
+            return Err("The cancelled commit left index.lock behind".into());
+        }
+        let (summary, _) = self.summary_field()?;
+        if summary != "Trim the wick" {
+            return Err(format!("After the cancel the summary reads {summary:?}").into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn failing_hook_output(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0610");
+        let root = init(dir, "Kettle")?;
+        record(&root, "brew.txt", "Brew: black\n", "Boil the kettle")?;
+        let head = oid(&root, "HEAD")?;
+        let hooks = hooked(dir, &root, "Kettle")?;
+        gap04::script(
+            &hooks.join("pre-commit"),
+            "i=1\nwhile [ $i -le 200 ]; do echo \"kettle check $i of 200\"; i=$((i+1)); done\nexit 1\n",
+        )?;
+        self.staged_for_commit(&root, "Kettle", "brew.txt", "Brew: green\n").await?;
+        self.type_commit("Change the brew")?;
+        self.until("the hook's failure", |tab| {
+            tab.ui.notices.newest().is_some_and(|notice| notice.tone == Tone::Error && notice.title == "pre-commit stopped the commit")
+        })
+        .await?;
+        let shown = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.notices.newest().map(|notice| (notice.detail.clone(), notice.output.clone(), notice.expanded, notice::output_label(notice)))
+        })?;
+        let Some((detail, Some(output), true, "Hide Git output")) = shown else {
+            return Err(format!("The failure notice is not expanded with the hook's output: {shown:?}").into());
+        };
+        if detail != "No commit was made. It exited with code 1." {
+            return Err(format!("The failure notice reads {detail:?}").into());
+        }
+        let lines: Vec<&str> = output.lines().collect();
+        if lines.len() != 200 || lines.first() != Some(&"kettle check 1 of 200") || lines.last() != Some(&"kettle check 200 of 200") {
+            return Err(format!("The expanded output has {} lines, ending {:?}", lines.len(), lines.last()).into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "brew.txt\n")?;
+        let (summary, _) = self.summary_field()?;
+        if summary != "Change the brew" {
+            return Err(format!("After the failure the summary reads {summary:?}").into());
+        }
+
+        gap04::script(&hooks.join("pre-commit"), "echo 'kettle: lid on'\necho 'kettle: 2 cups' >&2\n")?;
+        self.key(CMD_RETURN)?;
+        self.until("the commit with the hook's words", |tab| {
+            tab.ui.notices.newest().is_some_and(|notice| notice.tone == Tone::Success && notice.title == "Changes committed")
+        })
+        .await?;
+        let told = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.notices.newest().map(|notice| (notice.detail.clone(), notice.output.clone(), notice::output_label(notice)))
+        })?;
+        let expected = ("Change the brew\npre-commit printed 2 lines.".to_owned(), Some("kettle: lid on\nkettle: 2 cups".to_owned()), "Show output");
+        if told.as_ref() != Some(&expected) {
+            return Err(format!("The commit's notice reads {told:?}").into());
+        }
+        git_is(&root, &["log", "-1", "--format=%s"], "Change the brew\n")?;
         self.pass();
         Ok(())
     }

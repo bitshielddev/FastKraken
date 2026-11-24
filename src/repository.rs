@@ -10,6 +10,8 @@ use std::{
     thread,
 };
 
+use crate::{hooks::Committed, notice::Failure};
+
 type Result<T> = std::result::Result<T, String>;
 const MAX_DIFF_BYTES: usize = 1024 * 1024;
 const SSH_TIMEOUTS: &str = "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2";
@@ -859,22 +861,64 @@ impl Repository {
         Ok(())
     }
 
-    pub fn commit(&self, message: &str) -> Result<Vec<PathBuf>> {
+    pub fn commit(&self, message: &str) -> std::result::Result<Committed, Failure> {
         self.ensure_index_writable()?;
         if message.trim().is_empty() {
-            return Err("Enter a commit message.".into());
+            return Err("Enter a commit message.".to_owned().into());
         }
-        self.committing(self.command().args(["-c", "user.useConfigOnly=true", "commit", "-m", message]))
+        self.committing(
+            self.command().args(["-c", "user.useConfigOnly=true", "commit", "-m", message]),
+            crate::hooks::COMMIT,
+            false,
+        )
     }
 
-    fn committing(&self, command: &mut Command) -> Result<Vec<PathBuf>> {
-        let output = run(command).map_err(|e| format!("Run bundled Git: {e}"))?;
-        let skipped = crate::explain::skipped_hooks(&String::from_utf8_lossy(&output.stderr))
+    fn tip(&self) -> Option<Vec<u8>> {
+        let output = self.read_command().args(["rev-parse", "--quiet", "--verify", "HEAD^{commit}"]).run().ok()?;
+        output.status.success().then(|| without_final_newline(&output.stdout).to_vec())
+    }
+
+    fn committing(&self, command: &mut Command, events: &[&str], staged: bool) -> std::result::Result<Committed, Failure> {
+        let link = crate::jobs::Link::current();
+        let present = self.runnable_hooks(events);
+        let before = self.tip();
+        if let Some(link) = link.as_ref().filter(|_| !present.is_empty()) {
+            link.expect_hooks(&present);
+            link.release();
+        }
+        let (result, ran) = run_watching_hooks(command);
+        if let Some(link) = &link {
+            link.settle();
+        }
+        let moved = self.tip() != before;
+        let output = match result {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted && !moved => {
+                return Err(crate::hooks::cancelled(staged));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                let stopped = ran.as_deref().and_then(|ran| ran.iter().rev().find(|ran| ran.code.is_none())).map(|ran| ran.hook.clone());
+                let hooks = crate::hooks::hooks_that_ran(ran.as_deref(), &present);
+                return Ok(Committed { stopped: stopped.or_else(|| hooks.last().cloned()), hooks, ..Committed::default() });
+            }
+            Err(error) => return Err(format!("Run bundled Git: {error}").into()),
+            Ok(output) => output,
+        };
+        let said = String::from_utf8_lossy(&output.stderr).into_owned();
+        let skipped = crate::explain::skipped_hooks(&said)
             .into_iter()
             .map(|(_, path)| self.root.join(path))
             .collect();
-        successful(output)?;
-        Ok(skipped)
+        if !output.status.success() {
+            if !moved
+                && let Some(failure) = crate::hooks::stopped(&crate::hooks::COMMITTING, ran.as_deref(), &present, &said)
+            {
+                return Err(failure);
+            }
+            return Err(git_error(&output.stderr, output.status).into());
+        }
+        let hooks = crate::hooks::hooks_that_ran(ran.as_deref(), &present);
+        let printed = if hooks.is_empty() { String::new() } else { crate::hooks::printed(&said) };
+        Ok(Committed { skipped, hooks, printed, stopped: None })
     }
 
     pub fn commit_message(&self, oid: &str) -> Result<String> {
@@ -898,16 +942,16 @@ impl Repository {
         successful(output).map(|name| Some(OsString::from_vec(without_final_newline(&name).into())))
     }
 
-    pub fn amend(&self, oid: &str, reference: Option<&OsStr>, message: Option<&str>) -> Result<Vec<PathBuf>> {
+    pub fn amend(&self, oid: &str, reference: Option<&OsStr>, message: Option<&str>) -> std::result::Result<Committed, Failure> {
         self.ensure_index_writable()?;
         validate_oid(oid)?;
         if message.is_some_and(|message| message.trim().is_empty()) {
-            return Err("Enter a commit message.".into());
+            return Err("Enter a commit message.".to_owned().into());
         }
         let same_branch = self.head_reference()?.as_deref() == reference;
         let head = checked(self.read_command().args(["rev-parse", "--verify", "HEAD"]))?;
         if !same_branch || without_final_newline(&head) != oid.as_bytes() {
-            return Err("The checked-out branch or its tip changed. Reopen Amend last commit.".into());
+            return Err("The checked-out branch or its tip changed. Reopen Amend last commit.".to_owned().into());
         }
         let mut command = self.command();
         command.args(["-c", "user.useConfigOnly=true", "commit", "--amend", "--allow-empty"]);
@@ -916,7 +960,7 @@ impl Repository {
         } else {
             command.arg("--no-edit");
         }
-        self.committing(&mut command)
+        self.committing(&mut command, crate::hooks::AMEND, false)
     }
 
     pub fn stage_all(&self) -> Result<()> {
@@ -931,25 +975,24 @@ impl Repository {
         Ok(())
     }
 
-    pub fn commit_all(&self, head: Option<&str>, reference: Option<&OsStr>, message: &str) -> Result<Vec<PathBuf>> {
+    pub fn commit_all(&self, head: Option<&str>, reference: Option<&OsStr>, message: &str) -> std::result::Result<Committed, Failure> {
         self.ensure_index_writable()?;
         if message.trim().is_empty() {
-            return Err("Enter a commit message.".into());
+            return Err("Enter a commit message.".to_owned().into());
         }
         if let Some(oid) = head {
             validate_oid(oid)?;
         }
-        let tip = self
-            .read_command()
-            .args(["rev-parse", "--quiet", "--verify", "HEAD^{commit}"])
-            .run()
-            .map_err(|e| format!("Run bundled Git: {e}"))?;
-        let tip = tip.status.success().then(|| without_final_newline(&tip.stdout).to_vec());
+        let tip = self.tip();
         if self.head_reference()?.as_deref() != reference || tip.as_deref() != head.map(str::as_bytes) {
-            return Err("The checked-out branch or its tip changed. Look again before committing.".into());
+            return Err("The checked-out branch or its tip changed. Look again before committing.".to_owned().into());
         }
         checked(self.command().args(["add", "--all", "--", "."]))?;
-        self.committing(self.command().args(["-c", "user.useConfigOnly=true", "commit", "-m", message]))
+        self.committing(
+            self.command().args(["-c", "user.useConfigOnly=true", "commit", "-m", message]),
+            crate::hooks::COMMIT,
+            true,
+        )
     }
 }
 
@@ -1061,9 +1104,29 @@ pub(crate) fn checked(command: &mut Command) -> Result<Vec<u8>> {
 }
 
 pub(crate) fn run(command: &mut Command) -> std::io::Result<Output> {
+    let link = crate::jobs::Link::current();
+    let trace = link
+        .as_ref()
+        .filter(|_| crate::hooks::may_run(command))
+        .and_then(|link| crate::hooks::Trace::attach(command, Some(link)));
+    let result = execute(command, link.as_ref());
+    if let Some(trace) = trace {
+        trace.finish();
+    }
+    result
+}
+
+pub(crate) fn run_watching_hooks(command: &mut Command) -> (std::io::Result<Output>, Option<Vec<crate::hooks::Ran>>) {
+    let link = crate::jobs::Link::current();
+    let trace = crate::hooks::Trace::attach(command, link.as_ref());
+    let result = execute(command, link.as_ref());
+    (result, trace.map(crate::hooks::Trace::finish))
+}
+
+fn execute(command: &mut Command, link: Option<&crate::jobs::Link>) -> std::io::Result<Output> {
     let (started, at) = (std::time::Instant::now(), std::time::SystemTime::now());
-    let result = match crate::jobs::Link::current() {
-        Some(link) => stream(command, &link),
+    let result = match link {
+        Some(link) => stream(command, link),
         None => command.output(),
     };
     crate::activity::record(command, started, at, &result);
@@ -1158,6 +1221,7 @@ pub(crate) fn stream(command: &mut Command, link: &crate::jobs::Link) -> std::io
                 break;
             }
             out_link.alive();
+            out_link.printed(&buffer[..n]);
             bytes.extend_from_slice(&buffer[..n]);
         }
         let _ = out_closed.send(());
@@ -1707,7 +1771,7 @@ pub(crate) mod tests {
         fs::write(f.dir.join("trail.txt"), "one\ntwo\n").unwrap();
         let index = f.git(&["ls-files", "--stage"]);
         let main = OsString::from("refs/heads/main");
-        let error = f.repo.commit_all(Some(&shown), Some(&main), "Too late").unwrap_err();
+        let error = f.repo.commit_all(Some(&shown), Some(&main), "Too late").unwrap_err().text;
         assert!(error.contains("changed"), "{error}");
         f.git(&["switch", "-qc", "side"]);
         let head = String::from_utf8(moved.clone()).unwrap().trim().to_owned();
@@ -1870,8 +1934,8 @@ pub(crate) mod tests {
             f.repo.stage_file(path),
             f.repo.stage_all(),
             f.repo.unstage_all(),
-            f.repo.commit("Ordinary commit").map(drop),
-            f.repo.commit_all(None, None, "Ordinary commit").map(drop),
+            f.repo.commit("Ordinary commit").map(drop).map_err(|failure| failure.text),
+            f.repo.commit_all(None, None, "Ordinary commit").map(drop).map_err(|failure| failure.text),
         ] {
             assert_eq!(result.unwrap_err(), format!("{}.", expected.refusal()));
         }
