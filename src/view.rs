@@ -817,11 +817,7 @@ impl Ui {
 
     pub(crate) fn renamed_from(&self, selection: &Selection, commit_path: Option<&Path>) -> Option<PathBuf> {
         match selection {
-            Selection::File { path, staged } => self
-                .files
-                .iter()
-                .find(|file| file.path == *path && file.staged == *staged)
-                .and_then(|file| file.from.clone()),
+            Selection::File { path, staged } => renamed_row_origin(&self.files, path, *staged),
             Selection::Commit(oid) => self.inspection.from(oid, commit_path?),
             Selection::Changes | Selection::Stash(_) => None,
         }
@@ -1169,6 +1165,13 @@ fn sync_chrome<T: Desk>(app: &mut T, window: &mut Window, cx: &mut Context<T>) {
         cx.set_menus(menus);
         app.ui_mut().bar_shown = titles;
     }
+}
+
+pub(crate) fn renamed_row_origin(files: &[FileRow], path: &Path, staged: bool) -> Option<PathBuf> {
+    files
+        .iter()
+        .find(|file| file.path == path && file.staged == staged && file.status == crate::repository::RENAMED)
+        .and_then(|file| file.from.clone())
 }
 
 fn file_selection(f: &FileRow) -> Selection {
@@ -2506,6 +2509,25 @@ pub(crate) fn copy(text: String, cx: &mut App) {
 mod tests {
     use super::*;
     use crate::commands::Target;
+
+    #[test]
+    fn only_a_renamed_row_takes_the_rename_diff_and_header() {
+        let row = |path: &str, staged, status, from: Option<&str>| FileRow {
+            path: path.into(),
+            staged,
+            status,
+            from: from.map(PathBuf::from),
+        };
+        let files = [
+            row("new.txt", true, crate::repository::RENAMED, Some("old.txt")),
+            row("new.txt", false, "Modified", None),
+            row("copy.txt", true, "Copied", Some("source.txt")),
+        ];
+        assert_eq!(renamed_row_origin(&files, Path::new("new.txt"), true), Some(PathBuf::from("old.txt")));
+        assert_eq!(renamed_row_origin(&files, Path::new("new.txt"), false), None);
+        assert_eq!(renamed_row_origin(&files, Path::new("copy.txt"), true), None);
+        assert_eq!(renamed_row_origin(&files, Path::new("old.txt"), true), None);
+    }
 
     #[test]
     fn a_hidden_column_gives_its_width_and_divider_to_the_centre() {

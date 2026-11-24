@@ -2401,6 +2401,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_staged_copy_keeps_its_own_stageable_diff() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("source.txt"), TRAIL).unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        f.git(&["config", "status.renames", "copies"]);
+        fs::write(f.dir.join("copy.txt"), TRAIL).unwrap();
+        fs::write(f.dir.join("source.txt"), TRAIL.replace("ten", "TEN")).unwrap();
+        f.git(&["add", "."]);
+        let status = f.repo.status().unwrap();
+        assert!(status.staged.contains(&ChangedFile {
+            path: "copy.txt".into(),
+            status: "Copied",
+            from: Some("source.txt".into()),
+        }));
+        let diff = f.repo.file_diff(Path::new("copy.txt"), true).unwrap();
+        assert!(diff.stageable());
+        assert!(!diff.text.contains("source.txt") && !diff.text.contains("+TEN"));
+        f.repo.unstage_file(Path::new("copy.txt")).unwrap();
+        assert_eq!(f.git(&["diff", "--cached", "--name-only", "-z"]), b"source.txt\0");
+    }
+
+    #[test]
     fn changed_file_lists_read_renames_and_copies_with_both_paths() {
         let files = parse_changed_files(b"R085\0old name.txt\0new name.txt\0M\0kept.txt\0C100\0a.txt\0b.txt\0").unwrap();
         assert_eq!(
