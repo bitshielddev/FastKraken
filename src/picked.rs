@@ -303,14 +303,14 @@ pub(crate) fn describe_discard(paths: &[PathBuf], untracked: &BTreeSet<PathBuf>)
         spec = spec.line(format!("and {} more", count - NAMED));
     }
     let consequence = match untracked.len() {
-        0 => "Unstaged edits to these files will be lost. Staged changes are kept. This cannot be undone.".to_owned(),
-        n if n == count => "These files are not tracked, so discarding deletes them. This cannot be undone.".to_owned(),
-        1 => "Unstaged edits to these files will be lost, and the 1 untracked file is deleted. Staged changes are kept. This cannot be undone.".to_owned(),
+        0 => "Unstaged edits to these files are removed. Staged changes are kept.".to_owned(),
+        n if n == count => "These files are not tracked, so discarding deletes them.".to_owned(),
+        1 => "Unstaged edits to these files are removed, and the 1 untracked file is deleted. Staged changes are kept.".to_owned(),
         n => format!(
-            "Unstaged edits to these files will be lost, and the {n} untracked files are deleted. Staged changes are kept. This cannot be undone."
+            "Unstaged edits to these files are removed, and the {n} untracked files are deleted. Staged changes are kept."
         ),
     };
-    spec.line(consequence)
+    spec.line(consequence).line("Restore, in the notice that follows, brings them back.")
 }
 
 fn shown(path: &Path) -> String {
@@ -401,13 +401,21 @@ mod tests {
         let spec = describe_discard(&paths, &untracked);
         assert_eq!(spec.title, "Discard changes to 11 files?");
         assert_eq!(spec.confirm.as_ref(), "Discard 11 files");
-        assert_eq!(spec.lines.len(), 10);
+        assert_eq!(spec.lines.len(), 11);
         assert_eq!(spec.lines[0], "notes/1.txt");
         assert_eq!(spec.lines[7], "notes/8.txt");
         assert_eq!(spec.lines[8], "and 3 more");
         assert!(spec.lines[9].contains("the 2 untracked files are deleted"), "{}", spec.lines[9]);
         let spec = describe_discard(&paths[..2], &BTreeSet::new());
-        assert_eq!(spec.lines, ["notes/1.txt", "notes/2.txt", "Unstaged edits to these files will be lost. Staged changes are kept. This cannot be undone."]);
+        assert_eq!(
+            spec.lines,
+            [
+                "notes/1.txt",
+                "notes/2.txt",
+                "Unstaged edits to these files are removed. Staged changes are kept.",
+                "Restore, in the notice that follows, brings them back."
+            ]
+        );
         let spec = describe_discard(&paths[..1], &BTreeSet::from([paths[0].clone()]));
         assert!(spec.lines[1].starts_with("These files are not tracked"));
     }

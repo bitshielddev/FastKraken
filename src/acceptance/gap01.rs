@@ -873,6 +873,7 @@ impl Replay<'_> {
             != [
                 "file.stage",
                 "file.discard",
+                "file.ignore-menu",
                 "file.stash",
                 "file.edit",
                 "file.open",

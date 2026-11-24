@@ -199,6 +199,7 @@ pub(crate) enum DiscardAsk {
         paths: Vec<PathBuf>,
         untracked: std::collections::BTreeSet<PathBuf>,
     },
+    All(crate::discard::Seen),
 }
 
 fn base_name(path: &Path) -> String {
@@ -230,6 +231,7 @@ pub(crate) fn describe_discard(ask: &DiscardAsk) -> crate::prompt::Spec {
                 .line("These lines return to their staged content. This cannot be undone.")
         }
         DiscardAsk::Files { paths, untracked } => crate::picked::describe_discard(paths, untracked),
+        DiscardAsk::All(seen) => crate::discard::describe(seen),
     }
     .danger()
 }
@@ -515,6 +517,8 @@ pub enum Action {
     Reverse(crate::reverse::Action),
     Pick(crate::pick::Action),
     Picked(crate::picked::Action),
+    Discard(crate::discard::Action),
+    Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
     Autostash(crate::autostash::Action),
     Explain(crate::explain::Action),
@@ -1957,7 +1961,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .min_h_0()
         .flex()
         .flex_col()
-        .pt_1()
+        .child(crate::discard::header(app, cx))
         .when_some(detached_warning(ui), |d, warning| d.child(detached_note(app, warning, cx)))
         .child(files)
         .child(

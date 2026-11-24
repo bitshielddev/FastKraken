@@ -22,6 +22,7 @@ icons!(
     "commit",
     "copy",
     "external",
+    "eye-off",
     "fetch",
     "folder",
     "globe",
@@ -36,6 +37,7 @@ icons!(
     "spinner",
     "stash",
     "tag",
+    "trash",
     "undo",
     "x",
 );

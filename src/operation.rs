@@ -1232,6 +1232,8 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::FocusSummary
         | A::ToggleAmend
         | A::AskDiscard(_)
+        | A::Discard(_)
+        | A::Ignore(_)
         | A::Address(_) => false,
     };
     if allowed { Ok(()) } else { Err(kind.refusal()) }
@@ -1532,6 +1534,19 @@ pub(crate) fn reminder_strip<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<Di
     )
 }
 
+fn mark_all_button<T: Desk>(ui: &Ui, cx: &Context<T>) -> Option<gpui::Stateful<Div>> {
+    let entry = crate::commands::find("conflict.mark-all-resolved")
+        .and_then(|command| crate::commands::entry(command, ui, &crate::commands::Target::Repo, cx))?;
+    let action = entry.action?;
+    Some(
+        kit::btn("mark-all-resolved", entry.title)
+            .small()
+            .ghost()
+            .tip(crate::commands::tip_with_keys("Stage every conflicted file as it is now", entry.id))
+            .on(action, cx),
+    )
+}
+
 pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context<T>) -> Div {
     let ui = app.ui();
     let state = &ui.operation;
@@ -1558,7 +1573,9 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
         .flex()
         .flex_col()
         .pt_1()
-        .child(heading("Conflicts", conflicted.len()));
+        .child(heading("Conflicts", conflicted.len()).when_some(mark_all_button(ui, cx), |row, button| {
+            row.child(kit::grow()).child(button)
+        }));
     for (i, conflict) in snapshot.map_or(&[][..], |s| s.conflicts.as_slice()).iter().enumerate() {
         list = list.child(crate::conflict::conflict_row(app, i, conflict, cx));
     }

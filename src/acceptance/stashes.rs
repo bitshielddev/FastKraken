@@ -80,7 +80,7 @@ impl Replay<'_> {
             patch(tab, "+Draft introduction")
         })
         .await?;
-        self.action(Action::Stash(stash::Action::SaveFile("notes.txt".into())))?;
+        self.action(Action::Stash(stash::Action::SaveFiles(vec!["notes.txt".into()])))?;
         self.until("only checklist pending and one stash", |tab| {
             files(tab, &[], &["checklist.txt"]) && tab.ui.stash.entries.len() == 1
         })

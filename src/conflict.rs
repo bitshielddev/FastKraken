@@ -103,6 +103,25 @@ pub(crate) const COMMANDS: &[commands::Command] = {
         .words(&["git add", "resolved", "edited elsewhere"])
         .icon("ok"),
         Command::new(
+            "conflict.mark-all-resolved",
+            Group::Changes,
+            |_, _| "Mark all resolved".into(),
+            |ui, target, _| {
+                let Some(snapshot) = ui.operation.snapshot().filter(|_| ui.operation.active() && *target == Target::Repo) else {
+                    return Availability::Hidden;
+                };
+                if snapshot.conflicts.is_empty() {
+                    return Availability::Hidden;
+                }
+                Availability::unless(busy(ui).or_else(|| {
+                    markable(snapshot).is_empty().then(|| "Take a side for each file instead".to_owned())
+                }))
+            },
+            |_, _| Some(view::Action::Conflict(Action::ResolveAll)),
+        )
+        .words(&["resolve all", "mark resolved", "git add", "conflicts"])
+        .icon("ok"),
+        Command::new(
             "conflict.unresolve",
             Group::Reverse,
             |_, _| "Mark as conflicted again…".into(),
@@ -135,6 +154,7 @@ pub(crate) enum Action {
     Keep(PathBuf),
     Delete(PathBuf),
     Resolve(PathBuf),
+    ResolveAll,
     Unresolve(PathBuf),
     Close,
 }
@@ -142,7 +162,31 @@ pub(crate) enum Action {
 #[derive(Debug)]
 pub(crate) enum Ask {
     Markers(Shown),
+    MarkersInAll { shown: Vec<Shown>, marked: Vec<PathBuf> },
     Unresolve { id: Id, path: PathBuf },
+}
+
+fn markable(snapshot: &Snapshot) -> Vec<&Conflict> {
+    snapshot.conflicts.iter().filter(|c| !c.shape.deleted() && c.shape != Shape::Submodule).collect()
+}
+
+fn files(count: usize) -> String {
+    match count {
+        1 => "1 file".to_owned(),
+        n => format!("{n} files"),
+    }
+}
+
+fn mark_all(tab: &mut Tab, shown: Vec<Shown>, check: bool, left: usize, cx: &mut Context<Tab>) {
+    let title = format!("Marked {} resolved", files(shown.len()));
+    let detail = match left {
+        0 => String::new(),
+        1 => "1 file is still in conflict: take a side for it.".to_owned(),
+        n => format!("{n} files are still in conflict: take a side for each."),
+    };
+    resolve(tab, cx, "Marking the files resolved…", title, detail, move |repo| {
+        backend::mark_all_resolved(repo, &shown, check)
+    });
 }
 
 #[derive(Default)]
@@ -298,6 +342,45 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
                 },
             );
         }
+        Action::ResolveAll => {
+            let chosen = markable(&snapshot);
+            if chosen.is_empty() {
+                return refuse(tab, "No conflicted file can be marked resolved as it is".to_owned(), cx);
+            }
+            let left = snapshot.conflicts.len() - chosen.len();
+            let shown: Vec<Shown> = chosen.iter().map(|conflict| Shown::of(&snapshot, conflict)).collect();
+            let scanned: Vec<PathBuf> =
+                chosen.iter().filter(|c| c.shape.may_hold_markers()).map(|c| c.path.clone()).collect();
+            let Some(repo) = tab.repo.clone() else { return };
+            tab.ui.conflict.ticket += 1;
+            let (ticket, epoch) = (tab.ui.conflict.ticket, tab.epoch);
+            Tab::work(
+                cx,
+                move || -> Result<Vec<PathBuf>, String> {
+                    let mut marked = Vec::new();
+                    for path in scanned {
+                        if backend::has_markers(&repo, &path)? {
+                            marked.push(path);
+                        }
+                    }
+                    Ok(marked)
+                },
+                move |tab, found, cx| {
+                    if tab.epoch != epoch || tab.ui.conflict.ticket != ticket || tab.ui.busy() || tab.ui.dialog_open() {
+                        return;
+                    }
+                    match found {
+                        Ok(marked) if marked.is_empty() => mark_all(tab, shown, true, left, cx),
+                        Ok(marked) => {
+                            let ask = Ask::MarkersInAll { shown, marked };
+                            prompt::ask(&mut tab.ui, prompt::Kind::Conflict(ask), cx)
+                        }
+                        Err(err) => tab.error(err, cx),
+                    }
+                    cx.notify();
+                },
+            );
+        }
         Action::Unresolve(path) => {
             if !snapshot.resolved.contains(&path) {
                 return refuse(tab, format!("{} is not resolved", named(&path)), cx);
@@ -318,6 +401,20 @@ pub(crate) fn describe(ask: &Ask, _: &Ui) -> prompt::Spec {
                 .line("This file still contains conflict markers.")
                 .line("Lines that start with <<<<<<<, ======= or >>>>>>> will be staged as they are.")
         }
+        Ask::MarkersInAll { shown, marked } => {
+            let mut spec = prompt::Spec::new(format!("Mark {} resolved anyway?", files(shown.len())), "Mark all resolved");
+            spec = spec.line(match marked.len() {
+                1 => "This file still contains conflict markers:".to_owned(),
+                n => format!("These {n} files still contain conflict markers:"),
+            });
+            for path in marked.iter().take(crate::picked::NAMED) {
+                spec = spec.line(named(path));
+            }
+            if marked.len() > crate::picked::NAMED {
+                spec = spec.line(format!("and {} more", marked.len() - crate::picked::NAMED));
+            }
+            spec.line("Lines that start with <<<<<<<, ======= or >>>>>>> will be staged as they are.")
+        }
         Ask::Unresolve { path, .. } => {
             let name = named(path);
             prompt::Spec::new(format!("Mark {name} as conflicted again?"), "Mark conflicted")
@@ -331,6 +428,10 @@ pub(crate) fn describe(ask: &Ask, _: &Ui) -> prompt::Spec {
 pub(crate) fn confirm(tab: &mut Tab, ask: Ask, _: prompt::Answer, cx: &mut Context<Tab>) {
     match ask {
         Ask::Markers(shown) => mark(tab, shown, false, cx),
+        Ask::MarkersInAll { shown, .. } => {
+            let left = tab.ui.operation.snapshot().map_or(0, |s| s.conflicts.len().saturating_sub(shown.len()));
+            mark_all(tab, shown, false, left, cx)
+        }
         Ask::Unresolve { id, path } => {
             let title = format!("{} is in conflict again", named(&path));
             tab.run_operation_then(

@@ -198,6 +198,30 @@ pub(crate) fn mark_resolved(repo: &Repository, shown: &Shown, check: bool) -> Re
     settled(repo, &shown.path)
 }
 
+pub(crate) fn mark_all_resolved(repo: &Repository, shown: &[Shown], check: bool) -> Result<()> {
+    if shown.is_empty() {
+        return Err("No conflicted file can be marked resolved as it is.".into());
+    }
+    for one in shown {
+        expect(repo, one)?;
+        if shown_cannot_be_marked(repo, one)? {
+            return Err(format!("{} cannot be marked resolved as it is. Take a side for it instead.", named(&one.path)));
+        }
+        if check && has_markers(repo, &one.path)? {
+            return Err(format!("{} still contains conflict markers.", named(&one.path)));
+        }
+    }
+    for one in shown {
+        add(repo, &one.path)?;
+        settled(repo, &one.path)?;
+    }
+    Ok(())
+}
+
+fn shown_cannot_be_marked(repo: &Repository, shown: &Shown) -> Result<bool> {
+    Ok(shown.submodule() || on_disk(repo, &shown.path)?.is_none())
+}
+
 pub(crate) fn unresolve(repo: &Repository, id: &Id, path: &Path) -> Result<()> {
     validate_path(path)?;
     repo.expect_operation(id)?;
@@ -277,6 +301,41 @@ mod tests {
         commit(&f, "trail.txt", "main\n", "Main");
         stops(&f, &["merge", "side"]);
         f
+    }
+
+    #[test]
+    fn marking_every_conflict_resolved_stages_them_all_or_none() {
+        let f = Fixture::new();
+        write(&f, "ridge.txt", "base\n");
+        f.git(&["add", "--", "ridge.txt"]);
+        commit(&f, "trail.txt", "base\n", "Base");
+        f.git(&["switch", "-qc", "side"]);
+        write(&f, "ridge.txt", "side\n");
+        f.git(&["add", "--", "ridge.txt"]);
+        commit(&f, "trail.txt", "side\n", "Side");
+        f.git(&["switch", "-q", "main"]);
+        write(&f, "ridge.txt", "main\n");
+        f.git(&["add", "--", "ridge.txt"]);
+        commit(&f, "trail.txt", "main\n", "Main");
+        stops(&f, &["merge", "side"]);
+        let both = [shown(&f, "ridge.txt"), shown(&f, "trail.txt")];
+        write(&f, "ridge.txt", "settled\n");
+        let err = mark_all_resolved(&f.repo, &both, true).unwrap_err();
+        assert_eq!(err, "trail.txt still contains conflict markers.");
+        assert!(!unmerged(&f, "ridge.txt").is_empty() && !unmerged(&f, "trail.txt").is_empty());
+
+        write(&f, "trail.txt", "agreed\n");
+        f.git(&["add", "--", "trail.txt"]);
+        let err = mark_all_resolved(&f.repo, &both, true).unwrap_err();
+        assert_eq!(err, "trail.txt is no longer in conflict.");
+        assert!(!unmerged(&f, "ridge.txt").is_empty());
+
+        let ridge = [shown(&f, "ridge.txt")];
+        mark_all_resolved(&f.repo, &ridge, true).unwrap();
+        assert!(unmerged(&f, "ridge.txt").is_empty() && unmerged(&f, "trail.txt").is_empty());
+        assert_eq!(f.git(&["show", ":ridge.txt"]), b"settled\n");
+        assert_eq!(f.git(&["show", ":trail.txt"]), b"agreed\n");
+        assert!(mark_all_resolved(&f.repo, &[], true).is_err());
     }
 
     #[test]

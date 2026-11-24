@@ -51,7 +51,7 @@ impl Replay<'_> {
         })?)
     }
 
-    fn said(&mut self) -> Result<Option<Said>> {
+    pub(super) fn said(&mut self) -> Result<Option<Said>> {
         Ok(self.tab.read_with(self.cx, |tab, _| {
             tab.ui.notices.newest().map(|n| {
                 let offers = n.actions.iter().map(|(label, _)| label.to_string()).collect();
@@ -65,7 +65,7 @@ impl Replay<'_> {
         self.choose(target, id)
     }
 
-    fn choose_under(&mut self, target: &Target, id: &str, title: &str) -> Result<()> {
+    pub(super) fn choose_under(&mut self, target: &Target, id: &str, title: &str) -> Result<()> {
         self.action(Action::Menu(Some(view::Menu::Object { target: target.clone(), at: Point::default() })))?;
         let chosen = self.tab.read_with(self.cx, |tab, cx| {
             commands::menu(&tab.ui, target, cx)
@@ -78,7 +78,7 @@ impl Replay<'_> {
         self.action(action)
     }
 
-    fn newest_notice(&mut self) -> Result<u64> {
+    pub(super) fn newest_notice(&mut self) -> Result<u64> {
         let id = self.tab.read_with(self.cx, |tab, _| tab.ui.notices.newest().map(|n| n.id))?;
         id.ok_or_else(|| "There is no notice".into())
     }

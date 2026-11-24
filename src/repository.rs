@@ -742,16 +742,11 @@ impl Repository {
     }
 
     pub(crate) fn with_paths(&self, args: &[&str], paths: &[PathBuf]) -> Result<Vec<u8>> {
-        if paths.is_empty() {
-            return Err("Select at least one file.".into());
-        }
-        let mut input = Vec::new();
-        for path in paths {
-            validate_path(path)?;
-            input.extend_from_slice(path.as_os_str().as_encoded_bytes());
-            input.push(0);
-        }
-        let mut command = self.command();
+        self.paths_into(self.command(), args, paths)
+    }
+
+    pub(crate) fn paths_into(&self, mut command: Command, args: &[&str], paths: &[PathBuf]) -> Result<Vec<u8>> {
+        let input = nul_separated(paths, b"")?;
         command
             .arg("--literal-pathspecs")
             .args(args)
@@ -769,7 +764,7 @@ impl Repository {
         self.with_paths(&["reset", "--quiet"], paths).map(drop)
     }
 
-    pub fn discard_files(&self, paths: &[PathBuf], untracked: &BTreeSet<PathBuf>) -> Result<()> {
+    pub fn discard_files(&self, paths: &[PathBuf], untracked: &BTreeSet<PathBuf>) -> Result<String> {
         const CLEANED_AT_ONCE: usize = 64;
         self.ensure_index_writable()?;
         if paths.is_empty() {
@@ -794,6 +789,7 @@ impl Repository {
                 ));
             }
         }
+        let kept = self.snapshot(paths)?;
         let (doomed, tracked): (Vec<PathBuf>, Vec<PathBuf>) =
             paths.iter().cloned().partition(|path| untracked.contains(path));
         if !tracked.is_empty() {
@@ -806,7 +802,7 @@ impl Repository {
                     .args(chunk),
             )?;
         }
-        Ok(())
+        Ok(kept)
     }
 
     pub fn commit(&self, message: &str) -> Result<Vec<PathBuf>> {
@@ -911,6 +907,20 @@ pub(crate) fn bundled_version() -> Result<String> {
 fn version_of(output: &str) -> Option<String> {
     let version = output.trim().strip_prefix("git version ")?;
     version.starts_with(|c: char| c.is_ascii_digit()).then(|| version.to_owned())
+}
+
+pub(crate) fn nul_separated(paths: &[PathBuf], prefix: &[u8]) -> Result<Vec<u8>> {
+    if paths.is_empty() {
+        return Err("Select at least one file.".into());
+    }
+    let mut input = Vec::new();
+    for path in paths {
+        validate_path(path)?;
+        input.extend_from_slice(prefix);
+        input.extend_from_slice(path.as_os_str().as_encoded_bytes());
+        input.push(0);
+    }
+    Ok(input)
 }
 
 pub(crate) fn validate_oid(oid: &str) -> Result<()> {

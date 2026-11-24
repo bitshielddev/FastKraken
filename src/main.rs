@@ -13,6 +13,7 @@ mod commands;
 mod conflict;
 mod connect;
 mod credentials;
+mod discard;
 mod environment;
 mod explain;
 mod github;
@@ -20,6 +21,7 @@ mod guard;
 mod handoff;
 mod help;
 mod identity;
+mod ignore;
 mod init;
 mod instance;
 mod inspection;
@@ -666,9 +668,10 @@ impl Tab {
                 "Discarding changes…",
                 Some("Changes discarded"),
                 false,
-                move |repo| repo.discard_files(&paths, &untracked),
+                move |repo| repo.discard_files(&paths, &untracked).map(|kept| discard::discarded(kept, paths)),
                 |_, _| {},
             ),
+            DiscardAsk::All(seen) => discard::confirm(self, seen, cx),
             DiscardAsk::Hunk { index, diff, .. } => self.apply_operation(
                 cx,
                 "Discarding the hunk…",
@@ -1414,6 +1417,8 @@ impl Tab {
             Action::Reverse(action) => reverse::dispatch(self, action, window, cx),
             Action::Pick(action) => pick::dispatch(self, action, window, cx),
             Action::Picked(action) => picked::dispatch(self, action, window, cx),
+            Action::Discard(action) => discard::dispatch(self, action, window, cx),
+            Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
             Action::Autostash(action) => autostash::dispatch(self, action, window, cx),
             Action::Explain(action) => explain::dispatch(self, action, window, cx),

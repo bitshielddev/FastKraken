@@ -113,6 +113,7 @@ pub(crate) enum Kind {
     Askpass(crate::askpass::Ask),
     Credentials(crate::credentials::Ask),
     Address(crate::address::Ask),
+    Ignore(crate::ignore::Ask),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -133,6 +134,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Askpass(ask) => crate::askpass::describe(ask),
         Kind::Credentials(ask) => crate::credentials::describe(ask),
         Kind::Address(ask) => crate::address::describe(ask, ui),
+        Kind::Ignore(ask) => crate::ignore::describe(ask),
     }
 }
 
@@ -154,6 +156,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Askpass(ask) => crate::askpass::confirm(tab, ask, answer, window, cx),
         Kind::Credentials(ask) => crate::credentials::confirm(tab, ask, answer, cx),
         Kind::Address(ask) => crate::address::confirm(tab, ask, answer, cx),
+        Kind::Ignore(ask) => crate::ignore::confirm(tab, ask, cx),
     }
 }
 
