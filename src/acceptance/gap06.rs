@@ -7,7 +7,7 @@ use crate::{
     prompt::{self, Stop},
     view::Tone,
 };
-use gpui::{ClipboardItem, Focusable};
+use gpui::{ClipboardItem, Focusable, MouseButton, MouseDownEvent, Pixels};
 use std::ops::Range;
 
 const CMD_RETURN: &str = if cfg!(target_os = "macos") { "cmd-enter" } else { "ctrl-enter" };
@@ -523,6 +523,19 @@ impl Replay<'_> {
         Ok(())
     }
 
+    fn double_click(&mut self, at: gpui::Point<Pixels>) -> Result<()> {
+        self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
+        let press = MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: gpui::Modifiers::default(),
+            click_count: 2,
+            first_mouse: false,
+        };
+        self.tab.update(self.cx, |tab, window, cx| tab.ui.input.update(cx, |field, cx| field.press(&press, window, cx)))?;
+        Ok(())
+    }
+
     fn summary_menu_shown(&mut self) -> Result<bool> {
         self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
         Ok(self.tab.read_with(self.cx, |tab, cx| commit_input::menu_shown_for(tab.ui.input.entity_id(), cx))?)
@@ -608,6 +621,13 @@ impl Replay<'_> {
         self.summary_is("Delete from the menu", "fix the  menu", bistro.start..bistro.start)?;
         self.key("cmd-z")?;
         self.summary_is("Cmd-Z after Delete", replaced, bistro.clone())?;
+        self.key("cmd-left")?;
+        let last_letter = self.tab.update(self.cx, |tab, window, cx| {
+            tab.ui.input.update(cx, |field, cx| field.bounds_for_range(bistro.end - 1..bistro.end, Bounds::default(), window, cx))
+        })?;
+        let last_letter = last_letter.ok_or("The summary was not laid out")?;
+        self.double_click(gpui::point(last_letter.right() - px(1.), last_letter.center().y))?;
+        self.summary_is("double-clicking the right half of bistro's last letter", replaced, bistro.clone())?;
 
         let clipboard = self.cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))?;
         if clipboard != saved.and_then(|item| item.text()) {

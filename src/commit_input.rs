@@ -182,6 +182,13 @@ impl InputLayout {
         let line = &self.lines[row];
         line.range.start + line.shape.closest_index_for_x(position.x - self.origin.x).min(line.range.len())
     }
+
+    fn under(&self, position: Point<Pixels>) -> usize {
+        let row = (((position.y - self.origin.y) / px(LINE_HEIGHT)) as usize).min(self.lines.len() - 1);
+        let line = &self.lines[row];
+        let glyph = line.shape.index_for_x(position.x - self.origin.x).unwrap_or(line.range.len());
+        line.range.start + glyph.min(line.range.len())
+    }
 }
 
 pub struct CommitInput {
@@ -303,6 +310,13 @@ impl CommitInput {
         self.layout.as_ref().map_or(self.editor.value.len(), |layout| self.from_display(layout.hit(point)))
     }
 
+    fn hit_for(&self, point: Point<Pixels>, unit: Unit) -> usize {
+        match (&self.layout, unit) {
+            (Some(layout), Unit::Word | Unit::Paragraph) => self.from_display(layout.under(point)),
+            _ => self.hit(point),
+        }
+    }
+
     fn rows(&self) -> Option<Vec<Range<usize>>> {
         let layout = self.layout.as_ref().filter(|_| self.editor.multiline && !self.editor.masked)?;
         Some(layout.lines.iter().map(|line| line.range.clone()).collect())
@@ -417,11 +431,11 @@ impl CommitInput {
         cx.stop_propagation();
     }
 
-    fn press(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn press(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
         close_menu(cx);
-        let at = self.hit(event.position);
         let unit = Unit::of_clicks(event.click_count);
+        let at = self.hit_for(event.position, unit);
         let origin = if event.modifiers.shift && unit == Unit::Character {
             let anchor = self.editor.anchor;
             self.editor.select(anchor, at);
@@ -736,7 +750,7 @@ impl Render for CommitInput {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::press_right))
             .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| {
                 if let Some((origin, unit)) = &this.drag {
-                    let (anchor, caret) = this.editor.dragged(origin, *unit, this.hit(ev.position));
+                    let (anchor, caret) = this.editor.dragged(origin, *unit, this.hit_for(ev.position, *unit));
                     this.editor.select(anchor, caret);
                     this.reveal_caret = true;
                     cx.notify();
