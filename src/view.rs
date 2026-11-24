@@ -195,6 +195,10 @@ pub(crate) enum DiscardAsk {
         index: usize,
         diff: std::sync::Arc<crate::repository::Diff>,
     },
+    Files {
+        paths: Vec<PathBuf>,
+        untracked: std::collections::BTreeSet<PathBuf>,
+    },
 }
 
 fn base_name(path: &Path) -> String {
@@ -225,6 +229,7 @@ pub(crate) fn describe_discard(ask: &DiscardAsk) -> crate::prompt::Spec {
             Spec::new(format!("Discard this hunk{at} of {}?", base_name(path)), "Discard hunk")
                 .line("These lines return to their staged content. This cannot be undone.")
         }
+        DiscardAsk::Files { paths, untracked } => crate::picked::describe_discard(paths, untracked),
     }
     .danger()
 }
@@ -244,13 +249,27 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
             _ => None,
         }
     }
+    fn picked(target: &Target, staged: bool) -> Option<&Vec<PathBuf>> {
+        match target {
+            Target::Files { paths, side: Side::Staged } if staged => Some(paths),
+            Target::Files { paths, side: Side::Unstaged } if !staged => Some(paths),
+            _ => None,
+        }
+    }
+    fn plural(target: &Target, staged: bool, one: &str, many: &str) -> String {
+        match picked(target, staged) {
+            Some(paths) => many.replace("{n}", &paths.len().to_string()),
+            None => one.to_owned(),
+        }
+    }
     fn index_edit(ui: &Ui) -> Option<String> {
         busy(ui).or_else(|| ui.operation.refusal())
     }
     fn file(ui: &Ui, target: &Target, staged: bool) -> Availability {
-        match worktree(target, staged) {
-            Some(_) => Availability::unless(index_edit(ui)),
-            None => Availability::Hidden,
+        if worktree(target, staged).is_some() || picked(target, staged).is_some() {
+            Availability::unless(index_edit(ui))
+        } else {
+            Availability::Hidden
         }
     }
     fn all_of(ui: &Ui, target: &Target, staged: bool) -> Availability {
@@ -390,28 +409,38 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         Command::new(
             "file.stage",
             Group::Changes,
-            |_, _| "Stage file".into(),
+            |_, target| plural(target, false, "Stage file", "Stage {n} files"),
             |ui, target, _| file(ui, target, false),
-            |_, target| worktree(target, false).map(|path| Action::StagePath(path.clone())),
+            |_, target| {
+                worktree(target, false).map(|path| Action::StagePath(path.clone())).or_else(|| {
+                    picked(target, false).map(|paths| Action::Picked(crate::picked::Action::Stage(paths.clone())))
+                })
+            },
         )
         .icon("plus")
         .keys("s"),
         Command::new(
             "file.unstage",
             Group::Changes,
-            |_, _| "Unstage file".into(),
+            |_, target| plural(target, true, "Unstage file", "Unstage {n} files"),
             |ui, target, _| file(ui, target, true),
-            |_, target| worktree(target, true).map(|path| Action::UnstagePath(path.clone())),
+            |_, target| {
+                worktree(target, true).map(|path| Action::UnstagePath(path.clone())).or_else(|| {
+                    picked(target, true).map(|paths| Action::Picked(crate::picked::Action::Unstage(paths.clone())))
+                })
+            },
         )
         .icon("minus")
         .keys("u"),
         Command::new(
             "file.discard",
             Group::Changes,
-            |_, _| "Discard changes…".into(),
+            |_, target| plural(target, false, "Discard changes…", "Discard {n} files…"),
             |ui, target, _| file(ui, target, false),
             |_, target| {
-                worktree(target, false).map(|path| Action::AskDiscard(Discard::File(path.clone())))
+                worktree(target, false).map(|path| Action::AskDiscard(Discard::File(path.clone()))).or_else(|| {
+                    picked(target, false).map(|paths| Action::Picked(crate::picked::Action::AskDiscard(paths.clone())))
+                })
             },
         )
         .words(&["revert", "throw away"])
@@ -485,6 +514,7 @@ pub enum Action {
     Conflict(crate::conflict::Action),
     Reverse(crate::reverse::Action),
     Pick(crate::pick::Action),
+    Picked(crate::picked::Action),
     Rebase(crate::rebase::Action),
     Autostash(crate::autostash::Action),
     Explain(crate::explain::Action),
@@ -581,6 +611,7 @@ pub struct Ui {
     pub detached: bool,
     pub history: Vec<HistoryRow>,
     pub selection: Option<Selection>,
+    pub(crate) picked: Option<crate::picked::Picked<PathBuf>>,
     pub files: Vec<FileRow>,
     pub changed_paths: usize,
     pub operation: crate::operation::State,
@@ -663,6 +694,7 @@ impl Ui {
             detached: false,
             history: vec![],
             selection: None,
+            picked: None,
             files: vec![],
             changed_paths: 0,
             operation: Default::default(),
@@ -1039,8 +1071,8 @@ pub(crate) const OTHER_KEYS: &[(&str, &str)] = &[
     ("end", "Last row, or the bottom of the open file"),
     ("cmd-up", "First row"),
     ("cmd-down", "Last row"),
-    ("shift-down", "Follow the commit's first parent"),
-    ("shift-up", "Back along the first parent"),
+    ("shift-down", "Follow the commit's first parent, or pick the next file too"),
+    ("shift-up", "Back along the first parent, or pick the previous file too"),
     ("tab", "Next control"),
     ("shift-tab", "Previous control"),
     ("escape", "Close what is open"),
@@ -1708,6 +1740,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         cx.processor(move |app, range: Range<usize>, _, cx| {
             let ui = app.ui();
             let editable = ui.can_edit_index();
+            let pick = crate::picked::files(ui);
             range
                 .map(|i| {
                     if i == 0 || i == unstaged.len() + 1 {
@@ -1760,15 +1793,34 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     };
                     let f = &ui.files[index];
                     let choice = file_selection(f);
-                    let target = crate::commands::Target::File {
-                        path: f.path.clone(),
-                        side: if f.staged {
-                            crate::commands::Side::Staged
-                        } else {
-                            crate::commands::Side::Unstaged
-                        },
+                    let side = if f.staged { crate::commands::Side::Staged } else { crate::commands::Side::Unstaged };
+                    let group = pick
+                        .as_ref()
+                        .filter(|(paths, picked)| *picked == side && paths.contains(&f.path))
+                        .map(|(paths, _)| paths.clone());
+                    let target = match &group {
+                        Some(paths) => crate::commands::Target::Files { paths: paths.clone(), side },
+                        None => crate::commands::Target::File { path: f.path.clone(), side },
                     };
-                    let selected = ui.selection.as_ref() == Some(&choice);
+                    let selected = ui.selection.as_ref() == Some(&choice) || group.is_some();
+                    let (discard_action, stage_action, unstage_action, discard_tip, stage_tip, unstage_tip) = match &group {
+                        Some(paths) => (
+                            Action::Picked(crate::picked::Action::AskDiscard(paths.clone())),
+                            Action::Picked(crate::picked::Action::Stage(paths.clone())),
+                            Action::Picked(crate::picked::Action::Unstage(paths.clone())),
+                            format!("Discard {} files…", paths.len()),
+                            crate::picked::file_tip("Stage", paths.len(), "S"),
+                            crate::picked::file_tip("Unstage", paths.len(), "U"),
+                        ),
+                        None => (
+                            Action::AskDiscard(Discard::File(f.path.clone())),
+                            Action::StagePath(f.path.clone()),
+                            Action::UnstagePath(f.path.clone()),
+                            "Discard changes…".to_owned(),
+                            "Stage file (S)".to_owned(),
+                            "Unstage file (U)".to_owned(),
+                        ),
+                    };
                     let name = f
                         .path
                         .file_name()
@@ -1788,42 +1840,45 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             d.invisible().group_hover("file-row", |s| s.visible())
                         })
                         .when(editable && !f.staged, |d| {
-                            d.child(kit::icon_btn(
-                                ("discard", index),
-                                "undo",
-                                "Discard changes…",
-                                Action::AskDiscard(Discard::File(f.path.clone())),
-                                cx,
-                            ))
-                            .child(kit::icon_btn(
-                                ("stage", index),
-                                "plus",
-                                "Stage file (S)",
-                                Action::StagePath(f.path.clone()),
-                                cx,
-                            ))
+                            d.child(kit::icon_btn(("discard", index), "undo", discard_tip, discard_action, cx))
+                                .child(kit::icon_btn(("stage", index), "plus", stage_tip, stage_action, cx))
                         })
                         .when(editable && f.staged, |d| {
-                            d.child(kit::icon_btn(
-                                ("unstage", index),
-                                "minus",
-                                "Unstage file (U)",
-                                Action::UnstagePath(f.path.clone()),
-                                cx,
-                            ))
+                            d.child(kit::icon_btn(("unstage", index), "minus", unstage_tip, unstage_action, cx))
                         });
+                    let (path, staged) = (f.path.clone(), f.staged);
+                    let menu_choice = choice.clone();
+                    let picked_row = group.is_some();
                     kit::row(("file", index), selected)
                         .group("file-row")
                         .h(px(FILE_ROW))
                         .pl(px(10.))
                         .pr_2()
                         .gap_2()
-                        .on_click(
-                            cx.listener(move |app, _, w, cx| select(app, choice.clone(), w, cx)),
-                        )
+                        .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
+                            let modifiers = event.modifiers();
+                            let how = if modifiers.platform {
+                                Some(crate::picked::How::Toggle)
+                            } else if modifiers.shift {
+                                Some(crate::picked::How::Range)
+                            } else {
+                                None
+                            };
+                            match how {
+                                Some(how) => {
+                                    focus(app.ui(), w);
+                                    let path = path.clone();
+                                    app.dispatch(Action::Picked(crate::picked::Action::Click { path, staged, how }), w, cx)
+                                }
+                                None => select(app, choice.clone(), w, cx),
+                            }
+                        }))
                         .on_mouse_down(
                             MouseButton::Right,
                             cx.listener(move |app, event: &MouseDownEvent, w, cx| {
+                                if !picked_row && app.ui().selection.as_ref() != Some(&menu_choice) {
+                                    select(app, menu_choice.clone(), w, cx);
+                                }
                                 let target = target.clone();
                                 app.dispatch(
                                     Action::Menu(Some(Menu::Object { target, at: event.position })),
@@ -2229,6 +2284,9 @@ pub fn render<T: Desk>(
         }))
         .on_action(cx.listener(|app, run: &crate::commands::Choose, w, cx| {
             app.dispatch(Action::Run(run.id), w, cx)
+        }))
+        .on_action(cx.listener(|app, _: &commit_input::SelectSummary, w, cx| {
+            app.dispatch(Action::Run("file.pick-all"), w, cx)
         }))
         .on_action(cx.listener(|app, open: &crate::start::OpenRecent, w, cx| {
             if app.ui().dialog_open() {

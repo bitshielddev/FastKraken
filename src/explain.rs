@@ -64,6 +64,7 @@ pub(crate) fn repeatable(action: &view::Action) -> bool {
         A::Refs(action) => matches!(action, crate::refs::Action::Switch(_)),
         A::Clone(action) => matches!(action, crate::clone::Action::Again(_)),
         A::Commit | A::CommitAll | A::StageAll | A::UnstageAll | A::StagePath(_) | A::UnstagePath(_) => true,
+        A::Picked(action) => action.stages(),
         _ => false,
     }
 }

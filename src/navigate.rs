@@ -203,6 +203,9 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::Parent | Action::Child => {
             if zone == Zone::Graph {
                 along(tab, action == Action::Parent, window, cx);
+            } else if zone == Zone::Files && matches!(tab.ui.selection, Some(Selection::File { .. })) {
+                let delta = if action == Action::Parent { 1 } else { -1 };
+                tab.dispatch(view::Action::Picked(crate::picked::Action::Extend(delta)), window, cx);
             }
         }
         Action::Choose => choose(tab, zone, window, cx),

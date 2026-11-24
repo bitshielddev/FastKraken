@@ -32,6 +32,7 @@ mod operation;
 mod palette;
 mod perf;
 mod pick;
+mod picked;
 mod preferences;
 mod rebase;
 mod prompt;
@@ -420,6 +421,7 @@ impl Tab {
                                 })
                             })
                             .collect();
+                        picked::refresh(&mut tab.ui);
                         if let Some(Selection::File { path, staged }) = tab.ui.selection.clone() {
                             if tab
                                 .ui
@@ -493,6 +495,9 @@ impl Tab {
             && self.ui.selection.as_ref() != Some(&selection)
         {
             self.ui.diff_open = false;
+        }
+        if !picked::kept_by(&self.ui, &selection) {
+            self.ui.picked = None;
         }
         self.ui.selection = Some(selection.clone());
         stash::selected(
@@ -654,6 +659,14 @@ impl Tab {
                 Some("Changes discarded"),
                 false,
                 move |repo| repo.discard_file(&path, untracked),
+                |_, _| {},
+            ),
+            DiscardAsk::Files { paths, untracked } => self.apply_operation(
+                cx,
+                "Discarding changes…",
+                Some("Changes discarded"),
+                false,
+                move |repo| repo.discard_files(&paths, &untracked),
                 |_, _| {},
             ),
             DiscardAsk::Hunk { index, diff, .. } => self.apply_operation(
@@ -1400,6 +1413,7 @@ impl Tab {
             Action::Conflict(action) => conflict::dispatch(self, action, window, cx),
             Action::Reverse(action) => reverse::dispatch(self, action, window, cx),
             Action::Pick(action) => pick::dispatch(self, action, window, cx),
+            Action::Picked(action) => picked::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
             Action::Autostash(action) => autostash::dispatch(self, action, window, cx),
             Action::Explain(action) => explain::dispatch(self, action, window, cx),
@@ -1425,6 +1439,7 @@ impl Tab {
             Action::UnstageAll => self.mutate(cx, |repo| repo.unstage_all()),
             Action::More => self.load_history(false, cx),
             Action::Select(selection) => {
+                self.ui.picked = None;
                 self.ui.navigate.chose(&selection);
                 self.select_head = false;
                 self.ui.diff_open = matches!(selection, Selection::File { .. });
@@ -1671,7 +1686,7 @@ fn main() {
     };
     if path.as_deref() == Some("--help".as_ref()) {
         println!(
-            "fastkraken [repository]           Open the repository, in a tab of the FastKraken already running\nfastkraken                        Through the installed command: open the folder you are in\nfastkraken --acceptance-wave-1    Replay the first 16 core Git scenarios in temporary repositories\nfastkraken --acceptance-wave-2    Replay 13 stash, merge, reset and revert scenarios\nfastkraken --acceptance-wave-3    Replay five sync scenarios against local bare remotes\nfastkraken --acceptance-gap-NN    Run additional acceptance suite NN (01 to 05)\nfastkraken --measure repository   Measure a read-only walkthrough\nfastkraken --measure-edits        Measure staging and committing in a new temporary repo\nAppend -offscreen to a measure option to time native scene builds without display presentation."
+            "fastkraken [repository]           Open the repository, in a tab of the FastKraken already running\nfastkraken                        Through the installed command: open the folder you are in\nfastkraken --acceptance-wave-1    Replay the first 16 core Git scenarios in temporary repositories\nfastkraken --acceptance-wave-2    Replay 13 stash, merge, reset and revert scenarios\nfastkraken --acceptance-wave-3    Replay five sync scenarios against local bare remotes\nfastkraken --acceptance-gap-NN    Run additional acceptance suite NN (01 to 06)\nfastkraken --measure repository   Measure a read-only walkthrough\nfastkraken --measure-edits        Measure staging and committing in a new temporary repo\nAppend -offscreen to a measure option to time native scene builds without display presentation."
         );
         return;
     }

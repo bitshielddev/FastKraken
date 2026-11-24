@@ -25,6 +25,7 @@ pub(crate) enum Target {
     Stash(String),
     Remote(String),
     File { path: PathBuf, side: Side },
+    Files { paths: Vec<PathBuf>, side: Side },
     Conflict(PathBuf),
     Line { path: PathBuf, line: u32 },
 }
@@ -226,6 +227,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::init::COMMANDS,
         crate::start::COMMANDS,
         view::COMMANDS,
+        crate::picked::COMMANDS,
         crate::search::COMMANDS,
         crate::activity::COMMANDS,
         crate::sync::COMMANDS,
@@ -723,6 +725,9 @@ fn run_on<T: Desk>(app: &mut T, id: &str, targets: &[Target], window: &mut Windo
 pub(crate) fn targets(ui: &Ui) -> Vec<Target> {
     let current = Target::current(ui);
     let mut targets = Vec::new();
+    if let Some((paths, side)) = crate::picked::files(ui) {
+        targets.push(Target::Files { paths, side });
+    }
     if let Target::File { side: Side::Commit(oid), .. } = &current {
         let commit = Target::Commit(oid.clone());
         targets.push(current);

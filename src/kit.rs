@@ -450,7 +450,7 @@ pub fn pressable<T: Desk>(control: Stateful<Div>, action: Action, cx: &Context<T
 pub fn icon_btn<T: Desk>(
     id: impl Into<ElementId>,
     name: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     action: Action,
     cx: &Context<T>,
 ) -> Stateful<Div> {

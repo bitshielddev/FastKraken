@@ -3,6 +3,7 @@ mod gap02;
 mod gap03;
 mod gap04;
 mod gap05;
+mod gap06;
 mod merges;
 #[cfg(feature = "publish-replay")]
 mod publishing;
@@ -49,6 +50,7 @@ const GAP_WAVES: &[(u8, &[&str])] =
         (3, &["GAP0301", "GAP0302", "GAP0303", "GAP0304", "GAP0305", "GAP0306", "GAP0307", "GAP0308", "GAP0309", "GAP0310", "GAP0311", "GAP0312", "GAP0313", "GAP0314", "GAP0315", "GAP0316", "GAP0317", "GAP0318", "GAP0319", "GAP0320", "GAP0321"]),
         (4, &["GAP0401", "GAP0402", "GAP0403", "GAP0404", "GAP0405", "GAP0406", "GAP0407", "GAP0408", "GAP0409", "GAP0410", "GAP0411", "GAP0412", "GAP0413"]),
         (5, &["GAP0501", "GAP0502", "GAP0503", "GAP0504", "GAP0505", "GAP0506", "GAP0507", "GAP0508", "GAP0509", "GAP0510", "GAP0511", "GAP0514", "GAP0512", "GAP0513"]),
+        (6, &["GAP0601"]),
     ];
 
 #[derive(Clone, Copy)]
@@ -303,6 +305,7 @@ impl Replay<'_> {
             3 => self.gap03(dir).await,
             4 => self.gap04(dir).await,
             5 => self.gap05(dir).await,
+            6 => self.gap06(dir).await,
             _ => Err(format!("No replay is registered for gap phase {phase}.").into()),
         }
     }

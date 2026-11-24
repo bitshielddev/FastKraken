@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env,
     ffi::{OsStr, OsString},
     io::{Read, Write},
@@ -737,6 +738,74 @@ impl Repository {
                 .args(["--literal-pathspecs", "add", "--"])
                 .arg(path),
         )?;
+        Ok(())
+    }
+
+    pub(crate) fn with_paths(&self, args: &[&str], paths: &[PathBuf]) -> Result<Vec<u8>> {
+        if paths.is_empty() {
+            return Err("Select at least one file.".into());
+        }
+        let mut input = Vec::new();
+        for path in paths {
+            validate_path(path)?;
+            input.extend_from_slice(path.as_os_str().as_encoded_bytes());
+            input.push(0);
+        }
+        let mut command = self.command();
+        command
+            .arg("--literal-pathspecs")
+            .args(args)
+            .args(["--pathspec-from-file=-", "--pathspec-file-nul"]);
+        successful(run_with_input(&mut command, input).map_err(|e| format!("Run bundled Git: {e}"))?)
+    }
+
+    pub fn stage_files(&self, paths: &[PathBuf]) -> Result<()> {
+        self.ensure_index_writable()?;
+        self.with_paths(&["add"], paths).map(drop)
+    }
+
+    pub fn unstage_files(&self, paths: &[PathBuf]) -> Result<()> {
+        self.ensure_index_writable()?;
+        self.with_paths(&["reset", "--quiet"], paths).map(drop)
+    }
+
+    pub fn discard_files(&self, paths: &[PathBuf], untracked: &BTreeSet<PathBuf>) -> Result<()> {
+        const CLEANED_AT_ONCE: usize = 64;
+        self.ensure_index_writable()?;
+        if paths.is_empty() {
+            return Err("Select at least one file.".into());
+        }
+        for path in paths {
+            validate_path(path)?;
+        }
+        let listed = checked(self.read_command().args(["ls-files", "-z", "--others", "--exclude-standard"]))?;
+        let now_untracked: BTreeSet<PathBuf> = listed
+            .split(|&b| b == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(raw_path)
+            .collect();
+        for path in paths {
+            let expected = untracked.contains(path);
+            if now_untracked.contains(path) != expected {
+                return Err(format!(
+                    "{} is {} since you chose Discard. Look at it again before discarding.",
+                    path.display(),
+                    if expected { "now tracked" } else { "no longer tracked" },
+                ));
+            }
+        }
+        let (doomed, tracked): (Vec<PathBuf>, Vec<PathBuf>) =
+            paths.iter().cloned().partition(|path| untracked.contains(path));
+        if !tracked.is_empty() {
+            self.with_paths(&["restore", "--worktree"], &tracked)?;
+        }
+        for chunk in doomed.chunks(CLEANED_AT_ONCE) {
+            checked(
+                self.command()
+                    .args(["--literal-pathspecs", "clean", "--force", "--quiet", "--"])
+                    .args(chunk),
+            )?;
+        }
         Ok(())
     }
 
@@ -1915,5 +1984,160 @@ pub(crate) mod tests {
         f.repo.discard_file(Path::new("*.txt"), true).unwrap();
         assert!(!f.dir.join("*.txt").exists());
         assert!(f.dir.join("draft.txt").exists() && f.dir.join("kept.txt").exists());
+    }
+
+    fn many_names() -> Vec<PathBuf> {
+        (0..50)
+            .map(|i| match i % 5 {
+                0 => PathBuf::from(format!("notes {i}.txt")),
+                1 => PathBuf::from(format!("café/crème brûlée {i}.txt")),
+                2 => PathBuf::from(format!("日本語 {i}.md")),
+                3 => PathBuf::from(format!("-dash *{i}?.txt")),
+                _ => PathBuf::from(format!("deep/path with  spaces/[{i}] ☃.txt")),
+            })
+            .collect()
+    }
+
+    fn names(bytes: Vec<u8>) -> BTreeSet<PathBuf> {
+        bytes.split(|&b| b == 0).filter(|entry| !entry.is_empty()).map(raw_path).collect()
+    }
+
+    #[test]
+    fn staging_fifty_paths_with_spaces_and_non_ascii_names_moves_exactly_those_paths() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("base.txt"), "base\n").unwrap();
+        f.git(&["add", "--", "base.txt"]);
+        f.git(&["commit", "-qm", "base"]);
+        let head = f.git(&["rev-parse", "HEAD"]);
+        let paths = many_names();
+        for path in &paths {
+            fs::create_dir_all(f.dir.join(path).parent().unwrap()).unwrap();
+            fs::write(f.dir.join(path), format!("{}\n", path.display())).unwrap();
+        }
+        fs::write(f.dir.join("notes 1.txt"), "left alone\n").unwrap();
+        fs::write(f.dir.join("base.txt"), "edited\n").unwrap();
+
+        f.repo.stage_files(&paths).unwrap();
+        let staged = names(f.git(&["-c", "core.quotePath=false", "diff", "--cached", "--name-only", "-z"]));
+        assert_eq!(staged, paths.iter().cloned().collect::<BTreeSet<_>>());
+        assert_eq!(f.git(&["diff", "--name-only"]), b"base.txt\n");
+        assert_eq!(f.git(&["ls-files", "--others", "--exclude-standard"]), b"notes 1.txt\n");
+        assert_eq!(fs::read(f.dir.join(&paths[1])).unwrap(), format!("{}\n", paths[1].display()).into_bytes());
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+
+        f.repo.unstage_files(&paths[..20]).unwrap();
+        let staged = names(f.git(&["diff", "--cached", "--name-only", "-z"]));
+        assert_eq!(staged, paths[20..].iter().cloned().collect::<BTreeSet<_>>());
+        assert!(paths.iter().all(|path| f.dir.join(path).exists()));
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    }
+
+    #[test]
+    fn staging_and_unstaging_several_files_works_before_the_first_commit_and_stages_deletions() {
+        let f = Fixture::new();
+        let paths = [PathBuf::from("one.txt"), PathBuf::from("two words.txt")];
+        for path in &paths {
+            fs::write(f.dir.join(path), "new\n").unwrap();
+        }
+        f.repo.stage_files(&paths).unwrap();
+        assert_eq!(names(f.git(&["ls-files", "-z"])), paths.iter().cloned().collect());
+        f.repo.unstage_files(&paths).unwrap();
+        assert!(f.git(&["ls-files", "-z"]).is_empty());
+
+        f.repo.stage_files(&paths).unwrap();
+        f.git(&["commit", "-qm", "both"]);
+        fs::remove_file(f.dir.join(&paths[0])).unwrap();
+        fs::write(f.dir.join(&paths[1]), "edited\n").unwrap();
+        f.repo.stage_files(&paths).unwrap();
+        assert_eq!(f.git(&["diff", "--cached", "--name-status"]), b"D\tone.txt\nM\ttwo words.txt\n");
+    }
+
+    #[test]
+    fn staging_several_files_is_refused_during_a_conflict_or_for_a_path_outside_the_repository() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("trail.txt"), "base\n").unwrap();
+        fs::write(f.dir.join("other.txt"), "other\n").unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        f.git(&["switch", "-q", "-c", "side"]);
+        fs::write(f.dir.join("trail.txt"), "side\n").unwrap();
+        f.git(&["commit", "-qam", "side"]);
+        f.git(&["switch", "-q", "main"]);
+        fs::write(f.dir.join("trail.txt"), "main\n").unwrap();
+        f.git(&["commit", "-qam", "main"]);
+        assert!(!f.repo.command().args(["merge", "-q", "side"]).output().unwrap().status.success());
+        fs::write(f.dir.join("other.txt"), "edited\n").unwrap();
+        let index = f.git(&["ls-files", "--stage", "-z"]);
+        let paths = [PathBuf::from("other.txt"), PathBuf::from("trail.txt")];
+        let refusal = "Finish or abort the merge first.";
+        assert_eq!(f.repo.stage_files(&paths).unwrap_err(), refusal);
+        assert_eq!(f.repo.unstage_files(&paths).unwrap_err(), refusal);
+        assert_eq!(f.repo.discard_files(&paths, &BTreeSet::new()).unwrap_err(), refusal);
+        assert_eq!(f.git(&["ls-files", "--stage", "-z"]), index);
+        assert_eq!(fs::read(f.dir.join("other.txt")).unwrap(), b"edited\n");
+
+        f.git(&["merge", "--abort"]);
+        let index = f.git(&["ls-files", "--stage", "-z"]);
+        let outside = [PathBuf::from("other.txt"), PathBuf::from("../escape.txt")];
+        assert!(f.repo.stage_files(&outside).is_err());
+        assert!(f.repo.stage_files(&[]).is_err());
+        assert_eq!(f.git(&["ls-files", "--stage", "-z"]), index);
+    }
+
+    #[test]
+    fn discarding_several_files_restores_tracked_ones_deletes_untracked_ones_and_keeps_staged_changes() {
+        let f = Fixture::new();
+        for name in ["a.txt", "b c.txt", "kept.txt"] {
+            fs::write(f.dir.join(name), "base\n").unwrap();
+        }
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        let head = f.git(&["rev-parse", "HEAD"]);
+        fs::write(f.dir.join("a.txt"), "staged\n").unwrap();
+        f.git(&["add", "--", "a.txt"]);
+        fs::write(f.dir.join("a.txt"), "staged and more\n").unwrap();
+        fs::write(f.dir.join("b c.txt"), "edited\n").unwrap();
+        fs::write(f.dir.join("kept.txt"), "edited too\n").unwrap();
+        fs::write(f.dir.join("new é.txt"), "new\n").unwrap();
+        fs::write(f.dir.join("other new.txt"), "new\n").unwrap();
+        let paths = [PathBuf::from("a.txt"), PathBuf::from("b c.txt"), PathBuf::from("new é.txt")];
+        let untracked = BTreeSet::from([PathBuf::from("new é.txt")]);
+
+        f.repo.discard_files(&paths, &untracked).unwrap();
+        assert_eq!(fs::read(f.dir.join("a.txt")).unwrap(), b"staged\n");
+        assert_eq!(f.git(&["show", ":a.txt"]), b"staged\n");
+        assert_eq!(fs::read(f.dir.join("b c.txt")).unwrap(), b"base\n");
+        assert!(!f.dir.join("new é.txt").exists());
+        assert_eq!(fs::read(f.dir.join("kept.txt")).unwrap(), b"edited too\n");
+        assert!(f.dir.join("other new.txt").exists());
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    }
+
+    #[test]
+    fn discarding_several_files_changes_nothing_when_one_is_no_longer_what_the_prompt_described() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("tracked.txt"), "base\n").unwrap();
+        f.git(&["add", "--", "tracked.txt"]);
+        f.git(&["commit", "-qm", "base"]);
+        fs::write(f.dir.join("tracked.txt"), "edited\n").unwrap();
+        fs::write(f.dir.join("draft.txt"), "draft\n").unwrap();
+        fs::write(f.dir.join("scratch.txt"), "scratch\n").unwrap();
+        let paths = [PathBuf::from("tracked.txt"), PathBuf::from("draft.txt"), PathBuf::from("scratch.txt")];
+        let untracked = BTreeSet::from([PathBuf::from("draft.txt"), PathBuf::from("scratch.txt")]);
+        f.git(&["add", "--", "draft.txt"]);
+        let index = f.git(&["ls-files", "--stage", "-z"]);
+
+        let err = f.repo.discard_files(&paths, &untracked).unwrap_err();
+        assert!(err.contains("draft.txt is now tracked"), "{err}");
+        assert_eq!(fs::read(f.dir.join("tracked.txt")).unwrap(), b"edited\n");
+        assert_eq!(fs::read(f.dir.join("scratch.txt")).unwrap(), b"scratch\n");
+        assert_eq!(fs::read(f.dir.join("draft.txt")).unwrap(), b"draft\n");
+        assert_eq!(f.git(&["ls-files", "--stage", "-z"]), index);
+
+        f.git(&["rm", "-q", "--cached", "--", "tracked.txt"]);
+        let only_tracked = [PathBuf::from("tracked.txt")];
+        let err = f.repo.discard_files(&only_tracked, &BTreeSet::new()).unwrap_err();
+        assert!(err.contains("no longer tracked"), "{err}");
+        assert_eq!(fs::read(f.dir.join("tracked.txt")).unwrap(), b"edited\n");
     }
 }
