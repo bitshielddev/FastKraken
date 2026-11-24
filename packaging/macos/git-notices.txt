@@ -1,0 +1,23 @@
+FastKraken private Git runtime
+
+The Apple Silicon build packages Git 2.56.1 from the GitHub Desktop project's
+portable Git build. The exact Git source is commit
+03b41523c576f26ad34085378717a0c1b287470f. The build scripts are from
+dugite-native commit 238326e93b097bb31e138a75dbec433d789ef7a2.
+See the accompanying Git-COPYING and dugite-native-LICENSE files.
+
+Git source and build-script archives accompany this app in the sibling
+Git-sources directory. The build downloads and verifies these exact archives.
+
+Git source
+https://github.com/git/git/tree/03b41523c576f26ad34085378717a0c1b287470f
+
+Build scripts
+https://github.com/desktop/dugite-native/tree/238326e93b097bb31e138a75dbec433d789ef7a2
+
+Original binary distribution
+https://github.com/desktop/dugite-native/releases/tag/v2.56.1
+
+FastKraken packages the Git executable, Git's own helper commands and templates.
+The optional Git LFS and Git Credential Manager distributions in the upstream
+archive are omitted.
