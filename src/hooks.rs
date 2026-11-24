@@ -52,23 +52,32 @@ impl Repository {
 }
 
 pub(crate) fn may_run(command: &Command) -> bool {
+    subcommand(command).is_some_and(|name| HOOKED.contains(&name))
+}
+
+fn subcommand(command: &Command) -> Option<&str> {
     let mut args = command.get_args();
     while let Some(arg) = args.next() {
         if arg == "-c" || arg == "-C" {
             args.next();
             continue;
         }
-        let Some(arg) = arg.to_str() else { return false };
+        let arg = arg.to_str()?;
         if !arg.starts_with('-') {
-            return HOOKED.contains(&arg);
+            return Some(arg);
         }
     }
-    false
+    None
+}
+
+fn exits_with_post_hooks(command: &Command) -> bool {
+    matches!(subcommand(command), Some("checkout" | "switch"))
 }
 
 pub(crate) struct Trace {
     path: tempfile::TempPath,
     link: Option<Link>,
+    post_hooks_count: bool,
     stop: Arc<AtomicBool>,
     watcher: Option<thread::JoinHandle<()>>,
 }
@@ -76,13 +85,14 @@ pub(crate) struct Trace {
 impl Trace {
     pub(crate) fn attach(command: &mut Command, link: Option<&Link>) -> Option<Self> {
         let path = tempfile::Builder::new().prefix("fastkraken-hooks-").suffix(".json").tempfile().ok()?.into_temp_path();
+        let post_hooks_count = exits_with_post_hooks(command);
         command.env("GIT_TRACE2_EVENT", &path);
         let stop = Arc::new(AtomicBool::new(false));
         let watcher = link.cloned().map(|link| {
             let (file, stop) = (path.to_path_buf(), stop.clone());
             thread::spawn(move || watch(&file, &link, &stop))
         });
-        Some(Self { path, link: link.cloned(), stop, watcher })
+        Some(Self { path, link: link.cloned(), post_hooks_count, stop, watcher })
     }
 
     pub(crate) fn finish(mut self) -> Vec<Ran> {
@@ -95,7 +105,9 @@ impl Trace {
         }
         let ran = events.ran();
         if let Some(link) = &self.link {
-            link.hooks_ran(&ran);
+            let counted: Vec<Ran> =
+                ran.iter().filter(|ran| self.post_hooks_count || !ran.hook.starts_with("post-")).cloned().collect();
+            link.hooks_ran(&counted);
         }
         ran
     }
@@ -658,6 +670,41 @@ mod tests {
         let untraced = Link::new(false);
         untraced.enter(|| crate::repository::checked(f.repo.read_command().args(["status", "--porcelain=v2"]))).unwrap();
         assert!(untraced.ran().is_empty());
+    }
+
+    #[test]
+    fn a_hook_whose_exit_git_ignores_is_not_blamed_for_a_later_failure() {
+        let f = Fixture::new();
+        staged(&f, "camp.txt", "tent\n");
+        f.repo.commit("Pitch the tent").unwrap();
+        f.git(&["switch", "-qc", "side"]);
+        staged(&f, "camp.txt", "tarp\n");
+        f.repo.commit("Swap for a tarp").unwrap();
+        f.git(&["switch", "-q", "main"]);
+        staged(&f, "camp.txt", "canvas\n");
+        f.repo.commit("Swap for canvas").unwrap();
+        let main = String::from_utf8(f.git(&["rev-parse", "main"])).unwrap().trim().to_owned();
+        f.git(&["switch", "-q", "side"]);
+        let hooks = hooked(&f);
+        hook(&hooks, "post-checkout", "echo 'refreshing the map'\nexit 1\n");
+        hook(&hooks, "post-commit", "exit 1\n");
+        let link = Link::new(false);
+        let conflict = link.enter(|| crate::rebase::replay(&f.repo, &main, false, None, false)).unwrap_err();
+        assert!(conflict.text.starts_with("The rebase stopped on a conflict"), "{}", conflict.text);
+        let shown = named(conflict, &link.ran(), None).notice();
+        assert!(shown.title.starts_with("The rebase stopped on a conflict"), "{}", shown.title);
+        f.git(&["rebase", "--abort"]);
+
+        let link = Link::new(false);
+        staged(&f, "stove.txt", "gas\n");
+        link.enter(|| f.repo.commit("Light the stove")).unwrap();
+        let later = named(Failure::from("Changes committed — Git could not put your local changes back".to_owned()), &link.ran(), None);
+        assert!(later.plain.is_none());
+
+        let link = Link::new(false);
+        let switched = link.enter(|| crate::repository::checked(f.repo.command().args(["switch", "-q", "main"]))).unwrap_err();
+        let failure = named(Failure::from(switched), &link.ran(), None).notice();
+        assert_eq!(failure.title, "post-checkout failed");
     }
 
     #[test]
