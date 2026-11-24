@@ -131,6 +131,7 @@ pub struct FileRow {
     pub path: PathBuf,
     pub staged: bool,
     pub status: &'static str,
+    pub from: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -812,6 +813,18 @@ impl Ui {
     pub fn set_draft(&self, draft: &CommitDraft, cx: &mut App) {
         self.input.update(cx, |input, cx| input.set_text(&draft.summary, cx));
         self.description.update(cx, |input, cx| input.set_text(&draft.description, cx));
+    }
+
+    pub(crate) fn renamed_from(&self, selection: &Selection, commit_path: Option<&Path>) -> Option<PathBuf> {
+        match selection {
+            Selection::File { path, staged } => self
+                .files
+                .iter()
+                .find(|file| file.path == *path && file.staged == *staged)
+                .and_then(|file| file.from.clone()),
+            Selection::Commit(oid) => self.inspection.from(oid, commit_path?),
+            Selection::Changes | Selection::Stash(_) => None,
+        }
     }
 
     pub fn checked_out_branch(&self) -> Option<&str> {
@@ -1822,17 +1835,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             "Unstage file (U)".to_owned(),
                         ),
                     };
-                    let name = f
-                        .path
-                        .file_name()
-                        .unwrap_or(f.path.as_os_str())
-                        .to_string_lossy()
-                        .into_owned();
-                    let folder = f
-                        .path
-                        .parent()
-                        .map(|parent| parent.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                    let label = kit::file_label(("file-label", index), f.status, &f.path, f.from.as_deref());
                     let actions = div()
                         .flex()
                         .flex_shrink_0()
@@ -1896,15 +1899,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                 )
                             }),
                         )
-                        .child(kit::badge(f.status))
-                        .child(kit::fit(name).size(12.5).cut(kit::Cut::Middle))
-                        .child(
-                            kit::fit(folder)
-                                .size(11.5)
-                                .color(TEXT_3)
-                                .cut(kit::Cut::Start)
-                                .grow(),
-                        )
+                        .child(label)
                         .child(actions)
                         .into_any_element()
                 })

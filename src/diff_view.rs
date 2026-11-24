@@ -8,6 +8,8 @@ use gpui::{
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
+pub(crate) const WHOLE_RENAME: &str = "Unstage the file to stage parts of it";
+
 #[derive(Clone, Debug)]
 pub struct DiffLine {
     pub text: String,
@@ -102,6 +104,8 @@ impl Layout {
                 && !new.is_empty()
             {
                 (Kind::Context, old.next().unwrap_or(0), new.next().unwrap_or(0))
+            } else if renaming(text, files > 1) {
+                continue;
             } else if text.is_empty()
                 || [
                     "index ",
@@ -348,6 +352,11 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     let committed_file = matches!(ui.selection, Some(Selection::Commit(_)))
         .then(|| ui.inspection.path.clone())
         .flatten();
+    let from = ui
+        .selection
+        .as_ref()
+        .and_then(|selection| ui.renamed_from(selection, committed_file.as_deref()));
+    let whole_rename = from.is_some() && side == Some(true);
     let heading = if ui.diff_title.is_empty() {
         "Changes".to_owned()
     } else {
@@ -377,6 +386,14 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             .weight(FontWeight::SEMIBOLD)
             .cut(kit::Cut::Start),
         )
+        .when_some(from.clone(), |d, from| {
+            d.child(
+                kit::fit(format!("from {}", from.display()))
+                    .size(11.5)
+                    .color(TEXT_3)
+                    .cut(kit::Cut::Start),
+            )
+        })
         .when_some(side, |d, staged| {
             d.child(kit::chip(
                 kit::Chip::Plain,
@@ -403,12 +420,14 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                         .enabled(editable)
                         .on(Action::StageFile, cx),
                 ),
-            Selection::File { path, staged: true } => d.child(
-                kit::btn("unstage-file", "Unstage file")
-                    .small()
-                    .enabled(editable)
-                    .on(Action::UnstagePath(path), cx),
-            ),
+            Selection::File { path, staged: true } => d
+                .when(whole_rename, |d| d.child(kit::muted(WHOLE_RENAME)))
+                .child(
+                    kit::btn("unstage-file", "Unstage file")
+                        .small()
+                        .enabled(editable)
+                        .on(Action::UnstagePath(path), cx),
+                ),
             _ => d,
         })
         .when_some(edit_button(ui, cx), |d, button| d.child(button))
@@ -551,11 +570,11 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             )
         })
         .when(!listing_history && empty && !ui.loading_diff, |d| {
-            d.child(
-                div()
-                    .p_4()
-                    .child(kit::muted("No text changes to show for this selection.")),
-            )
+            d.child(div().p_4().child(kit::muted(if from.is_some() {
+                "Renamed with no changes to its content."
+            } else {
+                "No text changes to show for this selection."
+            })))
         })
         .when(!listing_history && !empty, |d| {
             d.when(split, |d| d.child(split_headings())).child(lines)
@@ -725,6 +744,14 @@ fn note(text: &str) -> impl IntoElement {
         .color(TEXT_3)
 }
 
+fn renaming(text: &str, several: bool) -> bool {
+    let origin = ["rename from ", "copy from "].iter().any(|header| text.starts_with(header));
+    (origin && !several)
+        || ["similarity index ", "dissimilarity index ", "rename to ", "copy to "]
+            .iter()
+            .any(|header| text.starts_with(header))
+}
+
 fn hunk_row<T: Desk>(
     line: &DiffLine,
     side: Option<bool>,
@@ -828,7 +855,7 @@ mod tests {
     #[test]
     fn a_staged_line_is_offered_only_while_the_working_tree_has_the_same_lines() {
         use crate::commands::Target;
-        let row = |staged| super::super::FileRow { path: "trail.txt".into(), staged, status: "M" };
+        let row = |staged| super::super::FileRow { path: "trail.txt".into(), staged, status: "M", from: None };
         let selected = |staged| Some(Selection::File { path: "trail.txt".into(), staged });
         let line = Some(Target::Line { path: "trail.txt".into(), line: 2 });
         assert_eq!(line_target(&selected(false), &[row(false)], 2), line);
@@ -901,5 +928,29 @@ mod tests {
         ]);
         assert_eq!(layout.unified[9].kind, Kind::Note);
         assert_eq!(layout.unified[8].new, 1);
+    }
+
+    #[test]
+    fn rename_headers_are_hidden_for_one_file_and_name_the_old_path_among_several() {
+        let one = Layout::new(&patch(concat!(
+            "diff --git a/old.txt b/new.txt\nsimilarity index 85%\nrename from old.txt\nrename to new.txt\n",
+            "index 012..345 100644\n--- a/old.txt\n+++ b/new.txt\n@@ -1 +1 @@\n-four\n+FOUR\n",
+        )));
+        let kinds: Vec<Kind> = one.unified.iter().map(|row| row.kind).collect();
+        assert_eq!(kinds, [Kind::Hunk, Kind::Deleted, Kind::Added]);
+
+        let lines = patch(concat!(
+            "diff --git a/old.txt b/new.txt\nsimilarity index 100%\nrename from old.txt\nrename to new.txt\n",
+            "diff --git a/kept.txt b/kept.txt\n--- a/kept.txt\n+++ b/kept.txt\n@@ -1 +1 @@\n-a\n+b\n",
+        ));
+        let several = Layout::new(&lines);
+        let notes: Vec<&str> = several
+            .unified
+            .iter()
+            .filter(|row| row.kind == Kind::Note)
+            .map(|row| lines[row.line].text.as_str())
+            .collect();
+        assert_eq!(notes, ["rename from old.txt"]);
+        assert_eq!(several.unified.iter().filter(|row| row.kind == Kind::File).count(), 2);
     }
 }

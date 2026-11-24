@@ -420,6 +420,7 @@ impl Tab {
                                     path: file.path,
                                     staged,
                                     status: file.status,
+                                    from: file.from,
                                 })
                             })
                             .collect();
@@ -553,21 +554,25 @@ impl Tab {
         cx.notify();
         let ticket = self.diff_ticket;
         let epoch = self.epoch;
+        let from = self.ui.renamed_from(&selection, commit_path.as_deref());
         Self::work(
             cx,
             move || {
                 let diff = match &selection {
                     Selection::Commit(oid) => match commit_path {
-                        Some(path) => repo.commit_path_diff(oid, &path),
+                        Some(path) => repo.commit_path_diff(oid, &path, from.as_deref()),
                         None => repo.commit_diff(oid),
                     },
-                    Selection::File { path, staged } => repo.file_diff(path, *staged),
+                    Selection::File { path, staged } => match (&from, staged) {
+                        (Some(from), true) => repo.staged_rename_diff(from, path),
+                        _ => repo.file_diff(path, *staged),
+                    },
                     Selection::Stash(oid) => repo.stash_diff(oid),
                     Selection::Changes => return Err("Select a file to see its changes.".into()),
                 }?;
                 const LINE_LIMIT: usize = 4096;
                 let limited = diff.text.lines().any(|s| s.len() > LINE_LIMIT);
-                let stageable = !limited && matches!(selection, Selection::File { .. });
+                let stageable = !limited && diff.stageable() && matches!(selection, Selection::File { .. });
                 let mut headers = diff.hunks.iter().enumerate().peekable();
                 let lines: Vec<_> = diff
                     .text

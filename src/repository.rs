@@ -13,16 +13,18 @@ use std::{
 type Result<T> = std::result::Result<T, String>;
 const MAX_DIFF_BYTES: usize = 1024 * 1024;
 const SSH_TIMEOUTS: &str = "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2";
-pub(crate) const PATCH_OPTIONS: &[&str] = &[
-    "--no-color",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--no-renames",
-    "--full-index",
-    "--unified=3",
-    "--src-prefix=a/",
-    "--dst-prefix=b/",
-];
+pub(crate) fn patch_options(renames: bool) -> [&'static str; 8] {
+    [
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        if renames { "--find-renames" } else { "--no-renames" },
+        "--full-index",
+        "--unified=3",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+    ]
+}
 
 #[derive(Clone, Debug)]
 pub struct Repository {
@@ -150,7 +152,10 @@ pub struct Status {
 pub struct ChangedFile {
     pub path: PathBuf,
     pub status: &'static str,
+    pub from: Option<PathBuf>,
 }
+
+pub(crate) const RENAMED: &str = "Renamed";
 
 fn status_label(code: u8) -> &'static str {
     match code {
@@ -158,6 +163,8 @@ fn status_label(code: u8) -> &'static str {
         b'D' => "Deleted",
         b'T' => "Type changed",
         b'U' => "Conflicted",
+        b'R' => RENAMED,
+        b'C' => "Copied",
         b'?' => "Untracked",
         _ => "Modified",
     }
@@ -171,6 +178,12 @@ pub struct Diff {
     staged: bool,
     bytes: Vec<u8>,
     prefix: Range<usize>,
+}
+
+impl Diff {
+    pub fn stageable(&self) -> bool {
+        self.source.is_some()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -506,12 +519,15 @@ impl Repository {
             "--branch",
             "--no-ahead-behind",
             "--untracked-files=all",
-            "--no-renames",
             "-z",
         ]))?;
         let mut result = Status::default();
         let mut unmerged = false;
-        for entry in output.split(|&b| b == 0).filter(|entry| !entry.is_empty()) {
+        let mut entries = output.split(|&b| b == 0);
+        while let Some(entry) = entries.next() {
+            if entry.is_empty() {
+                continue;
+            }
             if let Some(name) = entry.strip_prefix(b"# branch.head ") {
                 result.branch = String::from_utf8_lossy(name).into_owned();
                 result.head_ref = if name == b"(detached)" {
@@ -530,15 +546,27 @@ impl Repository {
                 result.unstaged.push(ChangedFile {
                     path: raw_path(path),
                     status: status_label(b'?'),
+                    from: None,
                 });
-            } else if matches!(entry.first(), Some(b'1' | b'u')) {
+            } else if matches!(entry.first(), Some(b'1' | b'2' | b'u')) {
                 unmerged |= entry[0] == b'u';
-                let count = if entry[0] == b'u' { 11 } else { 9 };
+                let count = match entry[0] {
+                    b'u' => 11,
+                    b'2' => 10,
+                    _ => 9,
+                };
                 let fields: Vec<_> = entry.splitn(count, |&b| b == b' ').collect();
                 if fields.len() != count || fields[1].len() != 2 {
                     return Err("Invalid Git status record".into());
                 }
                 let path = raw_path(fields[count - 1]);
+                let from = match entry[0] {
+                    b'2' => Some(raw_path(
+                        entries.next().filter(|from| !from.is_empty()).ok_or("Invalid Git status record")?,
+                    )),
+                    _ => None,
+                };
+                let paired = |code: u8| from.clone().filter(|_| matches!(code, b'R' | b'C'));
                 result.changed_paths += 1;
                 let label = |code| {
                     if entry[0] == b'u' {
@@ -551,12 +579,14 @@ impl Repository {
                     result.staged.push(ChangedFile {
                         path: path.clone(),
                         status: label(fields[1][0]),
+                        from: paired(fields[1][0]),
                     });
                 }
                 if fields[1][1] != b'.' {
                     result.unstaged.push(ChangedFile {
                         path,
                         status: label(fields[1][1]),
+                        from: paired(fields[1][1]),
                     });
                 }
             }
@@ -575,15 +605,18 @@ impl Repository {
     }
 
     pub fn commit_diff(&self, oid: &str) -> Result<Diff> {
-        self.commit_patch(oid, None)
+        self.commit_patch(oid, None, None)
     }
 
-    pub fn commit_path_diff(&self, oid: &str, path: &Path) -> Result<Diff> {
+    pub fn commit_path_diff(&self, oid: &str, path: &Path, from: Option<&Path>) -> Result<Diff> {
         validate_path(path)?;
-        self.commit_patch(oid, Some(path))
+        if let Some(from) = from {
+            validate_path(from)?;
+        }
+        self.commit_patch(oid, Some(path), from)
     }
 
-    fn commit_patch(&self, oid: &str, path: Option<&Path>) -> Result<Diff> {
+    fn commit_patch(&self, oid: &str, path: Option<&Path>, from: Option<&Path>) -> Result<Diff> {
         validate_oid(oid)?;
         let mut cmd = self.read_command();
         cmd.args([
@@ -594,9 +627,10 @@ impl Repository {
             "--root",
             "--patch",
         ])
-        .args(PATCH_OPTIONS)
+        .args(patch_options(true))
         .arg(oid)
         .arg("--")
+        .args(from)
         .args(path);
         read_diff(cmd, None, false)
     }
@@ -604,7 +638,7 @@ impl Repository {
     pub fn file_diff(&self, path: &Path, staged: bool) -> Result<Diff> {
         validate_path(path)?;
         let mut cmd = self.read_command();
-        cmd.arg("diff").args(PATCH_OPTIONS);
+        cmd.arg("diff").args(patch_options(false));
         if staged {
             cmd.arg("--cached");
         }
@@ -634,10 +668,24 @@ impl Repository {
         }
         let mut cmd = self.read_command();
         cmd.args(["diff", "--no-index"])
-            .args(PATCH_OPTIONS)
+            .args(patch_options(false))
             .args(["--", "/dev/null"])
             .arg(path);
         read_diff(cmd, source, true)
+    }
+
+    pub fn staged_rename_diff(&self, from: &Path, path: &Path) -> Result<Diff> {
+        validate_path(from)?;
+        validate_path(path)?;
+        let mut cmd = self.read_command();
+        cmd.args(["diff", "--cached"])
+            .args(patch_options(true))
+            .arg("--")
+            .arg(from)
+            .arg(path);
+        let mut diff = read_diff(cmd, None, false)?;
+        diff.staged = true;
+        Ok(diff)
     }
 
     pub fn stage_hunk(&self, diff: &Diff, index: usize) -> Result<()> {
@@ -693,14 +741,15 @@ impl Repository {
     }
 
     pub fn unstage_file(&self, path: &Path) -> Result<()> {
-        self.ensure_index_writable()?;
-        validate_path(path)?;
-        checked(
-            self.command()
-                .args(["--literal-pathspecs", "reset", "--quiet", "--"])
-                .arg(path),
-        )?;
-        Ok(())
+        self.unstage_files(&[path.to_owned()])
+    }
+
+    pub(crate) fn with_origins(&self, paths: &[PathBuf], staged: bool) -> Result<Vec<PathBuf>> {
+        for path in paths {
+            validate_path(path)?;
+        }
+        let status = self.status()?;
+        Ok(with_origins(if staged { &status.staged } else { &status.unstaged }, paths))
     }
 
     pub fn discard_file(&self, path: &Path, untracked: bool) -> Result<()> {
@@ -731,14 +780,7 @@ impl Repository {
     }
 
     pub fn stage_file(&self, path: &Path) -> Result<()> {
-        self.ensure_index_writable()?;
-        validate_path(path)?;
-        checked(
-            self.command()
-                .args(["--literal-pathspecs", "add", "--"])
-                .arg(path),
-        )?;
-        Ok(())
+        self.stage_files(&[path.to_owned()])
     }
 
     pub(crate) fn with_paths(&self, args: &[&str], paths: &[PathBuf]) -> Result<Vec<u8>> {
@@ -756,12 +798,14 @@ impl Repository {
 
     pub fn stage_files(&self, paths: &[PathBuf]) -> Result<()> {
         self.ensure_index_writable()?;
-        self.with_paths(&["add"], paths).map(drop)
+        let paths = self.with_origins(paths, false)?;
+        self.with_paths(&["add"], &paths).map(drop)
     }
 
     pub fn unstage_files(&self, paths: &[PathBuf]) -> Result<()> {
         self.ensure_index_writable()?;
-        self.with_paths(&["reset", "--quiet"], paths).map(drop)
+        let paths = self.with_origins(paths, true)?;
+        self.with_paths(&["reset", "--quiet"], &paths).map(drop)
     }
 
     #[cfg(test)]
@@ -919,6 +963,23 @@ fn version_of(output: &str) -> Option<String> {
     version.starts_with(|c: char| c.is_ascii_digit()).then(|| version.to_owned())
 }
 
+pub(crate) fn with_origins(files: &[ChangedFile], paths: &[PathBuf]) -> Vec<PathBuf> {
+    let chosen: BTreeSet<&PathBuf> = paths.iter().collect();
+    let mut all = paths.to_vec();
+    let mut added = BTreeSet::new();
+    for file in files {
+        if file.status == RENAMED
+            && chosen.contains(&file.path)
+            && let Some(from) = &file.from
+            && !chosen.contains(from)
+            && added.insert(from.clone())
+        {
+            all.push(from.clone());
+        }
+    }
+    all
+}
+
 pub(crate) fn nul_separated(paths: &[PathBuf], prefix: &[u8]) -> Result<Vec<u8>> {
     if paths.is_empty() {
         return Err("Select at least one file.".into());
@@ -960,23 +1021,33 @@ pub(crate) fn parse_changed_files(paths: &[u8]) -> Result<Vec<ChangedFile>> {
             .ok_or("Incomplete changed-file list")?;
         let mut records = paths.split(|&b| b == 0);
         while let Some(code) = records.next() {
-            let status = match code {
-                b"A" => "Added",
-                b"D" => "Deleted",
-                b"M" => "Modified",
-                b"T" => "Type changed",
-                other => {
-                    return Err(format!(
-                        "Unknown file status {}",
-                        String::from_utf8_lossy(other)
-                    ));
-                }
-            };
-            let path = raw_path(records.next().ok_or("Missing changed path")?);
-            files.push(ChangedFile { status, path });
+            let code = code.strip_prefix(b"\n").unwrap_or(code);
+            let status = changed_status(code).ok_or_else(|| {
+                format!("Unknown file status {}", String::from_utf8_lossy(code))
+            })?;
+            let mut path = || records.next().map(raw_path).ok_or("Missing changed path");
+            let from = if paired_status(code) { Some(path()?) } else { None };
+            files.push(ChangedFile { status, path: path()?, from });
         }
     }
     Ok(files)
+}
+
+pub(crate) fn changed_status(code: &[u8]) -> Option<&'static str> {
+    let scored = |rest: &[u8]| rest.iter().all(u8::is_ascii_digit);
+    Some(match code {
+        b"A" => "Added",
+        b"D" => "Deleted",
+        b"M" => "Modified",
+        b"T" => "Type changed",
+        [b'R', rest @ ..] if scored(rest) => RENAMED,
+        [b'C', rest @ ..] if scored(rest) => "Copied",
+        _ => return None,
+    })
+}
+
+pub(crate) fn paired_status(code: &[u8]) -> bool {
+    matches!(code.first(), Some(b'R' | b'C'))
 }
 
 pub(crate) fn raw_path(bytes: &[u8]) -> PathBuf {
@@ -1443,7 +1514,8 @@ pub(crate) mod tests {
             f.repo.status().unwrap().unstaged,
             [ChangedFile {
                 path: name.into(),
-                status: "Untracked"
+                status: "Untracked",
+                from: None
             }]
         );
         assert!(f.repo.history(0, 10).unwrap().is_empty());
@@ -1474,7 +1546,8 @@ pub(crate) mod tests {
             status.staged,
             [ChangedFile {
                 path: name.into(),
-                status: "Modified"
+                status: "Modified",
+                from: None
             }]
         );
         assert_eq!(status.unstaged, status.staged);
@@ -2159,5 +2232,186 @@ pub(crate) mod tests {
         let err = f.repo.discard_files(&only_tracked, &BTreeSet::new()).unwrap_err();
         assert!(err.contains("no longer tracked"), "{err}");
         assert_eq!(fs::read(f.dir.join("tracked.txt")).unwrap(), b"edited\n");
+    }
+
+    const TRAIL: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
+
+    fn renamed(f: &Fixture, from: &str, to: &str) {
+        fs::write(f.dir.join(from), TRAIL).unwrap();
+        fs::write(f.dir.join("other.txt"), "other\n").unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        if let Some(folder) = Path::new(to).parent() {
+            fs::create_dir_all(f.dir.join(folder)).unwrap();
+        }
+        f.git(&["mv", "--", from, to]);
+        fs::write(f.dir.join(to), TRAIL.replace("four", "FOUR")).unwrap();
+        f.git(&["add", "--", to]);
+    }
+
+    fn changed_lines(diff: &Diff) -> Vec<&str> {
+        diff.text
+            .lines()
+            .filter(|line| (line.starts_with('+') || line.starts_with('-')) && !line.starts_with("+++") && !line.starts_with("---"))
+            .collect()
+    }
+
+    #[test]
+    fn a_staged_rename_with_an_edit_is_one_row_and_its_diff_shows_only_the_changed_lines() {
+        let f = Fixture::new();
+        renamed(&f, "trail map.txt", "maps/trail é.txt");
+        let status = f.repo.status().unwrap();
+        assert_eq!(
+            status.staged,
+            [ChangedFile {
+                path: "maps/trail é.txt".into(),
+                status: RENAMED,
+                from: Some("trail map.txt".into()),
+            }]
+        );
+        assert!(status.unstaged.is_empty());
+        assert_eq!(status.changed_paths, 1);
+        let diff = f.repo.staged_rename_diff(Path::new("trail map.txt"), Path::new("maps/trail é.txt")).unwrap();
+        assert_eq!(changed_lines(&diff), ["-four", "+FOUR"]);
+        assert!(diff.text.contains("rename from trail map.txt"));
+        assert!(!diff.stageable());
+        assert!(f.repo.file_diff(Path::new("maps/trail é.txt"), true).unwrap().stageable());
+
+        fs::write(f.dir.join("maps/trail é.txt"), TRAIL.replace("four", "FOUR").replace("nine", "NINE")).unwrap();
+        let status = f.repo.status().unwrap();
+        assert_eq!(status.staged[0].from.as_deref(), Some(Path::new("trail map.txt")));
+        assert_eq!(
+            status.unstaged,
+            [ChangedFile { path: "maps/trail é.txt".into(), status: "Modified", from: None }]
+        );
+        assert_eq!(changed_lines(&f.repo.file_diff(Path::new("maps/trail é.txt"), false).unwrap()), ["-nine", "+NINE"]);
+    }
+
+    #[test]
+    fn an_unstaged_move_stays_a_deletion_and_an_untracked_file() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("old.txt"), TRAIL).unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        fs::rename(f.dir.join("old.txt"), f.dir.join("new.txt")).unwrap();
+        let status = f.repo.status().unwrap();
+        assert!(status.staged.is_empty());
+        assert_eq!(
+            status.unstaged,
+            [
+                ChangedFile { path: "old.txt".into(), status: "Deleted", from: None },
+                ChangedFile { path: "new.txt".into(), status: "Untracked", from: None },
+            ]
+        );
+        f.repo.stage_files(&["new.txt".into(), "old.txt".into()]).unwrap();
+        assert_eq!(f.repo.status().unwrap().staged[0].from.as_deref(), Some(Path::new("old.txt")));
+    }
+
+    #[test]
+    fn unstaging_a_staged_rename_unstages_both_paths_and_leaves_the_files() {
+        let f = Fixture::new();
+        renamed(&f, "old.txt", "new.txt");
+        fs::write(f.dir.join("other.txt"), "other staged\n").unwrap();
+        f.git(&["add", "other.txt"]);
+        f.repo.unstage_file(Path::new("new.txt")).unwrap();
+        assert_eq!(f.git(&["diff", "--cached", "--name-only", "-z"]), b"other.txt\0");
+        assert_eq!(f.git(&["ls-files", "-z", "--", "old.txt", "new.txt"]), b"old.txt\0");
+        assert!(!f.dir.join("old.txt").exists());
+        assert_eq!(fs::read_to_string(f.dir.join("new.txt")).unwrap(), TRAIL.replace("four", "FOUR"));
+        let status = f.repo.status().unwrap();
+        assert!(status.unstaged.iter().any(|file| file.path == Path::new("old.txt") && file.status == "Deleted"));
+        assert!(status.unstaged.iter().any(|file| file.path == Path::new("new.txt") && file.status == "Untracked"));
+
+        f.repo.stage_files(&["old.txt".into(), "new.txt".into()]).unwrap();
+        assert!(f.repo.status().unwrap().staged.iter().any(|file| file.status == RENAMED));
+        f.repo.unstage_files(&["new.txt".into(), "other.txt".into()]).unwrap();
+        assert!(f.git(&["diff", "--cached", "--name-only"]).is_empty());
+        assert_eq!(fs::read_to_string(f.dir.join("other.txt")).unwrap(), "other staged\n");
+    }
+
+    #[test]
+    fn unstaging_a_rename_unstages_only_its_path_once_git_no_longer_pairs_it_and_is_refused_during_a_merge() {
+        let f = Fixture::new();
+        renamed(&f, "old.txt", "new.txt");
+        fs::write(f.dir.join("old.txt"), "old again\n").unwrap();
+        f.git(&["add", "old.txt"]);
+        assert!(f.repo.status().unwrap().staged.iter().all(|file| file.from.is_none()));
+        f.repo.unstage_file(Path::new("new.txt")).unwrap();
+        assert_eq!(f.git(&["diff", "--cached", "--name-only", "-z"]), b"old.txt\0");
+        assert_eq!(f.git(&["show", ":old.txt"]), b"old again\n");
+
+        let f = Fixture::new();
+        fs::write(f.dir.join("trail.txt"), "base\n").unwrap();
+        fs::write(f.dir.join("old.txt"), TRAIL).unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        f.git(&["switch", "-q", "-c", "side"]);
+        fs::write(f.dir.join("trail.txt"), "side\n").unwrap();
+        f.git(&["commit", "-qam", "side"]);
+        f.git(&["switch", "-q", "main"]);
+        fs::write(f.dir.join("trail.txt"), "main\n").unwrap();
+        f.git(&["mv", "old.txt", "new.txt"]);
+        f.git(&["commit", "-qam", "main"]);
+        assert!(!f.repo.command().args(["merge", "-q", "side"]).output().unwrap().status.success());
+        f.git(&["mv", "new.txt", "newer.txt"]);
+        let index = f.git(&["ls-files", "--stage", "-z"]);
+        assert_eq!(f.repo.unstage_file(Path::new("newer.txt")).unwrap_err(), "Finish or abort the merge first.");
+        assert_eq!(f.repo.stage_file(Path::new("newer.txt")).unwrap_err(), "Finish or abort the merge first.");
+        assert_eq!(f.git(&["ls-files", "--stage", "-z"]), index);
+    }
+
+    #[test]
+    fn staging_an_intent_to_add_rename_stages_the_deletion_with_it() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("old.txt"), TRAIL).unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        fs::rename(f.dir.join("old.txt"), f.dir.join("new.txt")).unwrap();
+        f.git(&["add", "--intent-to-add", "new.txt"]);
+        let status = f.repo.status().unwrap();
+        assert_eq!(
+            status.unstaged,
+            [ChangedFile { path: "new.txt".into(), status: RENAMED, from: Some("old.txt".into()) }]
+        );
+        f.repo.stage_file(Path::new("new.txt")).unwrap();
+        let status = f.repo.status().unwrap();
+        assert!(status.unstaged.is_empty());
+        assert_eq!(
+            status.staged,
+            [ChangedFile { path: "new.txt".into(), status: RENAMED, from: Some("old.txt".into()) }]
+        );
+    }
+
+    #[test]
+    fn hunk_staging_an_ordinary_file_is_unchanged_beside_a_staged_rename() {
+        let f = Fixture::new();
+        renamed(&f, "old.txt", "new.txt");
+        let lines: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+        fs::write(f.dir.join("other.txt"), &lines).unwrap();
+        f.git(&["add", "other.txt"]);
+        f.git(&["commit", "-qm", "rename and lines"]);
+        fs::write(f.dir.join("other.txt"), lines.replace("line 2\n", "line two\n").replace("line 28\n", "line 28!\n")).unwrap();
+        let diff = f.repo.file_diff(Path::new("other.txt"), false).unwrap();
+        assert_eq!(diff.hunks.len(), 2);
+        assert!(diff.stageable());
+        f.repo.stage_hunk(&diff, 0).unwrap();
+        assert_eq!(f.git(&["show", ":other.txt"]), lines.replace("line 2\n", "line two\n").into_bytes());
+        let staged = f.repo.status().unwrap().staged;
+        assert_eq!(staged, [ChangedFile { path: "other.txt".into(), status: "Modified", from: None }]);
+    }
+
+    #[test]
+    fn changed_file_lists_read_renames_and_copies_with_both_paths() {
+        let files = parse_changed_files(b"R085\0old name.txt\0new name.txt\0M\0kept.txt\0C100\0a.txt\0b.txt\0").unwrap();
+        assert_eq!(
+            files,
+            [
+                ChangedFile { path: "new name.txt".into(), status: RENAMED, from: Some("old name.txt".into()) },
+                ChangedFile { path: "kept.txt".into(), status: "Modified", from: None },
+                ChangedFile { path: "b.txt".into(), status: "Copied", from: Some("a.txt".into()) },
+            ]
+        );
+        assert!(parse_changed_files(b"R085\0only.txt\0").is_err());
+        assert!(parse_changed_files(b"Rx\0a\0b\0").is_err());
     }
 }

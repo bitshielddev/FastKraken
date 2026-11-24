@@ -9,7 +9,28 @@ use crate::{
 
 const CMD_RETURN: &str = if cfg!(target_os = "macos") { "cmd-enter" } else { "ctrl-enter" };
 
+const SURVEY: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
+
 const NAMES: [&str; 5] = ["alder.txt", "birch bark.txt", "cedar é.txt", "dogwood.txt", "elm.txt"];
+
+fn changed_lines(tab: &Tab) -> Vec<String> {
+    tab.ui
+        .diff
+        .iter()
+        .map(|line| line.text.as_str())
+        .filter(|text| (text.starts_with('+') || text.starts_with('-')) && !text.starts_with("+++") && !text.starts_with("---"))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn renamed_row(tab: &Tab, path: &str, from: &str, staged: bool) -> bool {
+    tab.ui.files.iter().any(|row| {
+        row.staged == staged
+            && row.path == Path::new(path)
+            && row.status == "Renamed"
+            && row.from.as_deref() == Some(Path::new(from))
+    })
+}
 
 fn picked_paths(tab: &Tab) -> Option<Vec<String>> {
     picked::files(&tab.ui).map(|(paths, _)| paths.iter().map(|path| path.to_string_lossy().into_owned()).collect())
@@ -21,7 +42,9 @@ impl Replay<'_> {
         self.discard_and_restore(dir).await?;
         self.discard_all(dir).await?;
         self.ignore_by_extension(dir).await?;
-        self.ignore_tracked(dir).await
+        self.ignore_tracked(dir).await?;
+        self.staged_rename(dir).await?;
+        self.history_across_a_rename(dir).await
     }
 
     async fn asked_about(&mut self, title: &str) -> Result<(Vec<String>, bool)> {
@@ -354,6 +377,129 @@ impl Replay<'_> {
         git_is(&root, &["check-ignore", "--no-index", "--", "app.local"], "app.local\n")?;
         self.until("app.local listed as a staged deletion", |tab| files(tab, &["app.local"], &[".gitignore"])).await?;
         git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn staged_rename(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0606");
+        let root = init(dir, "Mill-race")?;
+        let (old, new) = ("race notes.txt", "channels/race é.txt");
+        fs::write(root.join(old), SURVEY)?;
+        fs::write(root.join("wheel.txt"), "Wheel\n")?;
+        git(&root, &["add", "--", "."])?;
+        git(&root, &["commit", "-qm", "Dig the race"])?;
+        let head = oid(&root, "HEAD")?;
+        fs::create_dir(root.join("channels"))?;
+        git(&root, &["mv", "--", old, new])?;
+        let edited = SURVEY.replace("four", "FOUR");
+        fs::write(root.join(new), &edited)?;
+        git(&root, &["add", "--", new])?;
+        self.open(&root)?;
+        self.until("Mill-race open with one staged row for the rename", |tab| {
+            tab.ui.repo == "Mill-race" && files(tab, &[new], &[]) && renamed_row(tab, new, old, true)
+        })
+        .await?;
+        let listed = git(&root, &["-c", "core.quotePath=false", "status", "--porcelain=v2", "-z"])?;
+        if !listed.starts_with("2 R. ") || !listed.contains(&format!(" {new}\0{old}\0")) {
+            return Err(format!("git status reads {listed:?}").into());
+        }
+
+        self.action(Action::Select(file(new, true)))?;
+        self.until("the staged rename's diff shows only the edited lines", |tab| {
+            patch(tab, "+FOUR") && changed_lines(tab) == ["-four", "+FOUR"]
+        })
+        .await?;
+        let (from, hunks) = self.tab.read_with(self.cx, |tab, _| {
+            let selection = tab.ui.selection.clone().unwrap_or(Selection::Changes);
+            (tab.ui.renamed_from(&selection, None), tab.ui.diff.iter().filter(|line| line.hunk.is_some()).count())
+        })?;
+        if from.as_deref() != Some(Path::new(old)) {
+            return Err(format!("The diff header names {from:?} as where the file came from").into());
+        }
+        if hunks != 0 {
+            return Err(format!("The staged rename offers {hunks} hunk buttons").into());
+        }
+
+        self.key("u")?;
+        self.until("U unstages both halves of the rename", |tab| files(tab, &[], &[old, new])).await?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "")?;
+        git_is(&root, &["ls-files"], &format!("{old}\nwheel.txt\n"))?;
+        if fs::read_to_string(root.join(new))? != edited || root.join(old).exists() {
+            return Err("Unstaging the rename changed the files on disk".into());
+        }
+        self.action(Action::StageAll)?;
+        self.until("staging both halves pairs them again", |tab| {
+            files(tab, &[new], &[]) && renamed_row(tab, new, old, true)
+        })
+        .await?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn history_across_a_rename(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0607");
+        let root = init(dir, "Field-book")?;
+        let (old, new) = ("notes.txt", "docs/field é.md");
+        record(&root, old, SURVEY, "Start the field book")?;
+        let second = SURVEY.replace("two", "TWO");
+        record(&root, old, &second, "Add the second line")?;
+        let added = oid(&root, "HEAD")?;
+        fs::create_dir(root.join("docs"))?;
+        git(&root, &["mv", "--", old, new])?;
+        record(&root, new, &second.replace("nine", "NINE"), "Move the field book")?;
+        let moved = oid(&root, "HEAD")?;
+        record(&root, new, &second.replace("nine", "NINE").replace("ten", "TEN"), "Fill in the moved book")?;
+        let tip = oid(&root, "HEAD")?;
+        let subjects = ["Fill in the moved book", "Move the field book", "Add the second line", "Start the field book"];
+        git_is(&root, &["log", "--follow", "--format=%s", "--", new], &format!("{}\n", subjects.join("\n")))?;
+        self.open(&root)?;
+        self.until("Field-book open at its tip", |tab| {
+            tab.ui.repo == "Field-book" && tab.ui.selection == Some(Selection::Commit(tip.clone()))
+        })
+        .await?;
+        self.open_file(new).await?;
+        self.action(Action::Inspect(inspection::Action::History))?;
+        self.until("file history lists the commits from before the rename under the old path", |tab| {
+            tab.ui.inspection.history.as_ref().is_some_and(|history| {
+                history.iter().map(|row| (row.subject.as_str(), row.path.as_path())).eq([
+                    (subjects[0], Path::new(new)),
+                    (subjects[1], Path::new(new)),
+                    (subjects[2], Path::new(old)),
+                    (subjects[3], Path::new(old)),
+                ])
+            })
+        })
+        .await?;
+
+        self.action(Action::Inspect(inspection::Action::OpenRevision { oid: added.clone(), path: old.into() }))?;
+        self.until("the older revision opens under the old path", |tab| {
+            tab.ui.selection == Some(Selection::Commit(added.clone()))
+                && tab.ui.diff_open
+                && tab.ui.inspection.path.as_deref() == Some(Path::new(old))
+                && patch(tab, "+TWO")
+                && changed_lines(tab) == ["-two", "+TWO"]
+        })
+        .await?;
+        git_is(&root, &["show", &format!("{added}:{old}")], &second)?;
+
+        self.select_commit(&moved).await?;
+        self.until("the commit that moved the file lists one renamed row", |tab| {
+            tab.ui.inspection.files.len() == 1
+                && committed_file(tab, new, "Renamed")
+                && tab.ui.inspection.files[0].from.as_deref() == Some(Path::new(old))
+        })
+        .await?;
+        self.open_file(new).await?;
+        self.until("the moved file's patch shows only the edited lines", |tab| {
+            changed_lines(tab) == ["-nine", "+NINE"]
+        })
+        .await?;
+        let listed = git(&root, &["-c", "core.quotePath=false", "show", "--format=", "-M", "--name-status", &moved])?;
+        if !listed.starts_with('R') || !listed.ends_with(&format!("\t{old}\t{new}\n")) {
+            return Err(format!("git show lists {listed:?}").into());
+        }
         self.pass();
         Ok(())
     }

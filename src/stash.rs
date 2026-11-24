@@ -4,8 +4,8 @@ use crate::{
     notice::{self, Failure, Outcome},
     prompt::{self, Answer, Spec},
     repository::{
-        ChangedFile, Commit, Diff, PATCH_OPTIONS, Repository, checked, nul_separated, parse_changed_files,
-        raw_path, read_diff, validate_oid, validate_path,
+        ChangedFile, Commit, Diff, Repository, checked, nul_separated, parse_changed_files,
+        patch_options, raw_path, read_diff, with_origins, validate_oid, validate_path,
     },
     theme::*,
     view::{self, CommitInput, Desk, Selection, Ui},
@@ -445,7 +445,7 @@ impl Repository {
             "show",
             "--include-untracked",
             "--no-color",
-            "--no-renames",
+            "--find-renames",
             "--name-status",
             "-z",
             oid,
@@ -457,7 +457,7 @@ impl Repository {
         validate_oid(oid)?;
         let mut cmd = self.read_command();
         cmd.args(["stash", "show", "--include-untracked", "--patch"])
-            .args(PATCH_OPTIONS)
+            .args(patch_options(true))
             .arg(oid);
         read_diff(cmd, None, false)
     }
@@ -500,11 +500,16 @@ impl Repository {
                 });
             }
         }
+        let origins = with_origins(&status.unstaged, &with_origins(&status.staged, paths)).split_off(paths.len());
         let chosen: BTreeSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
         let pathspecs = nul_separated(paths, b":(top,literal)")?;
         push.args(["--pathspec-from-file=-", "--pathspec-file-nul"]);
         if status.staged.iter().all(|file| chosen.contains(file.path.as_path())) {
-            return push_changes_from(&mut push, pathspecs);
+            push_changes_from(&mut push, pathspecs)?;
+            return match &status.head {
+                Some(head) => self.put_back(head, &origins),
+                None => Ok(()),
+            };
         }
 
         let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -512,12 +517,13 @@ impl Repository {
         let head = status
             .head
             .ok_or("Make the first commit before stashing changes.")?;
-        let staged: Vec<PathBuf> = status
+        let rows: Vec<PathBuf> = status
             .staged
             .iter()
             .filter(|file| chosen.contains(file.path.as_path()))
             .map(|file| file.path.clone())
             .collect();
+        let staged = with_origins(&status.staged, &rows);
         let wanted: BTreeSet<&Path> = staged.iter().map(PathBuf::as_path).collect();
         let stage_records = || -> Result<Vec<Vec<u8>>, String> {
             let listing = checked(self.read_command().args(["ls-files", "--stage", "-z"]))?;
@@ -556,6 +562,20 @@ impl Repository {
             self.with_paths(&["reset", "--quiet", &head], &staged).map_err(|err| {
                 format!("Stash saved, but the selected index entries could not be reset: {err}")
             })?;
+        }
+        self.put_back(&head, &origins)
+    }
+
+    fn put_back(&self, head: &str, origins: &[PathBuf]) -> Result<(), String> {
+        if origins.is_empty() {
+            return Ok(());
+        }
+        let failed = |err: String| format!("Stash saved, but the files the renames came from could not be put back: {err}");
+        self.with_paths(&["reset", "--quiet", head], origins).map_err(failed)?;
+        let absent: Vec<PathBuf> =
+            origins.iter().filter(|path| self.root.join(path).symlink_metadata().is_err()).cloned().collect();
+        if !absent.is_empty() {
+            self.with_paths(&["restore", "--worktree"], &absent).map_err(failed)?;
         }
         Ok(())
     }
@@ -1362,17 +1382,6 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         path: file.path.clone(),
                         side: crate::commands::Side::Stash(stash.clone()),
                     };
-                    let name = file
-                        .path
-                        .file_name()
-                        .unwrap_or(file.path.as_os_str())
-                        .to_string_lossy()
-                        .into_owned();
-                    let folder = file
-                        .path
-                        .parent()
-                        .map(|parent| parent.to_string_lossy().into_owned())
-                        .unwrap_or_default();
                     Some(
                         div()
                             .id(("stashed-file", idx))
@@ -1394,15 +1403,12 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                     )
                                 }),
                             )
-                            .child(kit::badge(file.status))
-                            .child(kit::fit(name).size(12.5).cut(kit::Cut::Middle))
-                            .child(
-                                kit::fit(folder)
-                                    .size(11.5)
-                                    .color(TEXT_3)
-                                    .cut(kit::Cut::Start)
-                                    .grow(),
-                            ),
+                            .child(kit::file_label(
+                                ("stashed-file-label", idx),
+                                file.status,
+                                &file.path,
+                                file.from.as_deref(),
+                            )),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -1595,7 +1601,8 @@ mod tests {
             f.repo.stash_files(stash).unwrap(),
             [ChangedFile {
                 path: path.into(),
-                status: "Modified"
+                status: "Modified",
+                from: None
             }]
         );
         assert_eq!(f.git(&["show", "stash^2:other"]), b"base\n");
@@ -2122,5 +2129,44 @@ mod tests {
         assert!(f.repo.pop_stash(&entries[0].oid).is_err());
         assert_eq!(f.repo.stashes().unwrap(), entries);
         assert_eq!(fs::read(f.dir.join("notes")).unwrap(), b"other");
+    }
+
+    #[test]
+    fn stashing_a_staged_rename_takes_both_paths_and_keeps_another_staged_file() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("old.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        fs::write(f.dir.join("other.txt"), "base\n").unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        f.git(&["mv", "old.txt", "new.txt"]);
+        fs::write(f.dir.join("new.txt"), "one\ntwo\nthree\nFOUR\n").unwrap();
+        fs::write(f.dir.join("other.txt"), "other staged\n").unwrap();
+        f.git(&["add", "."]);
+        f.repo.save_stash(&[PathBuf::from("new.txt")]).unwrap();
+
+        let stash = f.repo.stashes().unwrap()[0].oid.clone();
+        assert_eq!(
+            f.repo.stash_files(&stash).unwrap(),
+            [ChangedFile { path: "new.txt".into(), status: "Renamed", from: Some("old.txt".into()) }]
+        );
+        assert_eq!(f.git(&["diff", "--cached", "--name-only", "-z"]), b"other.txt\0");
+        assert_eq!(fs::read(f.dir.join("old.txt")).unwrap(), b"one\ntwo\nthree\nfour\n");
+        assert!(!f.dir.join("new.txt").exists());
+        assert_eq!(f.git(&["status", "--porcelain", "--", "old.txt", "new.txt"]), b"");
+        let diff = f.repo.stash_diff(&stash).unwrap();
+        assert!(diff.text.contains("rename from old.txt") && diff.text.contains("+FOUR"));
+        assert!(!diff.text.contains("+one"));
+
+        f.git(&["reset", "-q", "--", "other.txt"]);
+        f.git(&["checkout", "--", "other.txt"]);
+        f.git(&["mv", "old.txt", "moved.txt"]);
+        f.repo.save_stash(&[PathBuf::from("moved.txt")]).unwrap();
+        assert_eq!(f.git(&["status", "--porcelain"]), b"");
+        assert_eq!(fs::read(f.dir.join("old.txt")).unwrap(), b"one\ntwo\nthree\nfour\n");
+        let stash = f.repo.stashes().unwrap()[0].oid.clone();
+        assert_eq!(
+            f.repo.stash_files(&stash).unwrap(),
+            [ChangedFile { path: "moved.txt".into(), status: "Renamed", from: Some("old.txt".into()) }]
+        );
     }
 }

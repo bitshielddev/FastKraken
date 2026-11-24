@@ -606,6 +606,8 @@ pub fn badge(status: &str) -> Div {
         "Deleted" => ("D", DELETED),
         "Conflicted" => ("!", CONFLICT),
         "Type changed" => ("T", REMOTE),
+        "Renamed" => ("R", TAG),
+        "Copied" => ("C", TAG),
         _ => ("M", MODIFIED),
     };
     div()
@@ -620,6 +622,32 @@ pub fn badge(status: &str) -> Div {
         .font_weight(FontWeight::BOLD)
         .text_color(rgb(color))
         .child(letter)
+}
+
+pub fn file_label(
+    id: impl Into<ElementId>,
+    status: &str,
+    path: &std::path::Path,
+    from: Option<&std::path::Path>,
+) -> Stateful<Div> {
+    let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned();
+    let folder = path.parent().map(|parent| parent.to_string_lossy().into_owned()).unwrap_or_default();
+    div()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(badge(status))
+        .child(fit(name).size(12.5).cut(Cut::Middle))
+        .child(fit(folder).size(11.5).color(TEXT_3).cut(Cut::Start).grow())
+        .when_some(from, |d, from| d.tooltip(tip(moved_from(status, from))))
+}
+
+pub fn moved_from(status: &str, from: &std::path::Path) -> String {
+    let verb = if status == "Copied" { "Copied" } else { "Renamed" };
+    format!("{verb} from {}", from.display())
 }
 
 pub fn avatar(name: &str) -> Div {
