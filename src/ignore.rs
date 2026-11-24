@@ -34,6 +34,7 @@ pub(crate) struct Ask {
     paths: Vec<PathBuf>,
     rule: Rule,
     tracked: Vec<PathBuf>,
+    gone: BTreeSet<PathBuf>,
 }
 
 const MENU: Submenu = Submenu { id: "file.ignore-menu", title: |_, _| "Ignore".into(), icon: "eye-off" };
@@ -290,14 +291,23 @@ impl Repository {
             (1, [only]) => format!("Added {} to {FILE}.", String::from_utf8_lossy(only)),
             (n, _) => format!("Added {n} lines to {FILE}."),
         });
+        let on_disk = |path: &PathBuf| std::fs::symlink_metadata(self.root.join(path)).is_ok();
         match tracked {
             [] => {}
-            [one] => detail.push(format!(
+            [one] if on_disk(one) => detail.push(format!(
                 "Git no longer tracks {}: the next commit removes it from the repository, and the file stays on disk.",
                 name(one)
             )),
-            many => detail.push(format!(
+            [one] => detail.push(format!(
+                "Git no longer tracks {}: the next commit removes it from the repository.",
+                name(one)
+            )),
+            many if many.iter().all(on_disk) => detail.push(format!(
                 "Git no longer tracks {}: the next commit removes them from the repository, and the files stay on disk.",
+                count(many.len())
+            )),
+            many => detail.push(format!(
+                "Git no longer tracks {}: the next commit removes them from the repository, and the files still on disk stay there.",
                 count(many.len())
             )),
         }
@@ -319,10 +329,17 @@ pub(crate) fn describe(ask: &Ask) -> Spec {
     match ask.tracked.as_slice() {
         [one] => Spec::new(format!("Ignore and stop tracking {}?", name(one)), "Ignore and stop tracking")
             .line(added)
-            .line(format!(
-                "{} stays on disk, but Git stops tracking it: the next commit removes it from the repository.",
-                one.display()
-            )),
+            .line(if ask.gone.contains(one) {
+                format!(
+                    "{} is already deleted, and Git stops tracking it: the next commit removes it from the repository.",
+                    one.display()
+                )
+            } else {
+                format!(
+                    "{} stays on disk, but Git stops tracking it: the next commit removes it from the repository.",
+                    one.display()
+                )
+            }),
         many => {
             let mut spec =
                 Spec::new(format!("Ignore and stop tracking {}?", count(many.len())), "Ignore and stop tracking");
@@ -332,9 +349,11 @@ pub(crate) fn describe(ask: &Ask) -> Spec {
             if many.len() > crate::picked::NAMED {
                 spec = spec.line(format!("and {} more", many.len() - crate::picked::NAMED));
             }
-            spec.line(added).line(
-                "The files stay on disk, but Git stops tracking them: the next commit removes them from the repository.",
-            )
+            spec.line(added).line(if ask.gone.is_empty() {
+                "The files stay on disk, but Git stops tracking them: the next commit removes them from the repository."
+            } else {
+                "Files still on disk stay there, but Git stops tracking them: the next commit removes them from the repository."
+            })
         }
     }
 }
@@ -350,6 +369,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
         return;
     }
     let mut tracked = Vec::new();
+    let mut gone = BTreeSet::new();
     for path in &paths {
         let Some(row) = tab.ui.files.iter().find(|file| !file.staged && &file.path == path) else {
             return refuse(tab, format!("{} is no longer in the list of changes", name(path)), cx);
@@ -357,14 +377,17 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
         if row.status != "Untracked" {
             tracked.push(path.clone());
         }
+        if row.status == "Deleted" {
+            gone.insert(path.clone());
+        }
     }
     if let Err(reason) = lines(&paths, rule) {
         return refuse(tab, reason, cx);
     }
     if tracked.is_empty() {
-        run(tab, Ask { paths, rule, tracked }, cx);
+        run(tab, Ask { paths, rule, tracked, gone }, cx);
     } else {
-        prompt::ask(&mut tab.ui, prompt::Kind::Ignore(Ask { paths, rule, tracked }), cx);
+        prompt::ask(&mut tab.ui, prompt::Kind::Ignore(Ask { paths, rule, tracked, gone }), cx);
     }
 }
 
@@ -373,7 +396,7 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, cx: &mut Context<Tab>) {
 }
 
 fn run(tab: &mut Tab, ask: Ask, cx: &mut Context<Tab>) {
-    let Ask { paths, rule, tracked } = ask;
+    let Ask { paths, rule, tracked, .. } = ask;
     tab.apply_operation(
         cx,
         "Adding the rule to .gitignore…",
@@ -479,6 +502,23 @@ mod tests {
     }
 
     #[test]
+    fn ignoring_a_tracked_file_already_deleted_stops_tracking_it_without_claiming_it_is_on_disk() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("old.cache"), "stale\n").unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        fs::remove_file(f.dir.join("old.cache")).unwrap();
+        let path = PathBuf::from("old.cache");
+        let outcome = f.repo.ignore(&[path.clone()], Rule::Path, &[path.clone()]).unwrap();
+        assert_eq!(
+            outcome.detail,
+            "Added /old.cache to .gitignore. Git no longer tracks old.cache: the next commit removes it from the repository."
+        );
+        assert!(f.git(&["ls-files"]).is_empty());
+        assert!(!f.dir.join("old.cache").exists());
+    }
+
+    #[test]
     fn ignoring_changes_nothing_when_a_file_is_no_longer_what_the_menu_showed() {
         let f = Fixture::new();
         fs::write(f.dir.join("kept.txt"), "kept\n").unwrap();
@@ -516,12 +556,16 @@ mod tests {
 
     #[test]
     fn the_prompt_for_tracked_files_names_them_and_what_is_added() {
-        let one = Ask { paths: vec![PathBuf::from("conf/app.local")], rule: Rule::Path, tracked: vec![PathBuf::from("conf/app.local")] };
+        let local = PathBuf::from("conf/app.local");
+        let mut one = Ask { paths: vec![local.clone()], rule: Rule::Path, tracked: vec![local.clone()], gone: BTreeSet::new() };
         let spec = describe(&one);
         assert_eq!((spec.title.as_str(), spec.confirm.as_ref()), ("Ignore and stop tracking app.local?", "Ignore and stop tracking"));
         assert_eq!(spec.lines[0], "/conf/app.local is added to .gitignore.");
+        assert!(spec.lines[1].starts_with("conf/app.local stays on disk"), "{}", spec.lines[1]);
+        one.gone.insert(local);
+        assert!(describe(&one).lines[1].starts_with("conf/app.local is already deleted"));
         let paths: Vec<PathBuf> = (1..=10).map(|i| PathBuf::from(format!("{i}.local"))).collect();
-        let many = Ask { paths: paths.clone(), rule: Rule::Path, tracked: paths[..9].to_vec() };
+        let many = Ask { paths: paths.clone(), rule: Rule::Path, tracked: paths[..9].to_vec(), gone: BTreeSet::new() };
         let spec = describe(&many);
         assert_eq!(spec.title, "Ignore and stop tracking 9 files?");
         assert_eq!(spec.lines[8], "and 1 more");

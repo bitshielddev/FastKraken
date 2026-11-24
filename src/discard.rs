@@ -11,7 +11,7 @@ use crate::{
 };
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
@@ -152,6 +152,29 @@ pub(crate) fn discarded(kept: String, paths: Vec<PathBuf>) -> Outcome {
     .sticky()
 }
 
+pub(crate) fn discard_picked(
+    repo: &Repository,
+    paths: Vec<PathBuf>,
+    untracked: &BTreeSet<PathBuf>,
+) -> Result<Outcome, Failure> {
+    let kept = repo.keep_files(&paths, untracked)?;
+    if let Err(err) = repo.remove_file_changes(&paths, untracked) {
+        let failure = Failure {
+            text: err.clone(),
+            actions: Vec::new(),
+            output: None,
+            plain: Some((
+                "Some changes could not be discarded".to_owned(),
+                "Restore brings back the changes that were discarded.".to_owned(),
+            )),
+        };
+        return Err(failure
+            .output(err)
+            .offer("Restore", view::Action::Discard(Action::RestoreFiles { oid: kept, paths })));
+    }
+    Ok(discarded(kept, paths))
+}
+
 impl Repository {
     pub(crate) fn head_commit(&self) -> Result<Option<String>, String> {
         let output = self
@@ -211,6 +234,34 @@ impl Repository {
         }
     }
 
+    fn unlike_kept<'a>(
+        &self,
+        changed: Vec<&'a Path>,
+        kept: &BTreeSet<PathBuf>,
+        blobs: &BTreeMap<PathBuf, String>,
+    ) -> Result<Vec<&'a Path>, String> {
+        let on_disk = |path: &Path| std::fs::symlink_metadata(self.root.join(path));
+        let files: Vec<&Path> =
+            changed.iter().copied().filter(|path| on_disk(path).is_ok_and(|meta| meta.is_file())).collect();
+        let hashes: Vec<String> = if files.is_empty() {
+            Vec::new()
+        } else {
+            let output = checked(self.read_command().args(["hash-object", "--"]).args(&files))?;
+            String::from_utf8_lossy(&output).lines().map(str::to_owned).collect()
+        };
+        if hashes.len() != files.len() {
+            return Err("Git could not read the files to restore.".into());
+        }
+        let current: BTreeMap<&Path, &str> = files.into_iter().zip(hashes.iter().map(String::as_str)).collect();
+        Ok(changed
+            .into_iter()
+            .filter(|path| match current.get(path) {
+                Some(hash) => blobs.get(*path).map(String::as_str) != Some(*hash),
+                None => kept.contains(*path) || on_disk(path).is_ok(),
+            })
+            .collect())
+    }
+
     pub(crate) fn restore_files(&self, oid: &str, paths: &[PathBuf]) -> Result<Outcome, String> {
         self.ensure_index_writable()?;
         self.kept_commit(oid)?;
@@ -219,8 +270,20 @@ impl Repository {
         }
         let status = self.status()?;
         let chosen: BTreeSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
-        let changed: BTreeSet<&Path> =
+        let listing = checked(self.read_command().args(["ls-tree", "-r", "-z", "--full-tree", oid]))?;
+        let mut kept = BTreeSet::new();
+        let mut blobs = BTreeMap::new();
+        for record in listing.split(|&b| b == 0).filter(|record| !record.is_empty()) {
+            let Some(tab) = record.iter().position(|&b| b == b'\t') else { continue };
+            let path = raw_path(&record[tab + 1..]);
+            if let [b"100644" | b"100755", b"blob", blob] = record[..tab].split(|&b| b == b' ').collect::<Vec<_>>()[..] {
+                blobs.insert(path.clone(), String::from_utf8_lossy(blob).into_owned());
+            }
+            kept.insert(path);
+        }
+        let changed: Vec<&Path> =
             status.unstaged.iter().map(|file| file.path.as_path()).filter(|path| chosen.contains(path)).collect();
+        let changed = self.unlike_kept(changed, &kept, &blobs)?;
         match changed.iter().collect::<Vec<_>>().as_slice() {
             [] => {}
             [one] => {
@@ -237,11 +300,11 @@ impl Repository {
                 ));
             }
         }
-        let names = |output: Vec<u8>| -> BTreeSet<PathBuf> {
-            output.split(|&b| b == 0).filter(|name| !name.is_empty()).map(raw_path).collect()
-        };
-        let kept = names(checked(self.read_command().args(["ls-tree", "-r", "-z", "--name-only", "--full-tree", oid]))?);
-        let indexed = names(checked(self.read_command().args(["ls-files", "-z"]))?);
+        let indexed: BTreeSet<PathBuf> = checked(self.read_command().args(["ls-files", "-z"]))?
+            .split(|&b| b == 0)
+            .filter(|name| !name.is_empty())
+            .map(raw_path)
+            .collect();
         let restorable: Vec<PathBuf> =
             paths.iter().filter(|path| kept.contains(*path) || indexed.contains(*path)).cloned().collect();
         if !restorable.is_empty() {
@@ -453,6 +516,32 @@ mod tests {
         assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
         assert_eq!(f.git(&["for-each-ref"]), refs);
         assert!(f.git(&["stash", "list"]).is_empty());
+    }
+
+    #[test]
+    fn a_discard_that_stops_part_way_still_offers_restore_and_restore_brings_everything_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = grove();
+        fs::create_dir_all(f.dir.join("locked")).unwrap();
+        fs::write(f.dir.join("locked/held.txt"), "held\n").unwrap();
+        fs::set_permissions(f.dir.join("locked"), fs::Permissions::from_mode(0o555)).unwrap();
+        let paths = vec![PathBuf::from("b c.txt"), PathBuf::from("d.txt"), PathBuf::from("locked/held.txt")];
+        let untracked = BTreeSet::from([PathBuf::from("locked/held.txt")]);
+        let failed = discard_picked(&f.repo, paths.clone(), &untracked);
+        fs::set_permissions(f.dir.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        let Err(failure) = failed else { panic!("the discard did not stop") };
+        let Some((label, view::Action::Discard(Action::RestoreFiles { oid, paths: offered }))) = failure.actions.first() else {
+            panic!("no Restore offered: {:?}", failure.actions);
+        };
+        assert_eq!((label.as_ref(), offered), ("Restore", &paths));
+        assert_eq!(read(&f, "b c.txt").unwrap(), b"base\n");
+        assert_eq!(read(&f, "locked/held.txt").unwrap(), b"held\n");
+
+        f.repo.restore_files(oid, &paths).unwrap();
+        assert_eq!(read(&f, "b c.txt").unwrap(), b"edited\n");
+        assert!(read(&f, "d.txt").is_none());
+        assert_eq!(read(&f, "locked/held.txt").unwrap(), b"held\n");
+        assert_eq!(read(&f, "kept.txt").unwrap(), b"edited too\n");
     }
 
     #[test]

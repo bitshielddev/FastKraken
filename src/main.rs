@@ -668,7 +668,7 @@ impl Tab {
                 "Discarding changes…",
                 Some("Changes discarded"),
                 false,
-                move |repo| repo.discard_files(&paths, &untracked).map(|kept| discard::discarded(kept, paths)),
+                move |repo| discard::discard_picked(&repo, paths, &untracked),
                 |_, _| {},
             ),
             DiscardAsk::All(seen) => discard::confirm(self, seen, cx),

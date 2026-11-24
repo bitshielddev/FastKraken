@@ -764,8 +764,14 @@ impl Repository {
         self.with_paths(&["reset", "--quiet"], paths).map(drop)
     }
 
+    #[cfg(test)]
     pub fn discard_files(&self, paths: &[PathBuf], untracked: &BTreeSet<PathBuf>) -> Result<String> {
-        const CLEANED_AT_ONCE: usize = 64;
+        let kept = self.keep_files(paths, untracked)?;
+        self.remove_file_changes(paths, untracked)?;
+        Ok(kept)
+    }
+
+    pub(crate) fn keep_files(&self, paths: &[PathBuf], untracked: &BTreeSet<PathBuf>) -> Result<String> {
         self.ensure_index_writable()?;
         if paths.is_empty() {
             return Err("Select at least one file.".into());
@@ -789,7 +795,11 @@ impl Repository {
                 ));
             }
         }
-        let kept = self.snapshot(paths)?;
+        self.snapshot(paths)
+    }
+
+    pub(crate) fn remove_file_changes(&self, paths: &[PathBuf], untracked: &BTreeSet<PathBuf>) -> Result<()> {
+        const CLEANED_AT_ONCE: usize = 64;
         let (doomed, tracked): (Vec<PathBuf>, Vec<PathBuf>) =
             paths.iter().cloned().partition(|path| untracked.contains(path));
         if !tracked.is_empty() {
@@ -802,7 +812,7 @@ impl Repository {
                     .args(chunk),
             )?;
         }
-        Ok(kept)
+        Ok(())
     }
 
     pub fn commit(&self, message: &str) -> Result<Vec<PathBuf>> {
