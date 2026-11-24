@@ -1,0 +1,9 @@
+/target/
+/dist/
+.DS_Store
+/.tasks/
+/docs/
+/acceptance-tests/
+*.[mM][dD]
+*.[mM][aA][rR][kK][dD][oO][wW][nN]
+__pycache__/
