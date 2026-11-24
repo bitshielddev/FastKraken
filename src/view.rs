@@ -1,5 +1,5 @@
 #[path = "commit_input.rs"]
-mod commit_input;
+pub(crate) mod commit_input;
 #[path = "diff_view.rs"]
 mod diff_view;
 #[path = "graph.rs"]
@@ -977,8 +977,6 @@ actions!(
         Minimize,
         Zoom,
         FullScreen,
-        Undo,
-        Redo,
         ChooseSearchResult,
         NextFocus,
         PreviousFocus,
@@ -1111,8 +1109,8 @@ pub(crate) fn menu_bar(ui: &Ui, recents: &[(String, PathBuf)], cx: &App) -> Vec<
         MenuItem::action("Quit FastKraken", QuitApp),
     ]);
     let mut edit = vec![
-        MenuItem::os_action("Undo", Undo, OsAction::Undo),
-        MenuItem::os_action("Redo", Redo, OsAction::Redo),
+        MenuItem::os_action("Undo", commit_input::UndoText, OsAction::Undo),
+        MenuItem::os_action("Redo", commit_input::RedoText, OsAction::Redo),
         MenuItem::separator(),
         MenuItem::os_action("Cut", commit_input::CutSummary, OsAction::Cut),
         MenuItem::os_action("Copy", commit_input::CopySummary, OsAction::Copy),

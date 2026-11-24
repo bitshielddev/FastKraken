@@ -517,8 +517,12 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().bg(rgb(CANVAS)).child(self.front().clone())
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .bg(rgb(CANVAS))
+            .child(self.front().clone())
+            .children(crate::view::commit_input::field_menu(window, cx))
     }
 }
 

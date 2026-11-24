@@ -161,6 +161,11 @@ pub(crate) fn listing(ui: &Ui) -> Vec<Listed> {
         keys: commands::keys(keys),
         title: (*title).to_owned(),
     }));
+    listed.extend(crate::view::commit_input::TEXT_KEYS.iter().map(|(keys, title)| Listed {
+        section: "Text fields",
+        keys: commands::keys(keys),
+        title: (*title).to_owned(),
+    }));
     listed
 }
 

@@ -215,6 +215,18 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
                 .update(cx, |input, cx| input.set_text(argument, cx));
             None
         }
+        "fieldmenu" => {
+            let (x, y) = argument.split_once('x').unwrap_or(("900", "560"));
+            let at = gpui::point(px(x.parse().unwrap_or(900.)), px(y.parse().unwrap_or(560.)));
+            let field = tab.ui.input.clone();
+            tab.ui.focus_on_open = false;
+            window.focus(&gpui::Focusable::focus_handle(field.read(cx), cx));
+            field.update(cx, |input, cx| {
+                input.choose(crate::view::commit_input::FieldCommand::SelectAll, window, cx);
+                input.open_menu(at, window, cx);
+            });
+            None
+        }
         "say" => {
             let (tone, text) = argument.split_once(':').unwrap_or(("info", argument));
             tab.ui.say(

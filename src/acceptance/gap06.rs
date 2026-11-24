@@ -1,11 +1,14 @@
 use super::*;
 use crate::{
     commands::{self, Side, Target},
+    view::commit_input,
     notice,
     picked::{self, How},
     prompt::{self, Stop},
     view::Tone,
 };
+use gpui::{ClipboardItem, Focusable};
+use std::ops::Range;
 
 const CMD_RETURN: &str = if cfg!(target_os = "macos") { "cmd-enter" } else { "ctrl-enter" };
 
@@ -44,7 +47,8 @@ impl Replay<'_> {
         self.ignore_by_extension(dir).await?;
         self.ignore_tracked(dir).await?;
         self.staged_rename(dir).await?;
-        self.history_across_a_rename(dir).await
+        self.history_across_a_rename(dir).await?;
+        self.editing_the_summary(dir).await
     }
 
     async fn asked_about(&mut self, title: &str) -> Result<(Vec<String>, bool)> {
@@ -500,6 +504,119 @@ impl Replay<'_> {
         if !listed.starts_with('R') || !listed.ends_with(&format!("\t{old}\t{new}\n")) {
             return Err(format!("git show lists {listed:?}").into());
         }
+        self.pass();
+        Ok(())
+    }
+
+    fn summary_field(&mut self) -> Result<(String, Range<usize>)> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            let field = tab.ui.input.read(cx);
+            (field.text().to_owned(), field.selected_range())
+        })?)
+    }
+
+    fn summary_is(&mut self, after: &str, text: &str, selected: Range<usize>) -> Result<()> {
+        let (shown, at) = self.summary_field()?;
+        if shown != text || at != selected {
+            return Err(format!("After {after} the summary reads {shown:?} with {at:?} selected, not {text:?} with {selected:?}").into());
+        }
+        Ok(())
+    }
+
+    fn summary_menu_shown(&mut self) -> Result<bool> {
+        self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
+        Ok(self.tab.read_with(self.cx, |tab, cx| commit_input::menu_shown_for(tab.ui.input.entity_id(), cx))?)
+    }
+
+    async fn editing_the_summary(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0608");
+        let root = init(dir, "Quill")?;
+        record(&root, "menu.txt", "Soup\n", "Write the menu")?;
+        let head = oid(&root, "HEAD")?;
+        fs::write(root.join("menu.txt"), "Soup\nBread\n")?;
+        self.open(&root)?;
+        self.until("Quill open with menu.txt edited", |tab| tab.ui.repo == "Quill" && files(tab, &[], &["menu.txt"]))
+            .await?;
+        self.key("cmd-shift-m")?;
+        let focused = self.tab.update(self.cx, |tab, window, cx| tab.ui.input.focus_handle(cx).is_focused(window))?;
+        if !focused {
+            return Err("Cmd-Shift-M did not put the cursor in the commit summary".into());
+        }
+        let typed = "fix the café's menu";
+        let end = typed.len();
+        let word = "Fix the ".len().."Fix the café's".len();
+        let bistro = "Fix the ".len().."Fix the bistro".len();
+        let replaced = "fix the bistro menu";
+        self.type_keys(typed)?;
+        self.summary_is("typing", typed, end..end)?;
+        self.key("alt-left")?;
+        self.key("alt-left")?;
+        self.summary_is("Option-Left twice", typed, word.start..word.start)?;
+        self.key("alt-shift-right")?;
+        self.summary_is("Option-Shift-Right", typed, word.clone())?;
+        self.type_keys("bistro")?;
+        self.summary_is("typing over the word", replaced, bistro.end..bistro.end)?;
+        self.key("cmd-left")?;
+        self.summary_is("Cmd-Left", replaced, 0..0)?;
+        self.key("ctrl-e")?;
+        self.summary_is("Control-E", replaced, replaced.len()..replaced.len())?;
+        self.key("alt-backspace")?;
+        self.summary_is("Option-Backspace", "fix the bistro ", bistro.end + 1..bistro.end + 1)?;
+        self.key("cmd-z")?;
+        self.summary_is("Cmd-Z", replaced, replaced.len()..replaced.len())?;
+        self.key("cmd-z")?;
+        self.summary_is("a second Cmd-Z", typed, word.clone())?;
+        self.key("cmd-shift-z")?;
+        self.summary_is("Cmd-Shift-Z", replaced, replaced.len()..replaced.len())?;
+
+        let saved = self.cx.update(|cx| cx.read_from_clipboard())?;
+        self.cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(" at noon\nsharp".to_owned())))?;
+        let pasted = self.key("cmd-v");
+        self.cx.update(|cx| cx.write_to_clipboard(saved.clone().unwrap_or_else(|| ClipboardItem::new_string(String::new()))))?;
+        pasted?;
+        let lunch = "fix the bistro menu at noon sharp";
+        self.summary_is("pasting two lines", lunch, lunch.len()..lunch.len())?;
+        self.key("cmd-z")?;
+        self.summary_is("Cmd-Z after the paste", replaced, replaced.len()..replaced.len())?;
+        self.key("cmd-backspace")?;
+        self.summary_is("Cmd-Backspace", "", 0..0)?;
+        self.key("cmd-z")?;
+        self.summary_is("Cmd-Z after Cmd-Backspace", replaced, replaced.len()..replaced.len())?;
+
+        self.key("alt-left")?;
+        self.key("alt-left")?;
+        self.key("alt-shift-right")?;
+        self.summary_is("selecting bistro", replaced, bistro.clone())?;
+        self.tab.update(self.cx, |tab, window, cx| {
+            tab.ui.input.update(cx, |field, cx| field.open_menu(gpui::point(px(400.), px(300.)), window, cx))
+        })?;
+        if !self.summary_menu_shown()? {
+            return Err("The summary's menu did not open".into());
+        }
+        let offered = self.tab.read_with(self.cx, |tab, cx| {
+            tab.ui.input.read(cx).menu_items(true).into_iter().map(|item| (item.label, item.enabled)).collect::<Vec<_>>()
+        })?;
+        if offered != [("Cut", true), ("Copy", true), ("Paste", true), ("Delete", true), ("Select All", true)] {
+            return Err(format!("The summary's menu offers {offered:?}").into());
+        }
+        self.tab.update(self.cx, |tab, window, cx| {
+            tab.ui.input.update(cx, |field, cx| field.choose(commit_input::FieldCommand::Delete, window, cx))
+        })?;
+        if self.summary_menu_shown()? {
+            return Err("The summary's menu stayed open after Delete".into());
+        }
+        self.summary_is("Delete from the menu", "fix the  menu", bistro.start..bistro.start)?;
+        self.key("cmd-z")?;
+        self.summary_is("Cmd-Z after Delete", replaced, bistro.clone())?;
+
+        let clipboard = self.cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))?;
+        if clipboard != saved.and_then(|item| item.text()) {
+            return Err("The clipboard was not put back".into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "")?;
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.input.update(cx, |field, cx| field.clear(cx)))?;
+        self.key("escape")?;
         self.pass();
         Ok(())
     }
