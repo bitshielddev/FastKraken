@@ -179,6 +179,9 @@ fn jump(tab: &mut Tab, forward: bool) -> bool {
 }
 
 pub(crate) fn reload(tab: &mut Tab, cx: &mut Context<Tab>) {
+    if tab.ui.blame.open() {
+        return;
+    }
     let Some(selection) = tab.ui.selection.clone().filter(|selection| *selection != Selection::Changes) else { return };
     let path = match &selection {
         Selection::Commit(_) => tab.ui.inspection.path.clone(),

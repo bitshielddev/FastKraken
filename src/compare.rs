@@ -467,7 +467,7 @@ fn load(tab: &mut Tab, cx: &mut Context<Tab>) {
 pub(crate) fn status_changed(tab: &mut Tab, cx: &mut Context<Tab>) {
     let Some(selection @ Selection::Compare { to: Rev::WorkingTree, .. }) = tab.ui.selection.clone() else { return };
     load(tab, cx);
-    if tab.ui.diff_open {
+    if tab.ui.diff_open && !tab.ui.blame.open() {
         let path = tab.ui.compare.path.clone();
         tab.load_selected_patch(selection, path, cx);
     }

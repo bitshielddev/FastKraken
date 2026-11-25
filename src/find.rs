@@ -189,7 +189,7 @@ pub(crate) fn here(ui: &Ui) -> Option<Surface> {
         return None;
     }
     match view::centre(ui) {
-        Centre::Diff | Centre::FileHistory if view::diff_shown(ui) && crate::image_diff::showing(ui).is_none() => {
+        Centre::Diff | Centre::FileHistory | Centre::Blame if view::diff_shown(ui) && crate::image_diff::showing(ui).is_none() => {
             Some(Surface::Diff)
         }
         Centre::Resolver => Some(Surface::Resolver),
@@ -330,7 +330,7 @@ fn reveal_across(ui: &Ui, hit: &Hit, cx: &App) {
         return;
     }
     let (pan, room, gutter) = match ui.shown_mode() {
-        DiffMode::Unified => (base, width, ui.diff_text.face.unified_gutter()),
+        DiffMode::Unified => (base, width, ui.diff_text.face.unified_gutter() + crate::blame::width(ui)),
         DiffMode::Split => (ui.split_pan().clone(), (width - 1.) / 2. - ui.diff_text.face.split_gutter(), 0.),
     };
     let offset = pan.offset();

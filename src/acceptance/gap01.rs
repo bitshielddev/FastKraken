@@ -910,6 +910,7 @@ impl Replay<'_> {
                 "file.ignore-menu",
                 "file.stash",
                 "file.history",
+                "file.blame",
                 "file.edit",
                 "file.open",
                 "file.reveal",
@@ -951,7 +952,7 @@ impl Replay<'_> {
         let staged = Target::File { path: "trail.txt".into(), side: commands::Side::Staged };
         let rows = self.menu_rows(&staged)?;
         if ids(rows.clone())
-            != ["file.unstage", "file.stash", "file.history", "file.edit", "file.open", "file.reveal", "file.copy-path", "file.copy-full-path"]
+            != ["file.unstage", "file.stash", "file.history", "file.blame", "file.edit", "file.open", "file.reveal", "file.copy-path", "file.copy-full-path"]
         {
             return Err(format!("The menu of the staged trail.txt lists {rows:?}").into());
         }
@@ -984,7 +985,7 @@ impl Replay<'_> {
             .await?;
         let committed = Target::File { path: "trail.txt".into(), side: commands::Side::Commit(second.clone()) };
         let rows = self.menu_rows(&committed)?;
-        let listed = ["file.restore-version", "file.restore-before", "file.history", "file.reveal", "file.copy-path", "file.copy-full-path"];
+        let listed = ["file.restore-version", "file.restore-before", "file.history", "file.blame", "file.reveal", "file.copy-path", "file.copy-full-path"];
         if ids(rows.clone()) != listed
             || rows.iter().any(|row| row.2.is_some())
         {
@@ -1004,9 +1005,10 @@ impl Replay<'_> {
         let stashed = Target::File { path: "notes.txt".into(), side: commands::Side::Stash(saved.clone()) };
         let rows = self.menu_rows(&stashed)?;
         let reason = Some("notes.txt is not in the working tree".to_owned());
-        if ids(rows.clone()) != ["file.history", "file.reveal", "file.copy-path", "file.copy-full-path"]
+        if ids(rows.clone()) != ["file.history", "file.blame", "file.reveal", "file.copy-path", "file.copy-full-path"]
             || rows[0].2.is_some()
-            || rows[1].2 != reason
+            || rows[1].2.is_some()
+            || rows[2].2 != reason
         {
             return Err(format!("The menu of the stashed notes.txt lists {rows:?}").into());
         }

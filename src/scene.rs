@@ -32,6 +32,8 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             .map(|file| Action::Compare(crate::compare::Action::OpenFile(file.path.clone()))),
         "history" => Some(Action::FileHistory(crate::file_history::Action::OpenHere)),
         "historyentry" => Some(Action::FileHistory(crate::file_history::Action::Choose(index))),
+        "blame" => Some(Action::Blame(crate::blame::Action::OpenHere)),
+        "blameline" => Some(Action::Blame(crate::blame::Action::Choose(index))),
         "search" => {
             tab.dispatch(Action::Search(search::Action::Open), window, cx);
             tab.ui.search.input.update(cx, |input, cx| input.set_text(argument, cx));
@@ -384,6 +386,7 @@ pub fn drive(handle: crate::tabs::Front, scene: String, cx: &App) {
                 && !tab.loading_status
                 && !tab.loading_page
                 && !tab.ui.search.loading()
+                && !tab.ui.blame.reading()
                 && !tab.ui.amend.as_ref().is_some_and(|amend| amend.original.is_none())
         };
         let present = |cx: &mut gpui::AsyncApp, nudge: f32| {

@@ -1568,6 +1568,14 @@ pub(crate) fn stop_running() {
 const GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub(crate) fn stream(command: &mut Command, link: &crate::jobs::Link) -> std::io::Result<Output> {
+    stream_into(command, link, |_| {})
+}
+
+pub(crate) fn stream_into(
+    command: &mut Command,
+    link: &crate::jobs::Link,
+    mut each: impl FnMut(&[u8]) + Send + 'static,
+) -> std::io::Result<Output> {
     use std::os::unix::process::CommandExt;
     use std::sync::mpsc;
     use std::time::Instant;
@@ -1596,6 +1604,7 @@ pub(crate) fn stream(command: &mut Command, link: &crate::jobs::Link) -> std::io
             }
             out_link.alive();
             out_link.printed(&buffer[..n]);
+            each(&buffer[..n]);
             bytes.extend_from_slice(&buffer[..n]);
         }
         let _ = out_closed.send(());

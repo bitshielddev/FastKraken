@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    blame,
     commands::{self, Side, Target},
     compare::{self, Rev},
     file_history,
@@ -98,6 +99,40 @@ fn whole_file(tab: &Tab, contents: &str) -> bool {
     !tab.ui.loading_diff() && tab.ui.diff.file.as_ref().and_then(|shown| shown.contents.as_deref()) == Some(contents)
 }
 
+fn porcelain(root: &Path, args: &[&str]) -> Result<Vec<String>> {
+    let mut command = vec!["blame", "--porcelain"];
+    command.extend_from_slice(args);
+    Ok(git(root, &command)?
+        .lines()
+        .filter(|line| {
+            let mut fields = line.split(' ');
+            let first = fields.next().unwrap_or_default();
+            first.len() == 40 && first.bytes().all(|b| b.is_ascii_hexdigit()) && fields.count() >= 2
+        })
+        .map(|line| line[..40].to_owned())
+        .collect())
+}
+
+fn annotated(tab: &Tab) -> Vec<String> {
+    let Some(notes) = tab.ui.blame.notes() else { return Vec::new() };
+    (0..tab.ui.diff.lines.len()).filter_map(|line| notes.commit_of(line).map(|commit| commit.oid.clone())).collect()
+}
+
+fn blaming(tab: &Tab, path: &str, resolved: Option<&str>, lines: &[String]) -> bool {
+    view::centre(&tab.ui) == view::Centre::Blame
+        && tab.ui.blame.settled()
+        && tab.ui.blame.failed().is_none()
+        && tab.ui.blame.blamed().is_some_and(|blamed| blamed.path == Path::new(path))
+        && tab.ui.blame.resolved() == resolved
+        && tab.ui.diff.lines.len() == lines.len()
+        && annotated(tab) == lines
+}
+
+fn chosen(tab: &Tab) -> Option<(String, PathBuf, Option<(String, PathBuf)>)> {
+    let (block, commit) = tab.ui.blame.chosen()?;
+    Some((commit.oid.clone(), block.path.clone(), block.previous.clone()))
+}
+
 impl Replay<'_> {
     pub(super) async fn gap09(&mut self, dir: &Path) -> Result<()> {
         self.compare_two_commits(dir).await?;
@@ -105,7 +140,9 @@ impl Replay<'_> {
         self.compare_with_my_files(dir).await?;
         self.combine_a_run(dir).await?;
         self.step_through_history(dir).await?;
-        self.history_from_my_files(dir).await
+        self.history_from_my_files(dir).await?;
+        self.blame_a_file(dir).await?;
+        self.blame_before_a_change(dir).await
     }
 
     fn pick_commit(&mut self, oid: &str, how: How) -> Result<()> {
@@ -681,6 +718,209 @@ impl Replay<'_> {
         .await?;
         if untouched(&root)? != before {
             return Err("Looking at the history of the stashed base.txt changed a ref, the index or a file".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn blame_a_file(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0907");
+        let root = init(dir, "Blame-trail")?;
+        let pitched = "Base camp by the pines\nWater from the creek\nTents in a row\nFood in the tree\nMap on the board\nLamp by the door\n";
+        record(&root, "camp.txt", pitched, "Pitch the camp")?;
+        let pitch = oid(&root, "HEAD")?;
+        let bridged = pitched.replace("Tents in a row", "Tents by the bridge");
+        record(&root, "camp.txt", &bridged, "Move the tents")?;
+        let tents = oid(&root, "HEAD")?;
+        let edited = bridged.replace("Map on the board", "Map on the wall");
+        fs::write(root.join("camp.txt"), &edited)?;
+        fs::write(root.join("loose.txt"), "Loose\n")?;
+        let uncommitted = "0".repeat(40);
+        let working = porcelain(&root, &["--", "camp.txt"])?;
+        let wanted = [&pitch, &pitch, &tents, &pitch, &uncommitted, &pitch].map(|oid| oid.to_owned());
+        if working != wanted {
+            return Err(format!("git blame lists {working:?} for camp.txt").into());
+        }
+        self.open(&root)?;
+        self.until("Blame-trail open with its changes", |tab| {
+            tab.ui.repo == "Blame-trail" && files(tab, &[], &["camp.txt", "loose.txt"])
+        })
+        .await?;
+        let before = untouched(&root)?;
+        let unstaged = Target::File { path: "camp.txt".into(), side: Side::Unstaged };
+        let offered = self.menu_rows(&unstaged)?.into_iter().find(|row| row.0 == "file.blame");
+        if offered != Some(("file.blame", "Blame".to_owned(), None)) {
+            return Err(format!("The unstaged camp.txt offers {offered:?}").into());
+        }
+        let loose = Target::File { path: "loose.txt".into(), side: Side::Unstaged };
+        let refused = self.menu_rows(&loose)?.into_iter().find(|row| row.0 == "file.blame").and_then(|row| row.2);
+        if refused.as_deref() != Some("This file has never been committed") {
+            return Err(format!("Blame on the untracked loose.txt reads {refused:?}").into());
+        }
+        self.action(Action::Select(file("camp.txt", false)))?;
+        self.until("the unstaged camp.txt open", |tab| patch(tab, "+Map on the wall")).await?;
+        let offered = self.tab.read_with(self.cx, |tab, _| (blame::offered_here(&tab.ui), blame::refused_here(&tab.ui)))?;
+        if offered != (true, None) {
+            return Err(format!("The diff header of camp.txt offers Blame as {offered:?}").into());
+        }
+
+        self.action(Action::Blame(blame::Action::OpenHere))?;
+        self.until("every line of my camp.txt blamed over the graph", |tab| {
+            blaming(tab, "camp.txt", None, &working) && whole_file(tab, &edited)
+        })
+        .await?;
+        let read = self.tab.read_with(self.cx, |tab, _| {
+            let labels: Vec<Option<String>> = (0..6).map(|line| blame::label(&tab.ui, line)).collect();
+            let notes = tab.ui.blame.notes();
+            let tip = notes.and_then(|notes| notes.commit_of(2)).map(|commit| blame::tooltip(commit));
+            let time = notes.and_then(|notes| notes.commit_of(2)).map(|commit| commit.time).unwrap_or_default();
+            (labels, tip, view::exact_time(time), blame::title(&tab.ui), blame::status(&tab.ui))
+        })?;
+        let (labels, tip, time, title, status) = read;
+        let names = |line: usize| labels[line].as_deref().is_some_and(|label| label.ends_with("  Cedar Contributor"));
+        if !(names(0) && names(2) && names(3) && names(5))
+            || labels[1].is_some()
+            || labels[4].as_deref() != Some(blame::NOT_COMMITTED)
+        {
+            return Err(format!("The blame column reads {labels:?}").into());
+        }
+        let hover = format!("Move the tents\nCedar Contributor · {time}\n{}", short(&tents));
+        if tip.as_deref() != Some(hover.as_str()) {
+            return Err(format!("Hovering the third line shows {tip:?}").into());
+        }
+        if title != Some(("camp.txt".to_owned(), "Working copy".to_owned())) || status.as_deref() != Some(blame::HINT) {
+            return Err(format!("The blame view is headed {title:?} with {status:?}").into());
+        }
+        self.action(Action::Blame(blame::Action::Choose(2)))?;
+        self.until("the third line's commit in the strip", |tab| {
+            chosen(tab) == Some((tents.clone(), "camp.txt".into(), Some((pitch.clone(), "camp.txt".into()))))
+        })
+        .await?;
+        self.action(Action::Blame(blame::Action::Choose(4)))?;
+        self.until("the edited line not committed, with HEAD before it", |tab| {
+            chosen(tab) == Some((uncommitted.clone(), "camp.txt".into(), Some((tents.clone(), "camp.txt".into()))))
+        })
+        .await?;
+        self.key("escape")?;
+        self.until("Esc returns to my unstaged camp.txt", |tab| {
+            !tab.ui.blame.open()
+                && view::centre(&tab.ui) == view::Centre::Diff
+                && tab.ui.selection == Some(file("camp.txt", false))
+                && patch(tab, "+Map on the wall")
+        })
+        .await?;
+
+        self.action(Action::Select(Selection::Commit(tents.clone())))?;
+        self.until("Move the tents selected", |tab| tab.ui.selection == Some(Selection::Commit(tents.clone()))).await?;
+        self.open_file("camp.txt").await?;
+        let committed = porcelain(&root, &[&tents, "--", "camp.txt"])?;
+        self.choose(&Target::File { path: "camp.txt".into(), side: Side::Commit(tents.clone()) }, "file.blame")?;
+        self.until("camp.txt blamed at Move the tents", |tab| {
+            blaming(tab, "camp.txt", Some(&tents), &committed) && whole_file(tab, &bridged)
+        })
+        .await?;
+        let title = self.tab.read_with(self.cx, |tab, _| blame::title(&tab.ui))?;
+        if title != Some(("camp.txt".to_owned(), format!("At {}", short(&tents)))) {
+            return Err(format!("The blame of Move the tents is headed {title:?}").into());
+        }
+        if committed.iter().filter(|oid| **oid == tents).count() != 1 || committed.len() != 6 || committed.contains(&uncommitted) {
+            return Err(format!("git blame lists {committed:?} at Move the tents").into());
+        }
+        self.action(Action::Blame(blame::Action::Close))?;
+        self.until("the committed camp.txt open again", |tab| {
+            !tab.ui.blame.open()
+                && view::centre(&tab.ui) == view::Centre::Diff
+                && tab.ui.inspection.path.as_deref() == Some(Path::new("camp.txt"))
+                && patch(tab, "+Tents by the bridge")
+        })
+        .await?;
+        if untouched(&root)? != before {
+            return Err("Blaming camp.txt changed a ref, the index or a file".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn blame_before_a_change(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0908");
+        let root = init(dir, "Blame-before")?;
+        let rest = "Water from the creek\nTents in a row\nFood in the tree\nMap on the board\n";
+        let pitched = format!("Base camp by the pines\n{rest}Lamp by the door\n");
+        record(&root, "camp.txt", &pitched, "Pitch the camp")?;
+        let pitch = oid(&root, "HEAD")?;
+        git(&root, &["mv", "camp.txt", "site.txt"])?;
+        let moved_text = format!("Base camp by the lake\n{rest}Lamp by the door\n");
+        record(&root, "site.txt", &moved_text, "Move the camp")?;
+        let moved = oid(&root, "HEAD")?;
+        record(&root, "site.txt", &format!("Base camp by the lake\n{rest}Lantern by the door\n"), "Hang the lantern")?;
+        let lantern = oid(&root, "HEAD")?;
+        let newest = porcelain(&root, &[&lantern, "--", "site.txt"])?;
+        let oldest = porcelain(&root, &[&pitch, "--", "camp.txt"])?;
+        if newest != [&moved, &pitch, &pitch, &pitch, &pitch, &lantern].map(|oid| oid.to_owned()) || oldest != vec![pitch.clone(); 6] {
+            return Err(format!("git blame lists {newest:?} at the tip and {oldest:?} before the move").into());
+        }
+        self.open(&root)?;
+        self.until("Blame-before open at its tip", |tab| {
+            tab.ui.repo == "Blame-before" && tab.ui.selection == Some(Selection::Commit(lantern.clone()))
+        })
+        .await?;
+        let before = untouched(&root)?;
+        self.open_file("site.txt").await?;
+        self.action(Action::Blame(blame::Action::OpenHere))?;
+        self.until("site.txt blamed at its tip", |tab| blaming(tab, "site.txt", Some(&lantern), &newest)).await?;
+        self.action(Action::Blame(blame::Action::Choose(0)))?;
+        self.until("the moved line's commit chosen, with its old name before it", |tab| {
+            chosen(tab) == Some((moved.clone(), "site.txt".into(), Some((pitch.clone(), "camp.txt".into()))))
+        })
+        .await?;
+
+        self.action(Action::Blame(blame::Action::Before))?;
+        self.until("the blame recomputed at the parent under the old name", |tab| {
+            blaming(tab, "camp.txt", Some(&pitch), &oldest)
+                && whole_file(tab, &pitched)
+                && tab.ui.blame.depth() == 2
+                && chosen(tab).is_none()
+        })
+        .await?;
+        let title = self.tab.read_with(self.cx, |tab, _| blame::title(&tab.ui))?;
+        if title != Some(("camp.txt".to_owned(), format!("At {}", short(&pitch)))) {
+            return Err(format!("The earlier blame is headed {title:?}").into());
+        }
+        self.action(Action::Blame(blame::Action::Choose(0)))?;
+        self.action(Action::Blame(blame::Action::Before))?;
+        self.until("the first commit has nothing before it", |tab| {
+            chosen(tab) == Some((pitch.clone(), "camp.txt".into(), None))
+                && tab.ui.blame.depth() == 2
+                && blaming(tab, "camp.txt", Some(&pitch), &oldest)
+        })
+        .await?;
+
+        self.key("escape")?;
+        self.until("Esc returns to the blame at the tip", |tab| {
+            blaming(tab, "site.txt", Some(&lantern), &newest) && tab.ui.blame.depth() == 1
+        })
+        .await?;
+        self.action(Action::Blame(blame::Action::Choose(5)))?;
+        self.action(Action::Blame(blame::Action::ShowInGraph))?;
+        self.until("the lantern's commit shown in the graph", |tab| {
+            !tab.ui.blame.open()
+                && view::centre(&tab.ui) == view::Centre::History
+                && tab.ui.selection == Some(Selection::Commit(lantern.clone()))
+        })
+        .await?;
+        self.open_file("site.txt").await?;
+        self.action(Action::Blame(blame::Action::OpenHere))?;
+        self.until("site.txt blamed again", |tab| blaming(tab, "site.txt", Some(&lantern), &newest)).await?;
+        self.key("escape")?;
+        self.until("Esc from the first blame returns to the file", |tab| {
+            !tab.ui.blame.open()
+                && view::centre(&tab.ui) == view::Centre::Diff
+                && tab.ui.inspection.path.as_deref() == Some(Path::new("site.txt"))
+                && patch(tab, "+Lantern by the door")
+        })
+        .await?;
+        if untouched(&root)? != before {
+            return Err("Blaming site.txt changed a ref, the index or a file".into());
         }
         self.pass();
         Ok(())

@@ -374,7 +374,7 @@ pub(crate) fn header_path(header: &str) -> Option<PathBuf> {
     let rest = header.strip_prefix("diff --git ")?;
     let path = if rest.ends_with('"') {
         let start = rest.rfind(" \"b/")? + 1;
-        unquoted(&rest[start..])?.strip_prefix(b"b/")?.to_vec()
+        unquoted(rest[start..].as_bytes())?.strip_prefix(b"b/")?.to_vec()
     } else {
         let same = rest.strip_prefix("a/").and_then(|both| {
             let length = both.len().checked_sub(3)? / 2;
@@ -391,8 +391,8 @@ pub(crate) fn header_path(header: &str) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(std::ffi::OsString::from_vec(path)))
 }
 
-fn unquoted(quoted: &str) -> Option<Vec<u8>> {
-    let mut bytes = quoted.strip_prefix('"')?.strip_suffix('"')?.bytes();
+pub(crate) fn unquoted(quoted: &[u8]) -> Option<Vec<u8>> {
+    let mut bytes = quoted.strip_prefix(b"\"")?.strip_suffix(b"\"")?.iter().copied();
     let mut path = Vec::new();
     while let Some(byte) = bytes.next() {
         if byte != b'\\' {

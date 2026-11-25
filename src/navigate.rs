@@ -192,6 +192,22 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         tab.dispatch(view::Action::Activity(crate::activity::Action::Step(how)), window, cx);
         return;
     }
+    if crate::view::centre(ui) == crate::view::Centre::Blame && zone != Zone::Sidebar {
+        use crate::blame::Action as Blame;
+        let wanted = match action {
+            Action::Step(delta) => Blame::Step(delta),
+            Action::First => Blame::Step(isize::MIN),
+            Action::Last => Blame::Step(isize::MAX),
+            Action::Page(_) | Action::Home | Action::End => {
+                scroll_patch(&tab.ui, action);
+                cx.notify();
+                return;
+            }
+            _ => return,
+        };
+        tab.dispatch(view::Action::Blame(wanted), window, cx);
+        return;
+    }
     if crate::view::centre(ui) == crate::view::Centre::FileHistory && zone != Zone::Sidebar {
         use crate::file_history::Action as History;
         let last = ui.file_history.entries().len().saturating_sub(1);

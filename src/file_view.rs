@@ -138,6 +138,7 @@ pub(crate) fn wanted(ui: &Ui, selection: &Selection, open: Option<&Path>) -> boo
 pub(crate) fn offered(ui: &Ui) -> bool {
     let Some(selection) = &ui.selection else { return false };
     view::diff_shown(ui)
+        && !ui.blame.open()
         && single(selection, image_diff::selection_open(ui).as_deref()).is_some()
 }
 

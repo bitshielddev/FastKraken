@@ -120,12 +120,12 @@ const WRAP_MARGIN: f32 = 14.;
 const NARROWEST: usize = 8;
 
 impl Columns {
-    pub(crate) fn fitting(width: Pixels, cell: Pixels, face: &Face) -> Self {
+    pub(crate) fn fitting(width: Pixels, cell: Pixels, face: &Face, beside: f32) -> Self {
         let cell = f32::from(cell).max(1.);
         let width = f32::from(width);
         let fit = |room: f32| ((room / cell).floor().max(0.) as usize).max(NARROWEST);
         Self {
-            unified: fit(width - face.unified_gutter() - WRAP_MARGIN),
+            unified: fit(width - face.unified_gutter() - beside - WRAP_MARGIN),
             split: fit((width - 1.) / 2. - face.split_gutter() - WRAP_MARGIN),
             tab: face.tab.max(1),
         }
@@ -138,8 +138,8 @@ pub(crate) fn shaped(window: &Window, face: &Face, text: &str) -> gpui::ShapedLi
     window.text_system().shape_line(text.to_owned().into(), face.text(), &[run], None)
 }
 
-pub(crate) fn measure(window: &Window, width: Pixels, face: &Face) -> Columns {
-    Columns::fitting(width, shaped(window, face, "0").width, face)
+pub(crate) fn measure(window: &Window, width: Pixels, face: &Face, beside: f32) -> Columns {
+    Columns::fitting(width, shaped(window, face, "0").width, face, beside)
 }
 
 #[derive(Debug, Default)]
@@ -430,91 +430,98 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     let editable = ui.can_edit_index();
     let picture = crate::image_diff::showing(ui);
     let texts = picture.is_none();
-    let header = div()
-        .min_h(px(34.))
-        .flex_shrink_0()
-        .pl_3()
-        .pr_2()
-        .py_1()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap_x_2()
-        .gap_y_1()
-        .bg(rgb(PANEL))
-        .border_b_1()
-        .border_color(rgb(LINE))
-        .child(
-            kit::fit(match &open_file {
-                Some(path) => path.to_string_lossy().into_owned(),
-                None => heading,
-            })
-            .size(12.5)
-            .weight(FontWeight::SEMIBOLD)
-            .cut(kit::Cut::Start),
-        )
-        .when_some(from.clone(), |d, from| {
-            d.child(
-                kit::fit(format!("from {}", from.display()))
-                    .size(11.5)
-                    .color(TEXT_3)
-                    .cut(kit::Cut::Start),
+    let blaming = crate::blame::showing(ui);
+    let header = if blaming {
+        blame_header(ui, cx)
+    } else {
+        div()
+            .min_h(px(34.))
+            .flex_shrink_0()
+            .pl_3()
+            .pr_2()
+            .py_1()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x_2()
+            .gap_y_1()
+            .bg(rgb(PANEL))
+            .border_b_1()
+            .border_color(rgb(LINE))
+            .child(
+                kit::fit(match &open_file {
+                    Some(path) => path.to_string_lossy().into_owned(),
+                    None => heading,
+                })
+                .size(12.5)
+                .weight(FontWeight::SEMIBOLD)
+                .cut(kit::Cut::Start),
             )
-        })
-        .when_some(side, |d, staged| {
-            d.child(kit::chip(
-                kit::Chip::Plain,
-                if staged { "Staged" } else { "Unstaged" },
-            ))
-        })
-        .child(kit::grow())
-        .when_some(ui.selection.clone(), |d, selection| match selection {
-            Selection::File {
-                path,
-                staged: false,
-            } => d
-                .child(crate::stash::file_button(app, cx))
-                .child(
-                    kit::btn("discard-file", "Discard…")
-                        .small()
-                        .danger()
-                        .enabled(editable)
-                        .on(Action::AskDiscard(Discard::File(path)), cx),
+            .when_some(from.clone(), |d, from| {
+                d.child(
+                    kit::fit(format!("from {}", from.display()))
+                        .size(11.5)
+                        .color(TEXT_3)
+                        .cut(kit::Cut::Start),
                 )
-                .child(
-                    kit::btn("stage-file", "Stage file")
-                        .small()
-                        .enabled(editable)
-                        .on(Action::StageFile, cx),
-                ),
-            Selection::File { path, staged: true } => d
-                .when(whole_rename, |d| d.child(kit::muted(WHOLE_RENAME)))
-                .child(
-                    kit::btn("unstage-file", "Unstage file")
-                        .small()
-                        .enabled(editable)
-                        .on(Action::UnstagePath(path), cx),
-                ),
-            _ => d,
-        })
-        .when_some(edit_button(ui, cx), |d, button| d.child(button))
-        .when_some(crate::stash::restore_button(ui, cx), |d, button| d.child(button))
-        .when(crate::file_history::offered_here(ui), |d| d.child(crate::file_history::button(ui, cx)))
-        .when(crate::file_view::offered(ui), |d| d.child(crate::file_view::toggle(ui, cx)))
-        .when(crate::image_diff::offers_toggle(ui), |d| d.child(crate::image_diff::toggle(ui, cx)))
-        .when(texts && !file_view && !doc.lines.is_empty(), |d| {
-            d.child(mode_control(mode, cx))
-        })
-        .when(texts, |d| d.child(options_control(ui, file_view, cx)))
-        .when(texts && !doc.lines.is_empty() && !(file_view && layout.changes.is_empty()), |d| d.child(change_buttons(cx)))
-        .child(kit::icon_btn(
-            "close-diff",
-            "x",
-            "Back to the graph (Esc)",
-            Action::CloseDiff,
-            cx,
-        ));
+            })
+            .when_some(side, |d, staged| {
+                d.child(kit::chip(
+                    kit::Chip::Plain,
+                    if staged { "Staged" } else { "Unstaged" },
+                ))
+            })
+            .child(kit::grow())
+            .when_some(ui.selection.clone(), |d, selection| match selection {
+                Selection::File {
+                    path,
+                    staged: false,
+                } => d
+                    .child(crate::stash::file_button(app, cx))
+                    .child(
+                        kit::btn("discard-file", "Discard…")
+                            .small()
+                            .danger()
+                            .enabled(editable)
+                            .on(Action::AskDiscard(Discard::File(path)), cx),
+                    )
+                    .child(
+                        kit::btn("stage-file", "Stage file")
+                            .small()
+                            .enabled(editable)
+                            .on(Action::StageFile, cx),
+                    ),
+                Selection::File { path, staged: true } => d
+                    .when(whole_rename, |d| d.child(kit::muted(WHOLE_RENAME)))
+                    .child(
+                        kit::btn("unstage-file", "Unstage file")
+                            .small()
+                            .enabled(editable)
+                            .on(Action::UnstagePath(path), cx),
+                    ),
+                _ => d,
+            })
+            .when_some(edit_button(ui, cx), |d, button| d.child(button))
+            .when_some(crate::stash::restore_button(ui, cx), |d, button| d.child(button))
+            .when(crate::file_history::offered_here(ui), |d| d.child(crate::file_history::button(ui, cx)))
+            .when(crate::blame::offered_here(ui), |d| d.child(crate::blame::button(ui, cx)))
+            .when(crate::file_view::offered(ui), |d| d.child(crate::file_view::toggle(ui, cx)))
+            .when(crate::image_diff::offers_toggle(ui), |d| d.child(crate::image_diff::toggle(ui, cx)))
+            .when(texts && !file_view && !doc.lines.is_empty(), |d| {
+                d.child(mode_control(mode, cx))
+            })
+            .when(texts, |d| d.child(options_control(ui, file_view, cx)))
+            .when(texts && !doc.lines.is_empty() && !(file_view && layout.changes.is_empty()), |d| d.child(change_buttons(cx)))
+            .child(kit::icon_btn(
+                "close-diff",
+                "x",
+                "Back to the graph (Esc)",
+                Action::CloseDiff,
+                cx,
+            ))
+    };
     let list_id = match &ui.selection {
+        _ if blaming => format!("blame-{:?}-{:?}", ui.blame.blamed(), ui.blame.resolved()),
         Some(Selection::File { path, staged }) => {
             format!("patch-{staged}-{}", path.to_string_lossy())
         }
@@ -543,6 +550,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         cx.processor(move |app, rows: Range<usize>, _, cx| {
             let ui = app.ui();
             let face = &ui.diff_text.face;
+            let blaming = crate::blame::showing(ui);
             let editable = ui.can_edit_index();
             let layout = &ui.diff_layout;
             let doc = &ui.diff;
@@ -591,11 +599,12 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                                 .child(kit::fit(path.to_owned()).size(12.5).weight(FontWeight::SEMIBOLD))
                         }
                         Kind::Note | Kind::NoNewline => base_row(face)
-                            .pl(if split { px(12.) } else { px(face.unified_gutter()) })
+                            .pl(if split { px(12.) } else { px(face.unified_gutter() + crate::blame::width(ui)) })
                             .child(note(text)),
                         _ => line_menu(
                             base_row(face)
                                 .when_some(line_background(row.kind), |d, bg| d.bg(rgb(bg)))
+                                .children(blaming.then(|| crate::blame::cell(ui, item, first, face, cx)).flatten())
                                 .child(crate::lines::gutter(
                                     ui,
                                     item,
@@ -647,6 +656,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     let marks = showing_marks(ui);
     let measured = ui.diff_options.measured;
     let face_measured = ui.diff_text.face.clone();
+    let beside = crate::blame::width(ui);
     let desk = cx.entity().downgrade();
     let bars = texts.then(|| bars(ui)).unwrap_or_default();
     let placeholder = (texts && doc.lines.is_empty() && doc.state != PatchState::Truncated)
@@ -682,7 +692,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                     if width == measured || width <= px(0.) {
                         return;
                     }
-                    let columns = measure(window, width, &face_measured);
+                    let columns = measure(window, width, &face_measured, beside);
                     let _ = desk.update(cx, |app, cx| {
                         if crate::diff_options::resized(app.ui_mut(), width, columns) {
                             cx.notify();
@@ -696,7 +706,36 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         })
 }
 
+fn blame_header<T: Desk>(ui: &Ui, cx: &Context<T>) -> Div {
+    let (path, at) = crate::blame::title(ui).unwrap_or_default();
+    div()
+        .min_h(px(34.))
+        .flex_shrink_0()
+        .pl_3()
+        .pr_2()
+        .py_1()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_x_2()
+        .gap_y_1()
+        .bg(rgb(PANEL))
+        .border_b_1()
+        .border_color(rgb(LINE))
+        .child(kit::fit(path).size(12.5).weight(FontWeight::SEMIBOLD).cut(kit::Cut::Start))
+        .when(!at.is_empty(), |d| d.child(kit::chip(kit::Chip::Plain, at)))
+        .when(ui.blame.reading(), |d| d.child(kit::spinner("blame-header-reading")))
+        .child(kit::grow())
+        .child(crate::blame::details(ui, cx))
+        .child(crate::blame::button(ui, cx))
+        .when(!ui.diff.lines.is_empty(), |d| d.child(options_control(ui, true, cx)))
+        .child(kit::icon_btn("close-blame", "x", "Back to where you were (Esc)", Action::Blame(crate::blame::Action::Close), cx))
+}
+
 pub(crate) fn placeholder_text(ui: &Ui, renamed: bool) -> Option<String> {
+    if let Some(text) = crate::blame::placeholder(ui) {
+        return Some(text);
+    }
     let whole = match &ui.selection {
         Some(Selection::Commit(_)) if ui.inspection.path.is_none() => Some("commit"),
         Some(Selection::Stash(_)) if ui.stash.open_path().is_none() => Some("stash"),
@@ -1293,11 +1332,11 @@ mod tests {
     #[test]
     fn columns_fit_the_code_area_beside_the_gutter() {
         let face = Face { tab: 3, ..Face::default() };
-        let columns = Columns::fitting(px(1096.), px(10.), &face);
+        let columns = Columns::fitting(px(1096.), px(10.), &face, 0.);
         assert_eq!(columns, Columns { unified: 98, split: 48, tab: 3 });
-        assert_eq!(Columns::fitting(px(50.), px(10.), &face).unified, NARROWEST);
+        assert_eq!(Columns::fitting(px(50.), px(10.), &face, 0.).unified, NARROWEST);
         let bare = Face { numbers: false, ..face };
-        assert_eq!(Columns::fitting(px(1096.), px(10.), &bare), Columns { unified: 106, split: 51, tab: 3 });
+        assert_eq!(Columns::fitting(px(1096.), px(10.), &bare, 0.), Columns { unified: 106, split: 51, tab: 3 });
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod assets;
 mod auth;
 mod autofetch;
 mod autostash;
+mod blame;
 mod branch;
 mod changes;
 mod cli;
@@ -528,6 +529,7 @@ impl Tab {
                             .collect();
                         picked::refresh(&mut tab.ui);
                         compare::status_changed(tab, cx);
+                        blame::status_changed(tab, cx);
                         if let Some(Selection::File { path, staged }) = tab.ui.selection.clone() {
                             if tab
                                 .ui
@@ -610,6 +612,10 @@ impl Tab {
             return;
         }
         file_history::selected(self, &selection);
+        if blame::selected(self, &selection) {
+            cx.notify();
+            return;
+        }
         if !matches!(selection, Selection::File { .. })
             && self.ui.selection.as_ref() != Some(&selection)
         {
@@ -660,6 +666,7 @@ impl Tab {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        blame::leave(self);
         self.clear_diff();
         self.ui.diff_title = match &selection {
             Selection::Commit(oid) => self
@@ -1627,6 +1634,7 @@ impl Tab {
             Action::Images(action) => image_diff::dispatch(self, action, window, cx),
             Action::FileView(action) => file_view::dispatch(self, action, window, cx),
             Action::FileHistory(action) => file_history::dispatch(self, action, window, cx),
+            Action::Blame(action) => blame::dispatch(self, action, window, cx),
             Action::Recover(action) => recover::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
@@ -1675,6 +1683,10 @@ impl Tab {
                 self.ui.rewrap();
                 settings::Settings::update(cx, |s| s.diff_mode = mode);
                 cx.notify();
+            }
+            Action::CloseDiff if self.ui.blame.open() => {
+                blame::dispatch(self, blame::Action::Close, window, cx);
+                view::focus(&self.ui, window);
             }
             Action::CloseDiff if self.ui.file_history.open() => {
                 file_history::dispatch(self, file_history::Action::Close, window, cx);

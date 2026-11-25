@@ -1190,7 +1190,7 @@ impl State {
         self.files.iter().find(|file| file.path == path).and_then(|file| file.from.clone())
     }
 
-    fn file(&self, oid: &str, path: &Path) -> Option<&ChangedFile> {
+    pub(crate) fn file(&self, oid: &str, path: &Path) -> Option<&ChangedFile> {
         if self.detail_oid.as_deref() != Some(oid) || !self.entries.iter().any(|entry| entry.oid == oid) {
             return None;
         }

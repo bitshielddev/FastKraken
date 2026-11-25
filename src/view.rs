@@ -588,6 +588,7 @@ pub enum Action {
     Images(crate::image_diff::Action),
     FileView(crate::file_view::Action),
     FileHistory(crate::file_history::Action),
+    Blame(crate::blame::Action),
     Recover(crate::recover::Action),
     Discard(crate::discard::Action),
     Ignore(crate::ignore::Action),
@@ -691,6 +692,7 @@ pub struct Ui {
     pub(crate) picked: Option<crate::picked::Picked<PathBuf>>,
     pub(crate) compare: crate::compare::State,
     pub(crate) file_history: crate::file_history::State,
+    pub(crate) blame: crate::blame::State,
     pub(crate) lines: crate::lines::State,
     pub(crate) text: crate::diff_select::State,
     pub(crate) message: crate::inspection::Message,
@@ -796,6 +798,7 @@ impl Ui {
             picked: None,
             compare: Default::default(),
             file_history: Default::default(),
+            blame: Default::default(),
             lines: Default::default(),
             text: Default::default(),
             message: crate::inspection::Message::new(cx),
@@ -2863,6 +2866,7 @@ pub(crate) enum Centre {
     Chooser,
     Diff,
     FileHistory,
+    Blame,
     Search,
     History,
 }
@@ -2871,6 +2875,7 @@ pub(crate) fn diff_shown(ui: &Ui) -> bool {
     match centre(ui) {
         Centre::Diff => true,
         Centre::FileHistory => crate::file_history::shows_diff(ui),
+        Centre::Blame => true,
         _ => false,
     }
 }
@@ -2884,6 +2889,8 @@ pub(crate) fn centre(ui: &Ui) -> Centre {
     let browsing = !crate::operation::owns_panel(ui);
     if ui.activity.open() {
         Centre::Activity
+    } else if ui.blame.open() {
+        Centre::Blame
     } else if ui.file_history.open() {
         Centre::FileHistory
     } else if ui.diff_open && browsing {
@@ -3227,6 +3234,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Lines(crate::lines::Action::Clear), w, cx);
             } else if diff_shown(ui) && crate::diff_select::current(ui).is_some() {
                 app.dispatch(Action::Text(crate::diff_select::Action::Clear), w, cx);
+            } else if centre(ui) == Centre::Blame {
+                app.dispatch(Action::Blame(crate::blame::Action::Back), w, cx);
             } else if centre(ui) == Centre::FileHistory {
                 app.dispatch(Action::FileHistory(crate::file_history::Action::Close), w, cx);
             } else if centre(ui) == Centre::Diff {
@@ -3306,6 +3315,7 @@ pub fn render<T: Desk>(
             Centre::Chooser => crate::conflict::chooser(app, cx),
             Centre::Diff => diff_view::render(app, window, cx),
             Centre::FileHistory => crate::file_history::render(app, window, cx),
+            Centre::Blame => crate::blame::render(app, window, cx),
             Centre::Search => crate::search::results(app, cx),
             Centre::History => history(app, ui.columns_drawn(viewport).1, cx),
         };
