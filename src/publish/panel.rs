@@ -6,6 +6,10 @@ fn act<T: Desk>(button: kit::Btn, action: Action, cx: &Context<T>) -> gpui::Stat
     button.on(view::Action::Publish(action), cx)
 }
 
+fn close_menus() -> view::Action {
+    view::Action::Publish(Action::CloseMenus)
+}
+
 fn note(text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(TEXT_SMALL))
@@ -594,6 +598,7 @@ fn account_row<T: Desk>(
     login: &str,
     slug: &str,
     ready: bool,
+    over: &mut kit::Over,
     cx: &Context<T>,
 ) -> Div {
     let menu = kit::float()
@@ -643,7 +648,7 @@ fn account_row<T: Desk>(
                 cx,
             ))
             .when(state.account_menu, |d| {
-                d.child(kit::popover_over_modal(menu, true))
+                d.child(kit::popover_over_modal(menu, true, close_menus(), over, cx))
             }),
     )
 }
@@ -814,7 +819,7 @@ fn recovery_page<T: Desk>(state: &State, receipt: &Receipt, ready: bool, cx: &Co
     }
 }
 
-fn github_page<T: Desk>(app: &T, ready: bool, cx: &Context<T>) -> Div {
+fn github_page<T: Desk>(app: &T, ready: bool, over: &mut kit::Over, cx: &Context<T>) -> Div {
     let ui = app.ui();
     let state = &ui.publish;
     if let Some(device) = &state.device {
@@ -838,6 +843,7 @@ fn github_page<T: Desk>(app: &T, ready: bool, cx: &Context<T>) -> Div {
         &account.login,
         client.slug(),
         ready,
+        over,
         cx,
     ));
     if let Some(receipt) = &state.pending {
@@ -906,7 +912,7 @@ fn github_page<T: Desk>(app: &T, ready: bool, cx: &Context<T>) -> Div {
                             cx,
                         ))
                         .when(state.owner_menu, |d| {
-                            d.child(kit::popover_over_modal(owners, false))
+                            d.child(kit::popover_over_modal(owners, false, close_menus(), over, cx))
                         }),
                 )
                 .child(div().text_color(rgb(TEXT_OFF)).child("/"))
@@ -1068,12 +1074,12 @@ pub(crate) fn accounts<T: Desk>(app: &T, cx: &Context<T>) -> Div {
         .child(body)
 }
 
-pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoElement + use<T>> {
+pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Vec<gpui::AnyElement> {
     let ui = app.ui();
     let state = &ui.publish;
     let page = state.page;
     if matches!(page, Page::Closed | Page::Branch | Page::Account) {
-        return None;
+        return Vec::new();
     }
     let ready = !ui.busy() && !state.working && state.remotes_loaded;
     let title = match page {
@@ -1090,13 +1096,14 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
         && !state.working
         && text(&state.client_id, cx).is_empty()
         && text(&state.slug, cx).is_empty();
+    let mut over = kit::Over::default();
     let content = match page {
         Page::Menu => match &state.remote_edit {
             Some(edit) => edit_remote_page(state, edit, !ui.busy() && !state.working, cx),
             None => remotes_page(state, ready, cx),
         },
         Page::Add => add_page(app, ready, cx),
-        _ => github_page(app, ready, cx),
+        _ => github_page(app, ready, &mut over, cx),
     };
     let surface = kit::float()
         .w(px(480.))
@@ -1141,5 +1148,5 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                 .children(status(state).filter(|_| !unconfigured))
                 .child(content),
         );
-    Some(kit::modal(surface, None, &ui.modal_focus, cx))
+    kit::modal_over(surface, over, None, &ui.modal_focus, cx)
 }

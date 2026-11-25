@@ -3,12 +3,13 @@ use crate::{
     view::{Action, ActivateControl, Desk},
 };
 use gpui::{
-    Animation, AnimationExt, AnyElement, AnyView, App, Bounds, Context, Deferred, Div, Element,
-    ElementId, FocusHandle, FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, Pixels, Render, ShapedLine, SharedString, Stateful, Style, Svg,
-    TextRun, Transformation, Window, deferred, div, percentage, prelude::*, px, rgb, rgba, svg,
+    Animation, AnimationExt, AnyElement, AnyView, App, Bounds, Canvas, Context, Deferred, Display,
+    Div, Element, ElementId, FocusHandle, FontWeight, GlobalElementId, Hsla, InspectorElementId,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, Pixels, Position, Render, ShapedLine,
+    SharedString, Stateful, Style, Svg, TextRun, Transformation, Window, canvas, deferred, div,
+    percentage, point, prelude::*, px, rgb, rgba, svg,
 };
-use std::time::Duration;
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 pub use crate::scrollbar::scrollbar;
 
@@ -738,14 +739,120 @@ pub fn popover(surface: impl IntoElement, right_aligned: bool) -> Deferred {
     .with_priority(1)
 }
 
-pub fn popover_over_modal(surface: impl IntoElement, right_aligned: bool) -> Deferred {
-    let anchor = div().absolute().top(px(CONTROL + 8.));
-    deferred(if right_aligned {
-        anchor.right_0().child(surface)
-    } else {
-        anchor.left_0().child(surface)
-    })
-    .with_priority(3)
+#[derive(Default)]
+pub struct Over(Vec<AnyElement>);
+
+type Spot = Rc<Cell<Option<Bounds<Pixels>>>>;
+
+pub fn popover_over_modal<T: Desk>(
+    surface: Div,
+    right_aligned: bool,
+    close: Action,
+    over: &mut Over,
+    cx: &Context<T>,
+) -> Canvas<()> {
+    let spot = Spot::default();
+    let trigger = spot.clone();
+    let surface = surface.on_mouse_down_out(cx.listener(move |app, event: &MouseDownEvent, w, cx| {
+        if !trigger.get().is_some_and(|bounds| bounds.contains(&event.position)) {
+            app.dispatch(close.clone(), w, cx)
+        }
+    }));
+    let lifted = Lifted {
+        spot: spot.clone(),
+        right_aligned,
+        surface: any(surface),
+    };
+    over.0.push(any(deferred(lifted).with_priority(3)));
+    canvas(move |bounds, _, _| spot.set(Some(bounds)), |_, _, _, _| {})
+        .absolute()
+        .inset_0()
+}
+
+struct Lifted {
+    spot: Spot,
+    right_aligned: bool,
+    surface: AnyElement,
+}
+
+impl IntoElement for Lifted {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Lifted {
+    type RequestLayoutState = LayoutId;
+    type PrepaintState = bool;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, LayoutId) {
+        let surface = self.surface.request_layout(window, cx);
+        let mut style = Style::default();
+        style.position = Position::Absolute;
+        style.display = Display::Flex;
+        (window.request_layout(style, [surface], cx), surface)
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        surface: &mut LayoutId,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some(trigger) = self.spot.get() else {
+            return false;
+        };
+        let size = window.layout_bounds(*surface).size;
+        let room = window.viewport_size();
+        let margin = px(8.);
+        let x = if self.right_aligned {
+            trigger.right() - size.width
+        } else {
+            trigger.left()
+        };
+        let x = x.min(room.width - size.width - margin).max(margin);
+        let y = (trigger.top() + px(CONTROL + 8.))
+            .min(room.height - size.height - margin)
+            .max(margin);
+        let offset = point(x, y) - bounds.origin;
+        window.with_element_offset(point(offset.x.round(), offset.y.round()), |window| {
+            self.surface.prepaint(window, cx)
+        });
+        true
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut LayoutId,
+        drawn: &mut bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if *drawn {
+            self.surface.paint(window, cx);
+        }
+    }
 }
 
 pub fn segmented() -> Div {
@@ -1026,6 +1133,18 @@ pub fn modal<T: Desk>(
             ),
     )
     .with_priority(2)
+}
+
+pub fn modal_over<T: Desk>(
+    surface: impl IntoElement,
+    over: Over,
+    dismiss: Option<Action>,
+    focus: &FocusHandle,
+    cx: &Context<T>,
+) -> Vec<AnyElement> {
+    std::iter::once(any(modal(surface, dismiss, focus, cx)))
+        .chain(over.0)
+        .collect()
 }
 
 pub fn dialog(title: impl Into<SharedString>, width: f32) -> Div {

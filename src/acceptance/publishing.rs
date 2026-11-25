@@ -115,6 +115,21 @@ impl Replay<'_> {
             },
         )
         .await?;
+        for (toggle, open, which) in [
+            (Publish::ToggleAccountMenu, (true, false), "account"),
+            (Publish::ToggleOwnerMenu, (false, true), "owner"),
+        ] {
+            self.action(Action::Publish(toggle))?;
+            self.until(&format!("the {which} menu drawn over the form"), |tab| {
+                tab.ui.publish.menus() == open
+            })
+            .await?;
+            self.action(Action::Publish(Publish::CloseMenus))?;
+            self.until(&format!("the {which} menu closed with the form still open"), |tab| {
+                tab.ui.publish.menus() == (false, false) && tab.ui.publish.open()
+            })
+            .await?;
+        }
         self.publish_action(Publish::SelectOwner(1)).await?;
         self.until("installed organisation selected", |tab| {
             tab.ui

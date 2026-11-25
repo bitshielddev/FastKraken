@@ -178,6 +178,7 @@ pub(crate) enum Action {
     TogglePush,
     ToggleAccountMenu,
     ToggleOwnerMenu,
+    CloseMenus,
     UseBuiltInApp,
 }
 
@@ -289,6 +290,10 @@ impl State {
     #[cfg(feature = "publish-replay")]
     pub(crate) fn awaiting_confirmation(&self) -> bool {
         self.confirmation.is_some()
+    }
+    #[cfg(feature = "publish-replay")]
+    pub(crate) fn menus(&self) -> (bool, bool) {
+        (self.account_menu, self.owner_menu)
     }
     pub(crate) fn owner(&self) -> Option<&crate::github::Owner> {
         self.owner
@@ -769,6 +774,11 @@ fn first_push(tab: &mut Tab, cx: &mut Context<Tab>) {
 }
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
+    if let Action::CloseMenus = action {
+        let state = &mut tab.ui.publish;
+        (state.account_menu, state.owner_menu) = (false, false);
+        return cx.notify();
+    }
     let account = tab.ui.publish.page == Page::Account;
     if tab.repo.is_some() && tab.ui.busy() && matches!(action, Action::Escape) && !account {
         return stop(tab, cx);
