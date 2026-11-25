@@ -240,6 +240,7 @@ struct Editor {
     preview: Preview,
     unresolved: usize,
     width: f32,
+    revision: u64,
 }
 
 fn display_line(line: &str) -> String {
@@ -264,6 +265,7 @@ impl Editor {
             preview,
             unresolved,
             width,
+            revision: 0,
         }
     }
 
@@ -299,6 +301,7 @@ impl Editor {
     fn refresh_preview(&mut self) {
         self.preview = self.document.preview(&self.choices);
         self.unresolved = self.document.unresolved(&self.choices);
+        self.revision += 1;
     }
 }
 
@@ -339,6 +342,40 @@ impl State {
                 ResultRow::Unresolved { .. } => None,
             }).collect()
         })
+    }
+
+    pub(crate) fn find_key(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let editor = self.editor.as_ref()?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (Arc::as_ptr(&editor.document) as usize, editor.hunk, editor.revision, self.document_ticket).hash(&mut hasher);
+        Some(hasher.finish())
+    }
+
+    pub(crate) fn find_lines(&self, mut visit: impl FnMut(crate::find::Pane, usize, &str)) {
+        use crate::find::Pane;
+        let Some(editor) = self.editor.as_ref() else { return };
+        let source = &editor.document.source;
+        let pairs = editor.document.hunks.get(editor.hunk).map_or(&[][..], Vec::as_slice);
+        for (pane, side) in [(Pane::Current, Side::Current), (Pane::Incoming, Side::Incoming)] {
+            for (row, pair) in pairs.iter().enumerate() {
+                if let Some((_, range)) = pair.on(side) {
+                    visit(pane, row, &display_line(&source[range.clone()]));
+                }
+            }
+        }
+        for (row, shown) in editor.preview.rows.iter().enumerate() {
+            if let ResultRow::Text { range, .. } = shown {
+                visit(Pane::Result, row, &display_line(&source[range.clone()]));
+            }
+        }
+    }
+
+    pub(crate) fn reveal(&self, pane: crate::find::Pane, row: usize) {
+        match pane {
+            crate::find::Pane::Result => self.result_scroll.scroll_to_item(row, ScrollStrategy::Center),
+            _ => self.source_scroll.scroll_to_item(row, ScrollStrategy::Center),
+        }
     }
 
     fn show_hunk(&mut self, index: usize) {
@@ -648,6 +685,7 @@ fn line_text(
     text: &str,
     width: f32,
     pan: &ScrollHandle,
+    found: Vec<(Range<usize>, gpui::HighlightStyle)>,
 ) -> impl IntoElement {
     let mut text = div()
         .id(id)
@@ -661,7 +699,7 @@ fn line_text(
                 .font_family(MONO)
                 .text_size(px(TEXT_SMALL))
                 .whitespace_nowrap()
-                .child(display_line(text)),
+                .child(gpui::StyledText::new(display_line(text)).with_highlights(found)),
         );
     text.style().restrict_scroll_to_axis = Some(true);
     text
@@ -676,9 +714,9 @@ fn source_cell<T: Desk>(app: &T, row: usize, side: Side, cx: &Context<T>) -> Div
     let selected = choice.is_some_and(|choice| choice.includes(side));
     let version = pair.on(side);
     let color = side_color(side);
-    let (button_id, text_id, tip) = match side {
-        Side::Current => ("merge-pick-current", "merge-current-text", "Toggle current line"),
-        Side::Incoming => ("merge-pick-incoming", "merge-incoming-text", "Toggle incoming line"),
+    let (button_id, text_id, tip, pane) = match side {
+        Side::Current => ("merge-pick-current", "merge-current-text", "Toggle current line", crate::find::Pane::Current),
+        Side::Incoming => ("merge-pick-incoming", "merge-incoming-text", "Toggle incoming line", crate::find::Pane::Incoming),
     };
     let action = view::Action::Merge(Action::ToggleLine(hunk, row, side));
     let enabled = !app.ui().busy();
@@ -717,7 +755,8 @@ fn source_cell<T: Desk>(app: &T, row: usize, side: Side, cx: &Context<T>) -> Div
                 }),
         )
         .when_some(version, |d, (_, range)| {
-            d.child(line_text((text_id, row), &editor.document.source[range.clone()], editor.width, &state.source_pan))
+            let found = crate::find::styled(app.ui(), pane, row);
+            d.child(line_text((text_id, row), &editor.document.source[range.clone()], editor.width, &state.source_pan, found))
         })
         .when(version.is_none(), |d| d.child(kit::muted("No line")))
 }
@@ -763,7 +802,13 @@ fn result_rows<T: Desk>(state: &State, editor: &Editor, cx: &mut Context<T>) -> 
                     ResultRow::Text { range, side } => base
                         .when_some(*side, |d, side| d.bg(soft(side_color(side), 0x15)))
                         .child(line_number(Some(i + 1)))
-                        .child(line_text(("merge-result-text", i), &editor.document.source[range.clone()], editor.width, &state.result_pan)),
+                        .child(line_text(
+                            ("merge-result-text", i),
+                            &editor.document.source[range.clone()],
+                            editor.width,
+                            &state.result_pan,
+                            crate::find::styled(app.ui(), crate::find::Pane::Result, i),
+                        )),
                     ResultRow::Unresolved { hunk, line } => base
                         .px_2()
                         .gap(px(4.))
@@ -896,6 +941,7 @@ pub(crate) fn resolver<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex_col()
         .overflow_hidden()
         .child(header)
+        .children(crate::find::bar(app, crate::find::Surface::Resolver, cx))
         .child(headings)
         .child(source_rows(state, editor, cx))
         .child(kit::scrollbar("merge-source-scrollbar", &state.source_scroll))
@@ -939,6 +985,40 @@ mod tests {
     use super::*;
     use crate::operation::{snapshot, tests::{commit, stops}};
     use crate::repository::tests::Fixture;
+
+    #[test]
+    fn find_covers_both_sides_of_the_shown_conflict_and_the_result_and_follows_choices() {
+        use crate::find::{Pane, resolver_hits};
+        let f = Fixture::new();
+        let base = (0..32).map(|i| format!("line {i}\n")).collect::<String>();
+        commit(&f, "trail.txt", &base, "Base");
+        f.git(&["switch", "-qc", "side"]);
+        commit(&f, "trail.txt", &base.replace("line 4\n", "Ridge waypoint\n").replace("line 22\n", "Detour waypoint\n"), "Side");
+        f.git(&["switch", "-q", "main"]);
+        commit(&f, "trail.txt", &base.replace("line 4\n", "Willow bridge\n").replace("line 22\n", "Main Waypoint\n"), "Main");
+        stops(&f, &["merge", "side"]);
+        let id = snapshot(&f.repo).unwrap().unwrap().id;
+        let mut state = State { editor: Some(Editor::new(Document::open(&f.repo, id, "trail.txt".into()).unwrap())), ..State::default() };
+        let panes = |state: &State, query: &str| resolver_hits(state, query).into_iter().map(|hit| (hit.pane, hit.row)).collect::<Vec<_>>();
+        assert_eq!(panes(&state, "waypoint"), [(Pane::Incoming, 0)]);
+        assert_eq!(panes(&state, "line 3"), [(Pane::Result, 3), (Pane::Result, 30), (Pane::Result, 31)]);
+        let key = state.find_key();
+        state.show_hunk(1);
+        assert_ne!(state.find_key(), key);
+        assert_eq!(panes(&state, "waypoint"), [(Pane::Current, 0), (Pane::Incoming, 0)]);
+        assert_eq!(panes(&state, "Waypoint"), [(Pane::Current, 0)]);
+        let key = state.find_key();
+        state.editor.as_mut().unwrap().choose_all(Side::Incoming);
+        assert_ne!(state.find_key(), key);
+        let found = resolver_hits(&state, "waypoint");
+        let results: Vec<String> = state.preview().into_iter().enumerate()
+            .filter(|(row, _)| found.iter().any(|hit| hit.pane == Pane::Result && hit.row == *row))
+            .map(|(_, line)| line)
+            .collect();
+        assert_eq!(results, ["Ridge waypoint", "Detour waypoint"]);
+        state.editor = None;
+        assert!(resolver_hits(&state, "waypoint").is_empty() && state.find_key().is_none());
+    }
 
     #[test]
     fn one_side_can_be_used_for_every_conflict_in_a_file() {

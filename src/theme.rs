@@ -17,6 +17,9 @@ pub const TEXT_2: u32 = 0xacabb6;
 pub const TEXT_3: u32 = 0x878594;
 pub const TEXT_OFF: u32 = 0x5f5e6d;
 pub const TEXT_SELECTION: u32 = 0x554588;
+pub const FIND_MATCH: u32 = 0x61571b;
+pub const FIND_CURRENT: u32 = ACCENT;
+pub const FIND_CURRENT_INK: u32 = ACCENT_INK;
 
 pub const ACCENT: u32 = 0xf7da20;
 pub const ACCENT_HOVER: u32 = 0xfce967;

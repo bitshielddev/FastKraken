@@ -245,6 +245,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::picked::COMMANDS,
         crate::ignore::COMMANDS,
         crate::search::COMMANDS,
+        crate::find::COMMANDS,
         crate::activity::COMMANDS,
         crate::sync::COMMANDS,
         crate::connect::COMMANDS,
@@ -1012,7 +1013,7 @@ mod tests {
         assert_eq!(bar_index(Bar::File, "repo.reveal"), Some(9));
         assert_eq!(ids(Bar::Window), ["tab.next", "tab.previous"]);
         assert_eq!(bar_index(Bar::File, "repo.labels"), None);
-        assert_eq!(ids(Bar::Edit), ["repo.find"]);
+        assert_eq!(ids(Bar::Edit), ["repo.find", "view.find-next", "view.find-previous"]);
         assert_eq!(ids(Bar::View), ["view.sidebar", "view.panel", "view.diff-mode", "view.activity", "repo.labels"]);
         assert_eq!(
             ids(Bar::Repository),

@@ -13,9 +13,12 @@ use std::{ops::Range, time::Duration};
 pub(crate) const COMMANDS: &[crate::commands::Command] = &[crate::commands::Command::new(
     "repo.find",
     crate::commands::Group::View,
-    |_, _| "Find commits…".into(),
+    |ui, _| crate::find::title(ui).into(),
     |ui, target, _| {
         use crate::commands::Availability;
+        if crate::find::filters(ui) && *target == crate::commands::Target::Repo {
+            return Availability::Enabled;
+        }
         if !crate::commands::on_repo(ui, target) {
             return Availability::Hidden;
         }
@@ -25,7 +28,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = &[crate::commands::Comm
             None
         })
     },
-    |_, _| Some(view::Action::Search(Action::Open)),
+    |_, _| Some(view::Action::Find(crate::find::Action::Front)),
 )
 .icon("search")
 .keys("cmd-f")

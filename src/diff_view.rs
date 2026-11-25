@@ -112,8 +112,8 @@ pub(crate) struct Columns {
     pub(crate) tab: usize,
 }
 
-const UNIFIED_GUTTER: f32 = 96.;
-const SPLIT_GUTTER: f32 = 50.;
+pub(crate) const UNIFIED_GUTTER: f32 = 96.;
+pub(crate) const SPLIT_GUTTER: f32 = 50.;
 const WRAP_MARGIN: f32 = 14.;
 const NARROWEST: usize = 8;
 
@@ -175,6 +175,14 @@ fn cells(grapheme: &str, tab: usize) -> usize {
         Some(c) if wide(c) => 2,
         _ => 1,
     }
+}
+
+pub(crate) fn width_in_cells(text: &str, tab: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    if text.is_ascii() && !text.contains('\t') {
+        return text.len();
+    }
+    text.graphemes(true).map(|grapheme| cells(grapheme, tab)).sum()
 }
 
 pub(crate) fn breaks(code: &str, width: usize, tab: usize) -> Vec<usize> {
@@ -277,6 +285,14 @@ pub(crate) fn piece(ui: &Ui, row: usize, part: usize) -> Range<usize> {
     };
     let end = cuts.get(part).copied().unwrap_or(length);
     start.min(end)..end
+}
+
+pub(crate) fn part_at(ui: &Ui, row: usize, offset: usize) -> usize {
+    ui.diff_options
+        .wrapped
+        .as_ref()
+        .and_then(|wrapped| wrapped.breaks.get(row))
+        .map_or(0, |cuts| cuts.partition_point(|&cut| cut <= offset))
 }
 
 pub(crate) fn visual_of(ui: &Ui, row: usize) -> Option<usize> {
@@ -629,6 +645,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         .flex_col()
         .overflow_hidden()
         .child(header)
+        .children(crate::find::bar(app, crate::find::Surface::Diff, cx))
         .when(listing_history, |d| {
             d.child(crate::inspection::file_history(app, cx))
         })
@@ -999,16 +1016,19 @@ pub(crate) fn highlights(ui: &Ui, index: usize, row: &Line, column: Column) -> V
         ..Default::default()
     };
     let chosen: Vec<Range<usize>> = diff_select::span(ui, index, column).into_iter().collect();
+    let (found, focus) = crate::find::marks(ui, crate::find::Pane::Diff, index);
     let ink = |token: Token| HighlightStyle {
         color: Some(rgb(token.color()).into()),
         ..Default::default()
     };
-    if row.syntax.is_empty() && chosen.is_empty() {
+    let plain = chosen.is_empty() && found.is_empty() && focus.is_empty();
+    if row.syntax.is_empty() && plain {
         return row.words.iter().cloned().map(|span| (span, changed)).collect();
     }
-    if row.words.is_empty() && chosen.is_empty() {
+    if row.words.is_empty() && plain {
         return row.syntax.iter().map(|(span, token)| (span.clone(), ink(*token))).collect();
     }
+    let (matched, current) = crate::find::styles();
     let inked: Vec<(Vec<Range<usize>>, HighlightStyle)> = Token::ALL
         .iter()
         .map(|token| {
@@ -1017,7 +1037,8 @@ pub(crate) fn highlights(ui: &Ui, index: usize, row: &Line, column: Column) -> V
         })
         .filter(|layer| !layer.0.is_empty())
         .collect();
-    let mut layers: Vec<(&[Range<usize>], HighlightStyle)> = vec![(&chosen, selected), (&row.words, changed)];
+    let mut layers: Vec<(&[Range<usize>], HighlightStyle)> =
+        vec![(&chosen, selected), (&focus, current), (&found, matched), (&row.words, changed)];
     layers.extend(inked.iter().map(|(spans, style)| (spans.as_slice(), *style)));
     layered(&layers)
 }

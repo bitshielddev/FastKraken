@@ -130,7 +130,7 @@ pub(crate) fn marks(ui: &Ui) -> Vec<Mark> {
     marks
 }
 
-fn viewport(ui: &Ui) -> Option<(usize, usize)> {
+pub(crate) fn viewport(ui: &Ui) -> Option<(usize, usize)> {
     let state = ui.diff_scroll.0.borrow();
     let base = &state.base_handle;
     let height = f32::from(base.bounds().size.height);

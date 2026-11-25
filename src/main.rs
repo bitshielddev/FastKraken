@@ -20,6 +20,7 @@ mod diff_select;
 mod discard;
 mod environment;
 mod explain;
+mod find;
 mod github;
 mod guard;
 mod handoff;
@@ -1369,6 +1370,10 @@ impl Tab {
                 cx.notify();
                 return;
             }
+            if id == "repo.find" && find::filters(&self.ui) {
+                find::dispatch(self, find::Action::Front, window, cx);
+                return;
+            }
             if self.ui.preferences.open() && !matches!(id, "app.palette" | "app.shortcuts" | "app.about") {
                 preferences::dispatch(self, preferences::Action::Close, window, cx);
                 if id == "app.preferences" || closing {
@@ -1522,6 +1527,7 @@ impl Tab {
             Action::Text(action) => diff_select::dispatch(self, action, window, cx),
             Action::Syntax(action) => syntax::dispatch(self, action, window, cx),
             Action::DiffOptions(action) => diff_options::dispatch(self, action, window, cx),
+            Action::Find(action) => find::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),

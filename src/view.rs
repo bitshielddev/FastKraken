@@ -8,10 +8,11 @@ mod graph;
 use crate::{kit, navigate::Action as Move, stash::HistoryItem, theme::*};
 pub use commit_input::CommitInput;
 pub(crate) use diff_view::{
-    Columns as DiffColumns, Layout as DiffLayout, Mode as DiffMode, WHITESPACE_HIDDEN, Wrapped as DiffWrapped,
-    bar_texts as diff_bar_texts, changes as diff_changes, doc_row as diff_doc_row, highlights as diff_highlights,
-    part as diff_part, piece as diff_piece, placeholder_text as diff_placeholder, rows as diff_rows,
-    visual_of as diff_visual_of,
+    Columns as DiffColumns, Layout as DiffLayout, Mode as DiffMode, SPLIT_GUTTER as DIFF_SPLIT_GUTTER,
+    UNIFIED_GUTTER as DIFF_UNIFIED_GUTTER, WHITESPACE_HIDDEN, Wrapped as DiffWrapped, bar_texts as diff_bar_texts,
+    changes as diff_changes, doc_row as diff_doc_row, highlights as diff_highlights, layered as diff_layered,
+    part as diff_part, part_at as diff_part_at, piece as diff_piece, placeholder_text as diff_placeholder,
+    rows as diff_rows, visual_of as diff_visual_of, width_in_cells as diff_cells,
 };
 use crate::diff_doc::{DiffDoc, PatchState};
 use gpui::{
@@ -557,6 +558,7 @@ pub enum Action {
     Text(crate::diff_select::Action),
     Syntax(crate::syntax::Action),
     DiffOptions(crate::diff_options::Action),
+    Find(crate::find::Action),
     Discard(crate::discard::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
@@ -699,6 +701,7 @@ pub struct Ui {
     pub(crate) commit_options: crate::commit_options::State,
     pub(crate) syntax: crate::syntax::State,
     pub(crate) diff_options: crate::diff_options::State,
+    pub(crate) find: crate::find::State,
     pub has_more: bool,
     pub input: Entity<CommitInput>,
     pub description: Entity<CommitInput>,
@@ -787,6 +790,7 @@ impl Ui {
             commit_options: crate::commit_options::State::new(cx),
             syntax: crate::syntax::State::new(settings.colour_code),
             diff_options: crate::diff_options::State::new(&settings),
+            find: crate::find::State::new(cx),
             has_more: false,
             input,
             description,
@@ -857,6 +861,11 @@ impl Ui {
         self.split_pan = ScrollHandle::new();
         self.diff_scroll = UniformListScrollHandle::new();
         self.rewrap();
+        crate::find::reloaded(self);
+    }
+
+    pub(crate) fn split_pan(&self) -> &ScrollHandle {
+        &self.split_pan
     }
 
     pub(crate) fn rewrap(&mut self) {
@@ -1128,6 +1137,7 @@ pub fn bindings(cx: &mut App) {
         KeyBinding::new("space", ActivateControl, Some("DeskButton")),
     ]);
     cx.bind_keys(crate::commands::bindings());
+    cx.bind_keys(crate::find::bindings());
     cx.bind_keys((0..crate::tabs::NUMBERED).map(|index| {
         KeyBinding::new(&format!("{modifier}-{}", index + 1), crate::tabs::ShowTab { index }, desk)
     }));
@@ -1146,6 +1156,7 @@ pub(crate) const OTHER_KEYS: &[(&str, &str)] = &[
     ("h", "Move left between the sidebar, graph and files"),
     ("l", "Move right between the sidebar, graph and files"),
     ("enter", "Open the highlighted file or row"),
+    ("shift-enter", "Previous match while finding in a diff; Return goes to the next"),
     ("pageup", "Up a page, or scroll the open file up"),
     ("pagedown", "Down a page, or scroll the open file down"),
     ("home", "First row, or the top of the open file"),
@@ -2316,6 +2327,7 @@ pub fn render<T: Desk>(
         app.ui_mut().modal_drawn = modal;
     }
     crate::refs::rebuild_rows(app.ui_mut(), cx);
+    crate::find::settle(app.ui_mut());
     crate::operation::prefill(app.ui_mut(), cx);
     sync_chrome(app, window, cx);
     {
@@ -2327,6 +2339,7 @@ pub fn render<T: Desk>(
             && (ui.input.focus_handle(cx).is_focused(window)
                 || ui.description.focus_handle(cx).is_focused(window)))
             || (!ui.refs.list_open && ui.refs.find.focus_handle(cx).is_focused(window))
+            || (crate::find::shown(ui).is_none() && ui.find.input.focus_handle(cx).is_focused(window))
             || (ui.refs.draft.is_none()
                 && (ui.refs.input.focus_handle(cx).is_focused(window)
                     || ui.refs.message.focus_handle(cx).is_focused(window)))
@@ -2394,6 +2407,12 @@ pub fn render<T: Desk>(
         .on_action(|_: &Minimize, w, _| w.minimize_window())
         .on_action(|_: &Zoom, w, _| w.zoom_window())
         .on_action(|_: &FullScreen, w, _| w.toggle_fullscreen())
+        .on_action(cx.listener(|app, _: &crate::find::NextMatch, w, cx| {
+            app.dispatch(Action::Find(crate::find::Action::Step(1)), w, cx);
+        }))
+        .on_action(cx.listener(|app, _: &crate::find::PreviousMatch, w, cx| {
+            app.dispatch(Action::Find(crate::find::Action::Step(-1)), w, cx);
+        }))
         .on_action(cx.listener(|app, _: &ChooseSearchResult, w, cx| {
             app.dispatch(Action::Search(crate::search::Action::Pick(None)), w, cx);
         }))
@@ -2463,6 +2482,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Preferences(crate::preferences::Action::Close), w, cx);
             } else if ui.activity.open() {
                 app.dispatch(Action::Activity(crate::activity::Action::Close), w, cx);
+            } else if crate::find::shown(ui).is_some() {
+                app.dispatch(Action::Find(crate::find::Action::Close), w, cx);
             } else if centre(ui) == Centre::Diff && crate::lines::current(ui).is_some() {
                 app.dispatch(Action::Lines(crate::lines::Action::Clear), w, cx);
             } else if centre(ui) == Centre::Diff && crate::diff_select::current(ui).is_some() {

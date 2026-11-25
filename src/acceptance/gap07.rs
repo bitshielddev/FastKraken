@@ -9,7 +9,7 @@ use crate::{
     theme::DIFF_LINE,
     view::{DiffMode, diff_placeholder},
 };
-use gpui::{Bounds, ClipboardItem, Entity, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, point};
+use gpui::{Bounds, ClipboardItem, Entity, Focusable, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, point};
 use std::os::unix::fs::PermissionsExt;
 
 fn shown(tab: &Tab, path: &str, message: &str) -> bool {
@@ -143,8 +143,13 @@ impl Replay<'_> {
             Ok(()) => self.ignore_whitespace(dir).await,
             failed => failed,
         };
+        let shown = match shown {
+            Ok(()) => self.find_in_a_diff(dir).await,
+            failed => failed,
+        };
         self.reset_diff_options()?;
-        shown
+        shown?;
+        self.find_commits_without_a_diff(dir).await
     }
 
     fn reset_diff_options(&mut self) -> Result<()> {
@@ -1325,6 +1330,293 @@ impl Replay<'_> {
         }
         index_is(&root, "shoal.rs", large_edited.as_bytes())?;
         git_is(&root, &["diff", "--name-only"], "sound.rs\nwide.rs\n")?;
+        self.pass();
+        Ok(())
+    }
+}
+
+fn reef() -> String {
+    (1..=300)
+        .map(|n| match n {
+            20 => "kelp forest at the north wall\n".to_owned(),
+            150 => "the KELP thins here\n".to_owned(),
+            151 => "Kelp and kelp again\n".to_owned(),
+            200 => format!("{} kelp\n", "x".repeat(400)),
+            280 => "last kelp bed\n".to_owned(),
+            n => format!("reef line {n}\n"),
+        })
+        .collect()
+}
+
+fn grep_count(root: &Path, args: &[&str]) -> Result<usize> {
+    let output = repository::bundled_command(root)?.args(["grep"]).args(args).output()?;
+    match output.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&output.stdout).lines().count()),
+        Some(1) => Ok(0),
+        _ => Err(format!("git grep {args:?}: {}", String::from_utf8_lossy(&output.stderr)).into()),
+    }
+}
+
+fn found(tab: &Tab) -> Option<(String, String)> {
+    let hit = tab.ui.find.current()?;
+    let doc = &tab.ui.diff;
+    let line = doc.lines.get(hit.row)?;
+    Some((doc.text(line).to_owned(), doc.code(line).get(hit.range.clone())?.to_owned()))
+}
+
+fn painted(tab: &Tab, row: usize, column: Column) -> (usize, usize) {
+    let (found, current) = crate::find::styles();
+    let Some(line) = tab.ui.diff.lines.get(row) else { return (0, 0) };
+    let runs = crate::view::diff_highlights(&tab.ui, row, line, column);
+    let count = |style: gpui::HighlightStyle| runs.iter().filter(|(_, run)| run.background_color == style.background_color).count();
+    (count(found), count(current))
+}
+
+fn on_screen(tab: &Tab) -> bool {
+    let ui = &tab.ui;
+    let Some(hit) = ui.find.current() else { return false };
+    let Some(at) = crate::view::diff_visual_of(ui, hit.row) else { return false };
+    ui.diff_scroll.0.borrow().deferred_scroll_to_item.is_none()
+        && crate::diff_options::viewport(ui).is_some_and(|(top, shown)| at >= top && at < top + shown)
+}
+
+impl Replay<'_> {
+    fn type_find(&mut self, query: &str) -> Result<()> {
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.find.input.update(cx, |field, cx| field.set_text(query, cx)))?;
+        Ok(())
+    }
+
+    fn find_command(&mut self, id: &str) -> Result<Option<(String, Option<String>)>> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, &Target::Repo, cx).into_iter().find(|entry| entry.id == id).map(|entry| (entry.title, entry.disabled))
+        })?)
+    }
+
+    async fn find_step(&mut self, key: &str, counter: &str, line: &str, matched: &str) -> Result<usize> {
+        self.key(key)?;
+        self.until(&format!("{key} reading {counter} on {line:?}"), |tab| {
+            tab.ui.find.counter().as_deref() == Some(counter)
+                && found(tab).is_some_and(|(text, word)| text == line && word == matched)
+                && on_screen(tab)
+        })
+        .await?;
+        Ok(self.scroll_top()? as usize)
+    }
+
+    async fn find_in_a_diff(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0713");
+        let root = init(dir, "Find-reef")?;
+        record(&root, "README.md", "Reef notes\n", "Start the reef notes")?;
+        let contents = reef();
+        fs::write(root.join("reef.txt"), &contents)?;
+        let total = grep_count(&root, &["--no-index", "-i", "-o", "-e", "kelp", "--", "reef.txt"])?;
+        let exact = grep_count(&root, &["--no-index", "-o", "-e", "Kelp", "--", "reef.txt"])?;
+        if (total, exact) != (6, 1) {
+            return Err(format!("git grep counts {total} kelp ignoring case and {exact} Kelp").into());
+        }
+        self.open(&root)?;
+        self.until("Find-reef with reef.txt new", |tab| tab.ui.repo == "Find-reef" && files(tab, &[], &["reef.txt"])).await?;
+        self.action(Action::DiffMode(DiffMode::Unified))?;
+        self.action(Action::Select(file("reef.txt", false)))?;
+        self.action(Action::OpenDiff)?;
+        self.until("the new reef.txt diff", |tab| tab.ui.diff_open && patch(tab, "+last kelp bed")).await?;
+        let title = self.find_command("repo.find")?;
+        if title.as_ref().map(|(title, _)| title.as_str()) != Some("Find in diff…") {
+            return Err(format!("With a diff open the Cmd-F command reads {title:?}").into());
+        }
+        let next = self.find_command("view.find-next")?;
+        if next.as_ref().and_then(|(_, why)| why.as_deref()) != Some("Open the find bar with ⌘F first") {
+            return Err(format!("Before finding, Find next reads {next:?}").into());
+        }
+
+        self.focus_desk()?;
+        self.key("cmd-f")?;
+        self.until("the find bar over the diff", |tab| crate::find::shown(&tab.ui) == Some(crate::find::Surface::Diff)).await?;
+        let focused = self.tab.update(self.cx, |tab, window, cx| {
+            (tab.ui.find.input.focus_handle(cx).is_focused(window), tab.ui.search.open(), tab.ui.diff_open)
+        })?;
+        if focused != (true, false, true) {
+            return Err(format!("After Cmd-F over a diff (find field focused, commit search open, diff open) reads {focused:?}").into());
+        }
+        self.type_find("kelp")?;
+        self.until("the counter reading 1 of 6", |tab| tab.ui.find.counter().as_deref() == Some("1 of 6")).await?;
+        if self.tab.read_with(self.cx, |tab, _| tab.ui.find.hits().len())? != total {
+            return Err(format!("The find bar counts a total other than git grep's {total}").into());
+        }
+        let first = self.tab.read_with(self.cx, |tab, _| {
+            let twice = row(tab, "+Kelp and kelp again")?;
+            let at = tab.ui.find.current()?.row;
+            Some((found(tab)?, painted(tab, at, Column::Unified), painted(tab, twice, Column::Unified)))
+        })?;
+        let expected = (("+kelp forest at the north wall".to_owned(), "kelp".to_owned()), (0, 1), (2, 0));
+        if first.as_ref() != Some(&expected) {
+            return Err(format!("The first match reads (match, its highlights, line 151's highlights) {first:?}").into());
+        }
+        let start = self.scroll_top()? as usize;
+
+        let after = self.find_step("enter", "2 of 6", "+the KELP thins here", "KELP").await?;
+        if after <= start {
+            return Err(format!("Return moved to line 150 but the diff's top row stayed at {after} (from {start})").into());
+        }
+        self.find_step("cmd-g", "3 of 6", "+Kelp and kelp again", "Kelp").await?;
+        self.find_step("cmd-g", "4 of 6", "+Kelp and kelp again", "kelp").await?;
+        let long = format!("+{} kelp", "x".repeat(400));
+        self.find_step("cmd-g", "5 of 6", &long, "kelp").await?;
+        let across = self.tab.read_with(self.cx, |tab, _| -f32::from(tab.ui.diff_scroll.0.borrow().base_handle.offset().x))?;
+        if across <= 0. {
+            return Err("The match at the end of the long line did not scroll the diff sideways".into());
+        }
+        self.find_step("shift-enter", "4 of 6", "+Kelp and kelp again", "kelp").await?;
+        self.find_step("cmd-shift-g", "3 of 6", "+Kelp and kelp again", "Kelp").await?;
+        self.find_step("cmd-g", "4 of 6", "+Kelp and kelp again", "kelp").await?;
+        self.find_step("cmd-g", "5 of 6", &long, "kelp").await?;
+        self.find_step("cmd-g", "6 of 6", "+last kelp bed", "kelp").await?;
+        let wrapped = self.find_step("cmd-g", "1 of 6", "+kelp forest at the north wall", "kelp").await?;
+        if wrapped > 20 {
+            return Err(format!("Wrapping round to the first match left the top row at {wrapped}").into());
+        }
+        self.find_step("cmd-shift-g", "6 of 6", "+last kelp bed", "kelp").await?;
+
+        self.type_find("Kelp")?;
+        self.until("an upper-case letter matching case", |tab| {
+            tab.ui.find.counter().as_deref() == Some("1 of 1") && found(tab).is_some_and(|(_, word)| word == "Kelp")
+        })
+        .await?;
+        if self.tab.read_with(self.cx, |tab, _| tab.ui.find.hits().len())? != exact {
+            return Err(format!("Matching case counts other than git grep's {exact}").into());
+        }
+        self.type_find("coral")?;
+        self.until("no results for coral", |tab| tab.ui.find.counter().as_deref() == Some("No results")).await?;
+        let refused = self.find_command("view.find-next")?;
+        if refused.as_ref().and_then(|(_, why)| why.as_deref()) != Some("Nothing matches") {
+            return Err(format!("With nothing found, Find next reads {refused:?}").into());
+        }
+        self.type_find("kelp")?;
+        self.until("kelp found again", |tab| tab.ui.find.hits().len() == 6 && tab.ui.find.current().is_some()).await?;
+
+        self.action(Action::DiffMode(DiffMode::Split))?;
+        self.until("the split diff still finding", |tab| tab.ui.diff_mode == DiffMode::Split && tab.ui.find.hits().len() == 6).await?;
+        self.action(Action::Find(crate::find::Action::Step(1)))?;
+        let counter = self.tab.read_with(self.cx, |tab, _| tab.ui.find.counter())?;
+        let line = counter.as_deref().and_then(|counter| counter.split(' ').next()?.parse::<usize>().ok()).unwrap_or(0);
+        self.until("the split match on screen", on_screen).await?;
+        let split = self.tab.read_with(self.cx, |tab, _| {
+            let at = tab.ui.find.current()?.row;
+            let others = tab.ui.find.hits().iter().filter(|hit| hit.row == at).count() - 1;
+            Some((painted(tab, at, Column::New), others))
+        })?;
+        if !split.is_some_and(|(painted, others)| painted == (others, 1)) || line == 0 {
+            return Err(format!("In split view match {counter:?} is painted (others, current) and has others {split:?}").into());
+        }
+        self.action(Action::DiffMode(DiffMode::Unified))?;
+
+        git(&root, &["add", "--", "reef.txt"])?;
+        git(&root, &["commit", "-qm", "Plant the kelp"])?;
+        let head = oid(&root, "HEAD")?;
+        fs::write(root.join("reef.txt"), contents.replace("reef line 100\n", "reef line one hundred\n"))?;
+        self.until("reef.txt edited after the commit", |tab| {
+            files(tab, &[], &["reef.txt"]) && patch(tab, "+reef line one hundred") && tab.ui.diff_open
+        })
+        .await?;
+        self.until("the edited hunk with no kelp in it", |tab| tab.ui.find.counter().as_deref() == Some("No results")).await?;
+        self.action(Action::DiffOptions(Show::Set(Choice::WholeFile, true)))?;
+        self.until("the whole reef.txt finding six again", |tab| {
+            tab.ui.diff.options.whole_file && patch(tab, " last kelp bed") && tab.ui.find.counter().as_deref() == Some("1 of 6")
+        })
+        .await?;
+        self.find_step("cmd-shift-g", "6 of 6", " last kelp bed", "kelp").await?;
+
+        self.action(Action::Select(Selection::Commit(head.clone())))?;
+        self.until("the commit selected with the find bar gone", |tab| {
+            tab.ui.selection == Some(Selection::Commit(head.clone())) && !tab.ui.diff_open && crate::find::shown(&tab.ui).is_none()
+        })
+        .await?;
+        self.action(Action::Inspect(inspection::Action::AllChanges))?;
+        self.until("the whole commit open", |tab| tab.ui.diff_open && tab.ui.inspection.path.is_none() && patch(tab, "+last kelp bed")).await?;
+        let committed = grep_count(&root, &["-i", "-o", "-e", "kelp", &head, "--", "reef.txt"])?;
+        self.focus_desk()?;
+        self.key("cmd-f")?;
+        self.until("the remembered query finding in the whole commit", |tab| {
+            crate::find::shown(&tab.ui).is_some() && tab.ui.find.counter().as_deref() == Some(&format!("1 of {committed}"))
+        })
+        .await?;
+        self.find_step("enter", "2 of 6", "+the KELP thins here", "KELP").await?;
+
+        self.key("escape")?;
+        self.until("the find bar closed and the diff still open", |tab| {
+            crate::find::shown(&tab.ui).is_none() && tab.ui.diff_open && crate::view::centre(&tab.ui) == crate::view::Centre::Diff
+        })
+        .await?;
+        let cleared = self.tab.read_with(self.cx, |tab, _| {
+            let at = row(tab, "+Kelp and kelp again")?;
+            Some(painted(tab, at, Column::Unified))
+        })?;
+        if cleared != Some((0, 0)) {
+            return Err(format!("After closing the bar line 151 is still painted {cleared:?}").into());
+        }
+        self.key("escape")?;
+        self.until("the diff closed by the second Esc", |tab| !tab.ui.diff_open).await?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn find_commits_without_a_diff(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0714");
+        let root = init(dir, "Find-log")?;
+        record(&root, "log.txt", "first\n", "Chart the lagoon")?;
+        record(&root, "log.txt", "first\nsecond\n", "Sound the channel")?;
+        let wanted = git(&root, &["log", "-i", "--grep=lagoon", "--format=%H"])?;
+        let wanted = wanted.trim().to_owned();
+        let tip = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Find-log open on its tip", |tab| tab.ui.repo == "Find-log" && tab.ui.history.len() == 2).await?;
+        self.action(Action::Select(Selection::Commit(tip.clone())))?;
+        self.until("the tip selected with no diff open", |tab| {
+            tab.ui.selection == Some(Selection::Commit(tip.clone())) && !tab.ui.diff_open && crate::view::centre(&tab.ui) == crate::view::Centre::History
+        })
+        .await?;
+        let title = self.find_command("repo.find")?;
+        if title != Some(("Find commits…".to_owned(), None)) {
+            return Err(format!("With no diff open the Cmd-F command reads {title:?}").into());
+        }
+
+        self.focus_desk()?;
+        self.key("cmd-f")?;
+        self.until("commit search open", |tab| tab.ui.search.open()).await?;
+        let focus = self.tab.update(self.cx, |tab, window, cx| {
+            (tab.ui.search.input.focus_handle(cx).is_focused(window), crate::find::shown(&tab.ui), tab.ui.find.input.focus_handle(cx).is_focused(window))
+        })?;
+        if focus != (true, None, false) {
+            return Err(format!("After Cmd-F with no diff (toolbar field focused, find bar, find field focused) reads {focus:?}").into());
+        }
+        self.tab.update(self.cx, |tab, window, cx| {
+            tab.ui.search.input.update(cx, |field, cx| field.replace_text_in_range(None, "lagoon", window, cx))
+        })?;
+        self.until("lagoon searched", |tab| {
+            tab.ui.search.visible() && !tab.ui.search.loading() && crate::view::centre(&tab.ui) == crate::view::Centre::Search
+        })
+        .await?;
+        self.key("enter")?;
+        self.until("the lagoon commit chosen from the results", |tab| tab.ui.selection == Some(Selection::Commit(wanted.clone()))).await?;
+        self.action(Action::Search(crate::search::Action::Close))?;
+        self.until("commit search closed", |tab| !tab.ui.search.open()).await?;
+
+        self.action(Action::Help(crate::help::Action::Shortcuts))?;
+        self.until("the shortcuts sheet", |tab| tab.ui.help.open()).await?;
+        self.tab.update(self.cx, |tab, window, cx| {
+            tab.ui.help.filter.update(cx, |field, cx| field.set_text("find", cx));
+            window.focus(&tab.ui.modal_focus);
+        })?;
+        self.key("cmd-f")?;
+        let filter = self.tab.update(self.cx, |tab, window, cx| {
+            let focused = tab.ui.help.filter.focus_handle(cx).is_focused(window);
+            (focused, tab.ui.help.filter.read(cx).selected_range(), tab.ui.search.open())
+        })?;
+        if filter != (true, 0..4, false) {
+            return Err(format!("Cmd-F over the shortcuts sheet (filter focused, selection, commit search open) reads {filter:?}").into());
+        }
+        self.key("escape")?;
+        self.until("the shortcuts sheet closed", |tab| !tab.ui.help.open()).await?;
         self.pass();
         Ok(())
     }

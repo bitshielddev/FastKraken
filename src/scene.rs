@@ -81,6 +81,12 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
         "ignorespace" => Some(Action::DiffOptions(crate::diff_options::Action::Set(crate::diff_options::Choice::IgnoreWhitespace, true))),
         "wrap" => Some(Action::DiffOptions(crate::diff_options::Action::Set(crate::diff_options::Choice::Wrap, true))),
         "nextchange" => Some(Action::DiffOptions(crate::diff_options::Action::Next)),
+        "difffind" => {
+            tab.dispatch(Action::Find(crate::find::Action::Front), window, cx);
+            tab.ui.find.input.update(cx, |input, cx| input.set_text(argument, cx));
+            None
+        }
+        "findnext" => Some(Action::Find(crate::find::Action::Step(1))),
         "split" => Some(Action::DiffMode(crate::view::DiffMode::Split)),
         "unified" => Some(Action::DiffMode(crate::view::DiffMode::Unified)),
         "branches" => Some(Action::Refs(refs::Action::ToggleList)),
