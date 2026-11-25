@@ -143,6 +143,7 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             let section = match argument {
                 "accounts" => Section::Accounts,
                 "git" => Section::Git,
+                "diff" => Section::Diff,
                 "tools" => Section::Tools,
                 "shortcuts" => Section::Shortcuts,
                 "repository" => Section::Repository,

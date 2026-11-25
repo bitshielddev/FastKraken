@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Range};
+use std::{collections::HashMap, ops::Range, path::PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub(crate) const LINE_LIMIT: usize = 4096;
@@ -64,6 +64,15 @@ pub(crate) struct Line {
     pub(crate) text: Range<usize>,
     pub(crate) hunk: Option<usize>,
     pub(crate) words: Vec<Range<usize>>,
+    pub(crate) syntax: crate::syntax::Spans,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct File {
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) old_blob: Option<String>,
+    pub(crate) new_blob: Option<String>,
+    pub(crate) rows: Range<usize>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -71,6 +80,7 @@ pub(crate) struct DiffDoc {
     pub(crate) state: PatchState,
     pub(crate) lines: Vec<Line>,
     pub(crate) hunks: Vec<Range<usize>>,
+    pub(crate) files: Vec<File>,
     pub(crate) stageable: bool,
     pub(crate) shortened: bool,
     text: String,
@@ -244,7 +254,11 @@ impl Builder<'_> {
             text: start..self.doc.text.len(),
             hunk,
             words: Vec::new(),
+            syntax: Vec::new(),
         });
+        if let Some(file) = self.doc.files.last_mut() {
+            file.rows.end = self.doc.lines.len();
+        }
         self.previous_was_code = kind.is_code();
     }
 
@@ -280,6 +294,12 @@ impl Builder<'_> {
             self.new = 0..0;
             self.hunk = None;
             self.previous_was_code = false;
+            let at = self.doc.lines.len();
+            self.doc.files.push(File {
+                path: crate::diff_select::header_path(text),
+                rows: at..at,
+                ..File::default()
+            });
             if self.several {
                 self.push(Kind::File, None, None, text);
             }
@@ -311,6 +331,12 @@ impl Builder<'_> {
         } else {
             if ["rename from ", "copy from "].iter().any(|origin| text.starts_with(origin)) {
                 self.header.renamed = true;
+            }
+            if let Some((old, new)) = index_blobs(text)
+                && let Some(file) = self.doc.files.last_mut()
+            {
+                file.old_blob = Some(old.to_owned());
+                file.new_blob = Some(new.to_owned());
             }
             if renaming(text, self.several) || self.header.read(text) {
                 return;

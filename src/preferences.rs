@@ -29,6 +29,7 @@ pub(crate) enum Section {
     Accounts,
     Git,
     Commit,
+    Diff,
     Tools,
     Shortcuts,
     Repository,
@@ -41,6 +42,7 @@ impl Section {
             Section::Accounts => "Accounts".into(),
             Section::Git => "Git".into(),
             Section::Commit => "Commit".into(),
+            Section::Diff => "Diff".into(),
             Section::Tools => "External tools".into(),
             Section::Shortcuts => "Shortcuts".into(),
             Section::Repository => ui.repo.clone(),
@@ -49,7 +51,15 @@ impl Section {
 }
 
 pub(crate) fn sections(repository: bool) -> Vec<Section> {
-    let mut listed = vec![Section::General, Section::Accounts, Section::Git, Section::Commit, Section::Tools, Section::Shortcuts];
+    let mut listed = vec![
+        Section::General,
+        Section::Accounts,
+        Section::Git,
+        Section::Commit,
+        Section::Diff,
+        Section::Tools,
+        Section::Shortcuts,
+    ];
     if repository {
         listed.push(Section::Repository);
     }
@@ -342,6 +352,7 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 Section::Accounts => accounts(app, cx),
                 Section::Git => git(ui, cx),
                 Section::Commit => crate::commit_options::preferences(cx),
+                Section::Diff => diff(cx),
                 Section::Tools => crate::tools::preferences(ui, cx),
                 _ => repository(ui, cx),
             };
@@ -604,6 +615,17 @@ fn git<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
         ))
 }
 
+fn diff<T: Desk>(cx: &mut Context<T>) -> Div {
+    div().flex().flex_col().child(tick(
+        "preferences-colour-code",
+        settings::settings(cx).colour_code,
+        "Colour code by language",
+        "Keywords, strings, comments and other code take colours from the file’s language. Files over 512 KB stay plain.",
+        view::Action::Syntax(crate::syntax::Action::Toggle),
+        cx,
+    ))
+}
+
 fn repository<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     use crate::sync::{Mode as Pull, Strategy};
     let chosen = ui.sync.chosen();
@@ -711,10 +733,10 @@ mod tests {
     fn the_repositorys_section_is_listed_last_and_only_with_one_open() {
         assert_eq!(
             sections(false),
-            [Section::General, Section::Accounts, Section::Git, Section::Commit, Section::Tools, Section::Shortcuts]
+            [Section::General, Section::Accounts, Section::Git, Section::Commit, Section::Diff, Section::Tools, Section::Shortcuts]
         );
         assert_eq!(sections(true).last(), Some(&Section::Repository));
-        assert_eq!(sections(true).len(), 7);
+        assert_eq!(sections(true).len(), 8);
     }
 
     #[test]
@@ -725,6 +747,8 @@ mod tests {
         assert_eq!(moved(&listed, Section::General, N::Step(-1)), None);
         assert_eq!(moved(&listed, Section::Repository, N::Step(1)), None);
         assert_eq!(moved(&listed, Section::Git, N::Step(1)), Some(Section::Commit));
+        assert_eq!(moved(&listed, Section::Commit, N::Step(1)), Some(Section::Diff));
+        assert_eq!(moved(&listed, Section::Diff, N::Step(1)), Some(Section::Tools));
         assert_eq!(moved(&listed, Section::Git, N::Home), Some(Section::General));
         assert_eq!(moved(&listed, Section::Git, N::End), Some(Section::Repository));
         assert_eq!(moved(&listed, Section::Git, N::Page(9)), Some(Section::Repository));

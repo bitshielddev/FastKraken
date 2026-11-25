@@ -763,6 +763,33 @@ impl Repository {
             .collect())
     }
 
+    pub(crate) fn blobs(&self, ids: &[String]) -> Result<std::collections::HashMap<String, Vec<u8>>> {
+        let mut input = Vec::new();
+        for id in ids {
+            validate_oid(id)?;
+            input.extend_from_slice(id.as_bytes());
+            input.push(b'\n');
+        }
+        let output = run_with_input(self.read_command().args(["cat-file", "--batch=%(objectname) %(objecttype) %(objectsize)"]), input)
+            .map_err(|e| e.to_string())?;
+        let output = successful(output)?;
+        let mut blobs = std::collections::HashMap::new();
+        let mut rest = &output[..];
+        while let Some(end) = rest.iter().position(|&b| b == b'\n') {
+            let header = String::from_utf8_lossy(&rest[..end]).into_owned();
+            rest = &rest[end + 1..];
+            let mut fields = header.split(' ');
+            let (Some(id), Some(kind), Some(size)) = (fields.next(), fields.next(), fields.next()) else { continue };
+            let size: usize = size.parse().map_err(|_| "Git listed an object without a size".to_owned())?;
+            let content = rest.get(..size).ok_or("Git ended an object early")?;
+            rest = rest.get(size + 1..).unwrap_or_default();
+            if kind == "blob" {
+                blobs.insert(id.to_owned(), content.to_vec());
+            }
+        }
+        Ok(blobs)
+    }
+
     pub fn stage_hunk(&self, diff: &Diff, index: usize) -> Result<()> {
         self.apply_hunk(diff, index, false, &["--cached"])
     }
@@ -2208,6 +2235,27 @@ pub(crate) mod tests {
         let remaining = f.repo.file_diff(name, false).unwrap();
         assert!(remaining.text.contains("new mode 100755"));
         assert!(!remaining.text.contains("+two"));
+    }
+
+    #[test]
+    fn blobs_reads_each_blob_whole_and_leaves_out_missing_ones_and_other_objects() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("one.txt"), "first\nline two\n").unwrap();
+        fs::write(f.dir.join("two.bin"), b"\0\n\nbytes\n\n").unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "both"]);
+        let id = |spec: &str| String::from_utf8(f.git(&["rev-parse", spec])).unwrap().trim().to_owned();
+        let (one, two, tree) = (id("HEAD:one.txt"), id("HEAD:two.bin"), id("HEAD^{tree}"));
+        let missing = "0123456789abcdef0123456789abcdef01234567".to_owned();
+        let index = f.git(&["ls-files", "-s"]);
+        let blobs = f.repo.blobs(&[one.clone(), missing.clone(), two.clone(), tree.clone()]).unwrap();
+        assert_eq!(blobs.get(&one).map(Vec::as_slice), Some(&b"first\nline two\n"[..]));
+        assert_eq!(blobs.get(&two).map(Vec::as_slice), Some(&b"\0\n\nbytes\n\n"[..]));
+        assert!(!blobs.contains_key(&missing) && !blobs.contains_key(&tree));
+        assert!(f.repo.blobs(&[]).unwrap().is_empty());
+        assert!(f.repo.blobs(&["--batch-all-objects".into()]).is_err());
+        assert_eq!(f.git(&["ls-files", "-s"]), index);
+        assert_eq!(fs::read_to_string(f.dir.join("one.txt")).unwrap(), "first\nline two\n");
     }
 
     #[test]

@@ -8,7 +8,7 @@ mod graph;
 use crate::{kit, navigate::Action as Move, stash::HistoryItem, theme::*};
 pub use commit_input::CommitInput;
 pub(crate) use diff_view::{
-    Layout as DiffLayout, Mode as DiffMode, doc_row as diff_doc_row, placeholder_text as diff_placeholder, rows as diff_rows,
+    Layout as DiffLayout, Mode as DiffMode, doc_row as diff_doc_row, highlights as diff_highlights, placeholder_text as diff_placeholder, rows as diff_rows,
 };
 use crate::diff_doc::{DiffDoc, PatchState};
 use gpui::{
@@ -552,6 +552,7 @@ pub enum Action {
     Picked(crate::picked::Action),
     Lines(crate::lines::Action),
     Text(crate::diff_select::Action),
+    Syntax(crate::syntax::Action),
     Discard(crate::discard::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
@@ -692,6 +693,7 @@ pub struct Ui {
     pub(crate) autofetch: crate::autofetch::State,
     pub(crate) tools: crate::tools::State,
     pub(crate) commit_options: crate::commit_options::State,
+    pub(crate) syntax: crate::syntax::State,
     pub has_more: bool,
     pub input: Entity<CommitInput>,
     pub description: Entity<CommitInput>,
@@ -778,6 +780,7 @@ impl Ui {
             autofetch: Default::default(),
             tools: crate::tools::State::new(cx),
             commit_options: crate::commit_options::State::new(cx),
+            syntax: crate::syntax::State::new(settings.colour_code),
             has_more: false,
             input,
             description,
@@ -842,6 +845,7 @@ impl Ui {
     }
 
     pub(crate) fn replace_diff(&mut self, doc: DiffDoc, layout: DiffLayout) {
+        self.syntax.stop();
         self.diff = doc;
         self.diff_layout = layout;
         self.split_pan = ScrollHandle::new();

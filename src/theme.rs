@@ -33,6 +33,17 @@ pub const REMOTE: u32 = 0x72b1ee;
 pub const TAG: u32 = 0xc3a2f2;
 pub const CONFLICT: u32 = 0xee74b3;
 
+pub const SYNTAX_KEYWORD: u32 = 0xc6a4f5;
+pub const SYNTAX_STRING: u32 = 0xe3cc7c;
+pub const SYNTAX_COMMENT: u32 = 0x8d8b9c;
+pub const SYNTAX_NUMBER: u32 = 0xf2a66d;
+pub const SYNTAX_TYPE: u32 = 0x66d2c3;
+pub const SYNTAX_FUNCTION: u32 = 0x82b4f4;
+pub const SYNTAX_CONSTANT: u32 = 0xf4b98c;
+pub const SYNTAX_PUNCTUATION: u32 = 0xa9a7b8;
+pub const SYNTAX_TAG: u32 = 0xee93b8;
+pub const SYNTAX_ATTRIBUTE: u32 = 0x9bd3ea;
+
 pub const LANES: [u32; 6] = [ACCENT, REMOTE, 0xa898f0, 0xe88fb0, 0x5fd3b8, 0xf29b5e];
 
 pub fn soft(color: u32, alpha: u8) -> Rgba {

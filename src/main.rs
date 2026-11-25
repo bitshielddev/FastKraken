@@ -57,6 +57,7 @@ mod start;
 mod stash;
 mod storage;
 mod sync;
+mod syntax;
 mod tabs;
 mod tag;
 mod tracking;
@@ -601,6 +602,9 @@ impl Tab {
         let ticket = self.diff_ticket;
         let epoch = self.epoch;
         let from = self.ui.renamed_from(&selection, commit_path.as_deref());
+        let colour = settings::settings(cx).colour_code;
+        self.ui.syntax.on = colour;
+        let working = syntax::working_root(&repo, &selection);
         Self::work(
             cx,
             move || {
@@ -632,7 +636,7 @@ impl Tab {
                     };
                     (repo.object_sizes(&blobs).unwrap_or_default(), working_size)
                 };
-                let doc = diff_doc::DiffDoc::build(&diff_doc::Source {
+                let mut doc = diff_doc::DiffDoc::build(&diff_doc::Source {
                     text: &diff.text,
                     stageable: diff.hunks_stageable() && matches!(selection, Selection::File { .. }),
                     truncated: diff.truncated,
@@ -640,18 +644,25 @@ impl Tab {
                     working_size,
                 });
                 let layout = DiffLayout::new(&doc);
-                Ok::<_, String>((Arc::new(diff), doc, layout))
+                let rest = if colour {
+                    let wanted = syntax::requests(&doc, working.as_deref());
+                    syntax::from_cache(&mut doc, wanted)
+                } else {
+                    Vec::new()
+                };
+                Ok::<_, String>((Arc::new(diff), doc, layout, rest))
             },
             move |tab, result, cx| {
                 if tab.epoch != epoch || tab.diff_ticket != ticket {
                     return;
                 }
                 match result {
-                    Ok((diff, doc, layout)) => {
+                    Ok((diff, doc, layout, rest)) => {
                         tab.diff = Some(diff);
                         tab.ui.replace_diff(doc, layout);
                         lines::reloaded(&mut tab.ui);
                         diff_select::reloaded(&mut tab.ui);
+                        syntax::run(tab, rest, cx);
                     }
                     Err(err) => {
                         tab.ui.diff.state = diff_doc::PatchState::Unreadable(err.clone());
@@ -1501,6 +1512,7 @@ impl Tab {
             Action::Picked(action) => picked::dispatch(self, action, window, cx),
             Action::Lines(action) => lines::dispatch(self, action, window, cx),
             Action::Text(action) => diff_select::dispatch(self, action, window, cx),
+            Action::Syntax(action) => syntax::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),

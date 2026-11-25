@@ -84,6 +84,36 @@ fn command_action(tab: &Tab, id: &str, target: &Target, cx: &App) -> Option<Acti
     commands::menu(&tab.ui, target, cx).into_iter().find(|entry| entry.id == id)?.action
 }
 
+fn ink(color: u32) -> Option<gpui::Hsla> {
+    Some(gpui::rgb(color).into())
+}
+
+fn coloured(tab: &Tab, patch_line: &str) -> Option<Vec<(String, Option<gpui::Hsla>)>> {
+    let index = row(tab, patch_line)?;
+    let line = &tab.ui.diff.lines[index];
+    let code = tab.ui.diff.code(line);
+    let column = if tab.ui.diff_mode == DiffMode::Split {
+        if line.kind == crate::diff_doc::Kind::Deleted { Column::Old } else { Column::New }
+    } else {
+        Column::Unified
+    };
+    let mut runs: Vec<(std::ops::Range<usize>, Option<gpui::Hsla>)> = Vec::new();
+    for (range, style) in crate::view::diff_highlights(&tab.ui, index, line, column) {
+        if style.color.is_none() {
+            continue;
+        }
+        match runs.last_mut() {
+            Some((last, color)) if last.end == range.start && *color == style.color => last.end = range.end,
+            _ => runs.push((range, style.color)),
+        }
+    }
+    Some(runs.into_iter().map(|(range, color)| (code[range].to_owned(), color)).collect())
+}
+
+fn settled(tab: &Tab, patch_line: &str) -> bool {
+    tab.ui.diff_open && patch(tab, patch_line) && !tab.ui.syntax.pending
+}
+
 fn bytes(seed: u8, length: usize) -> Vec<u8> {
     (0..length).map(|i| if i % 64 == 0 { 0 } else { seed.wrapping_add(i as u8) }).collect()
 }
@@ -103,7 +133,9 @@ impl Replay<'_> {
             failed => failed,
         };
         self.cx.update(|cx| cx.write_to_clipboard(saved.unwrap_or_else(|| ClipboardItem::new_string(String::new()))))?;
-        copied
+        copied?;
+        self.comment_coloured_from_the_file(dir).await?;
+        self.large_file_plain(dir).await
     }
 
     fn clipboard(&mut self) -> Result<Option<String>> {
@@ -689,6 +721,251 @@ impl Replay<'_> {
         if fs::read_to_string(&script)? != ": launch the tender\n" {
             return Err("launch.sh changed on disk".into());
         }
+        self.pass();
+        Ok(())
+    }
+}
+
+const REEF: &str = "/*\n Reef survey notes.\n The north wall is steep.\n Coral grows on the ledge.\n Fish gather at dawn.\n Tide pools fill at noon.\n Divers keep to the buoys.\n Currents turn at slack water.\n Visibility is best in spring.\n Mark every anchor point.\n*/\nfn survey() -> u32 {\n    42\n}\n";
+
+impl Replay<'_> {
+    async fn comment_coloured_from_the_file(&mut self, dir: &Path) -> Result<()> {
+        use crate::theme::{SYNTAX_COMMENT, SYNTAX_KEYWORD};
+        if SYNTAX_KEYWORD == SYNTAX_COMMENT {
+            return Err("Keywords and comments share a colour".into());
+        }
+        self.start("GAP0709");
+        let root = init(dir, "Colour-reef")?;
+        record(&root, "reef.rs", REEF, "Survey the reef")?;
+        record(&root, "reef.txt", REEF, "Keep a plain copy")?;
+        let edited = REEF.replace(" Divers keep to the buoys.", " Divers stay by the buoys.");
+        fs::write(root.join("reef.rs"), &edited)?;
+        fs::write(root.join("reef.txt"), &edited)?;
+        self.open(&root)?;
+        self.until("Colour-reef with the survey edited", |tab| {
+            tab.ui.repo == "Colour-reef" && files(tab, &[], &["reef.rs", "reef.txt"])
+        })
+        .await?;
+        if git(&root, &["show", "HEAD:reef.rs"])?.lines().next() != Some("/*") {
+            return Err("reef.rs does not open its comment on the first line".into());
+        }
+        let shown = git(&root, &["diff", "--", "reef.rs"])?;
+        let header = shown.lines().find(|line| line.starts_with("@@ ")).unwrap_or_default().to_owned();
+        if !header.starts_with("@@ -4,7 +4,7 @@") || shown.lines().any(|line| line.ends_with("/*")) {
+            return Err(format!("The hunk of reef.rs is {header:?}, or it shows the comment's opening line").into());
+        }
+        let on = self.cx.update(|cx| settings::settings(cx).colour_code)?;
+        if !on {
+            return Err("Colouring code is not on by default".into());
+        }
+        self.action(Action::DiffMode(DiffMode::Unified))?;
+        let before = self.tab.read_with(self.cx, |tab, _| tab.ui.syntax.highlighted)?;
+        self.open_patch("reef.rs", false, "+ Divers stay by the buoys.").await?;
+        self.until("the unstaged survey coloured", |tab| {
+            settled(tab, "+ Divers stay by the buoys.") && coloured(tab, "+ Divers stay by the buoys.").is_some_and(|runs| !runs.is_empty())
+        })
+        .await?;
+        let comment = |text: &str| vec![(text.to_owned(), ink(SYNTAX_COMMENT))];
+        let (added, deleted, inside, after) = self.tab.read_with(self.cx, |tab, _| {
+            (
+                coloured(tab, "+ Divers stay by the buoys."),
+                coloured(tab, "- Divers keep to the buoys."),
+                coloured(tab, "  Fish gather at dawn."),
+                coloured(tab, " fn survey() -> u32 {"),
+            )
+        })?;
+        if added != Some(comment(" Divers stay by the buoys."))
+            || deleted != Some(comment(" Divers keep to the buoys."))
+            || inside != Some(comment(" Fish gather at dawn."))
+        {
+            return Err(format!("Rows inside the comment are coloured {added:?}, {deleted:?} and {inside:?}").into());
+        }
+        if after.is_some() {
+            return Err("The hunk reaches past the comment".into());
+        }
+        let closing = self.tab.read_with(self.cx, |tab, _| coloured(tab, "  Mark every anchor point."))?;
+        if closing != Some(comment(" Mark every anchor point.")) {
+            return Err(format!("The last row inside the comment is coloured {closing:?}").into());
+        }
+        let first = self.tab.read_with(self.cx, |tab, _| tab.ui.syntax.highlighted)?;
+        if first < before + 2 {
+            return Err(format!("Colouring the survey read {} files, not both sides", first - before).into());
+        }
+
+        self.open_patch("reef.txt", false, "+ Divers stay by the buoys.").await?;
+        self.until("the plain copy settled", |tab| settled(tab, "+ Divers stay by the buoys.")).await?;
+        let plain = self.tab.read_with(self.cx, |tab, _| coloured(tab, "+ Divers stay by the buoys."))?;
+        if plain != Some(Vec::new()) {
+            return Err(format!("A .txt file was coloured {plain:?}").into());
+        }
+
+        self.action(Action::Select(file("reef.rs", false)))?;
+        self.until("the survey coloured again from the cache", |tab| {
+            settled(tab, "+ Divers stay by the buoys.") && coloured(tab, "+ Divers stay by the buoys.") == Some(comment(" Divers stay by the buoys."))
+        })
+        .await?;
+        let again = self.tab.read_with(self.cx, |tab, _| tab.ui.syntax.highlighted)?;
+        if again != first {
+            return Err(format!("Showing the survey again coloured {} more files instead of using the cache", again - first).into());
+        }
+
+        let toggle = self.tab.read_with(self.cx, |tab, cx| command_action(tab, "view.colour-code", &Target::Repo, cx))?;
+        let toggle = toggle.ok_or("The palette has no command to stop colouring code")?;
+        let title = self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, &Target::Repo, cx).into_iter().find(|entry| entry.id == "view.colour-code").map(|entry| entry.title)
+        })?;
+        if title.as_deref() != Some("Show code without colours") {
+            return Err(format!("The colour command reads {title:?}").into());
+        }
+        self.action(toggle.clone())?;
+        let off = self.tab.read_with(self.cx, |tab, cx| {
+            (settings::settings(cx).colour_code, tab.ui.diff.lines.iter().all(|line| line.syntax.is_empty()), coloured(tab, "+ Divers stay by the buoys."))
+        })?;
+        if off != (false, true, Some(Vec::new())) {
+            return Err(format!("After turning colours off: setting, every row plain, the edited row: {off:?}").into());
+        }
+        self.action(Action::Select(file("reef.txt", false)))?;
+        self.until("the plain copy with colours off", |tab| settled(tab, "+ Divers stay by the buoys.")).await?;
+        self.action(Action::Select(file("reef.rs", false)))?;
+        self.until("the survey shown with colours off", |tab| {
+            settled(tab, "+ Divers stay by the buoys.") && tab.ui.selection == Some(file("reef.rs", false))
+        })
+        .await?;
+        let still = self.tab.read_with(self.cx, |tab, _| tab.ui.diff.lines.iter().all(|line| line.syntax.is_empty()))?;
+        if !still {
+            return Err("A diff opened with colours off was coloured".into());
+        }
+        self.action(toggle)?;
+        self.until("the survey coloured after turning colours on", |tab| {
+            settled(tab, "+ Divers stay by the buoys.") && coloured(tab, "+ Divers stay by the buoys.") == Some(comment(" Divers stay by the buoys."))
+        })
+        .await?;
+        let on = self.cx.update(|cx| settings::settings(cx).colour_code)?;
+        if !on {
+            return Err("Turning colours back on did not reach the settings".into());
+        }
+
+        self.action(Action::StageFile)?;
+        self.until("the survey staged", |tab| files(tab, &["reef.rs"], &["reef.txt"])).await?;
+        self.open_patch("reef.rs", true, "+ Divers stay by the buoys.").await?;
+        self.until("the staged survey coloured", |tab| {
+            settled(tab, "+ Divers stay by the buoys.") && coloured(tab, "+ Divers stay by the buoys.") == Some(comment(" Divers stay by the buoys."))
+        })
+        .await?;
+        index_is(&root, "reef.rs", edited.as_bytes())?;
+
+        self.type_commit("Note the divers")?;
+        self.until("the survey committed", |tab| {
+            files(tab, &[], &["reef.txt"]) && tab.ui.history.first().is_some_and(|row| row.subject == "Note the divers")
+        })
+        .await?;
+        let head = oid(&root, "HEAD")?;
+        self.select_commit(&head).await?;
+        self.open_file("reef.rs").await?;
+        self.action(Action::DiffMode(DiffMode::Split))?;
+        self.until("the committed survey coloured side by side", |tab| {
+            settled(tab, "+ Divers stay by the buoys.")
+                && coloured(tab, "+ Divers stay by the buoys.") == Some(comment(" Divers stay by the buoys."))
+                && coloured(tab, "- Divers keep to the buoys.") == Some(comment(" Divers keep to the buoys."))
+        })
+        .await?;
+        self.action(Action::DiffMode(DiffMode::Unified))?;
+        git_is(&root, &["show", "--format=%s", "-s", "HEAD"], "Note the divers\n")?;
+        if fs::read_to_string(root.join("reef.rs"))? != edited {
+            return Err("reef.rs changed on disk".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn large_file_plain(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0710");
+        let root = init(dir, "Plain-shoal")?;
+        let large: String = (0..24_000).map(|n| format!("let depth_{n:05} = {n};\n")).collect();
+        let small = "fn sound() -> u32 {\n    7\n}\n";
+        let wide = format!("fn chart() {{}}\nlet line = \"{}\";\n", "x".repeat(2_500));
+        fs::write(root.join("shoal.rs"), &large)?;
+        fs::write(root.join("sound.rs"), small)?;
+        fs::write(root.join("wide.rs"), &wide)?;
+        git(&root, &["add", "--", "."])?;
+        git(&root, &["commit", "-qm", "Sound the shoal"])?;
+        let large_edited = large.replace("let depth_12000 = 12000;", "let depth_12000 = 12001;");
+        fs::write(root.join("shoal.rs"), &large_edited)?;
+        fs::write(root.join("sound.rs"), small.replace("    7", "    8"))?;
+        let wide_edited = wide.replace("fn chart() {}", "fn charted() {}").replace("xxx\"", "xxy\"");
+        fs::write(root.join("wide.rs"), &wide_edited)?;
+        let size: u64 = git(&root, &["cat-file", "-s", "HEAD:shoal.rs"])?.trim().parse()?;
+        if size <= crate::syntax::FILE_LIMIT || fs::metadata(root.join("shoal.rs"))?.len() <= crate::syntax::FILE_LIMIT {
+            return Err(format!("shoal.rs is {size} bytes, not over the 512 KiB cap").into());
+        }
+        self.open(&root)?;
+        self.until("Plain-shoal with three files edited", |tab| {
+            tab.ui.repo == "Plain-shoal" && files(tab, &[], &["shoal.rs", "sound.rs", "wide.rs"])
+        })
+        .await?;
+        self.action(Action::DiffMode(DiffMode::Unified))?;
+
+        let counts = |tab: &Tab| (tab.ui.syntax.highlighted, tab.ui.syntax.too_large);
+        let before = self.tab.read_with(self.cx, |tab, _| counts(tab))?;
+        self.open_patch("shoal.rs", false, "+let depth_12000 = 12001;").await?;
+        self.until("the large unstaged file settled", |tab| settled(tab, "+let depth_12000 = 12001;")).await?;
+        let (after, plain) = self.tab.read_with(self.cx, |tab, _| {
+            (counts(tab), tab.ui.diff.lines.iter().all(|line| line.syntax.is_empty()))
+        })?;
+        if after != (before.0, before.1 + 2) || !plain {
+            return Err(format!("Over the cap: coloured and skipped went from {before:?} to {after:?}, every row plain {plain}").into());
+        }
+        let row_plain = self.tab.read_with(self.cx, |tab, _| coloured(tab, "+let depth_12000 = 12001;"))?;
+        if row_plain != Some(Vec::new()) {
+            return Err(format!("The large file's edited row is coloured {row_plain:?}").into());
+        }
+
+        self.open_patch("sound.rs", false, "+    8").await?;
+        self.until("the small file coloured", |tab| {
+            settled(tab, "+    8") && coloured(tab, " fn sound() -> u32 {").is_some_and(|runs| !runs.is_empty())
+        })
+        .await?;
+        let control = self.tab.read_with(self.cx, |tab, _| counts(tab))?;
+        if control.0 < after.0 + 1 || control.1 != after.1 {
+            return Err(format!("The small file moved the counts from {after:?} to {control:?}").into());
+        }
+
+        self.open_patch("wide.rs", false, "+fn charted() {}").await?;
+        self.until("the file with a long line coloured", |tab| {
+            settled(tab, "+fn charted() {}") && coloured(tab, "+fn charted() {}").is_some_and(|runs| !runs.is_empty())
+        })
+        .await?;
+        let long = self.tab.read_with(self.cx, |tab, _| {
+            let doc = &tab.ui.diff;
+            doc.lines
+                .iter()
+                .filter(|line| line.kind == crate::diff_doc::Kind::Added && doc.code(line).len() > crate::syntax::LINE_LIMIT)
+                .map(|line| line.syntax.is_empty())
+                .collect::<Vec<_>>()
+        })?;
+        if long != [true] {
+            return Err(format!("The long added line is plain: {long:?}").into());
+        }
+
+        self.action(Action::Select(file("shoal.rs", false)))?;
+        self.until("the large file selected", |tab| tab.ui.selection == Some(file("shoal.rs", false))).await?;
+        self.action(Action::StageFile)?;
+        self.until("the large file staged", |tab| files(tab, &["shoal.rs"], &["sound.rs", "wide.rs"])).await?;
+        let staged_before = self.tab.read_with(self.cx, |tab, _| counts(tab))?;
+        self.open_patch("shoal.rs", true, "+let depth_12000 = 12001;").await?;
+        self.until("the large staged file settled", |tab| settled(tab, "+let depth_12000 = 12001;")).await?;
+        let (staged_after, staged_plain) = self.tab.read_with(self.cx, |tab, _| {
+            (counts(tab), tab.ui.diff.lines.iter().all(|line| line.syntax.is_empty()))
+        })?;
+        if staged_after != (staged_before.0, staged_before.1 + 2) || !staged_plain {
+            return Err(format!("The staged large file moved the counts from {staged_before:?} to {staged_after:?}, plain {staged_plain}").into());
+        }
+        let staged_size: u64 = git(&root, &["cat-file", "-s", ":shoal.rs"])?.trim().parse()?;
+        if staged_size <= crate::syntax::FILE_LIMIT {
+            return Err("The staged shoal.rs is under the cap".into());
+        }
+        index_is(&root, "shoal.rs", large_edited.as_bytes())?;
+        git_is(&root, &["diff", "--name-only"], "sound.rs\nwide.rs\n")?;
         self.pass();
         Ok(())
     }

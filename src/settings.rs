@@ -50,6 +50,7 @@ pub(crate) struct Settings {
     pub(crate) terminal: Option<String>,
     pub(crate) push_after_commit: bool,
     pub(crate) fill_from_template: bool,
+    pub(crate) colour_code: bool,
 }
 
 impl Settings {
@@ -89,6 +90,7 @@ impl Default for Settings {
             terminal: None,
             push_after_commit: false,
             fill_from_template: true,
+            colour_code: true,
         }
     }
 }
@@ -587,6 +589,7 @@ mod tests {
             terminal: Some("iterm".to_owned()),
             push_after_commit: true,
             fill_from_template: false,
+            colour_code: false,
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

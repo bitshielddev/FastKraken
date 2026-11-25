@@ -823,6 +823,7 @@ impl Replay<'_> {
                     Section::Accounts,
                     Section::Git,
                     Section::Commit,
+                    Section::Diff,
                     Section::Tools,
                     Section::Shortcuts,
                     Section::Repository,

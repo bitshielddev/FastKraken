@@ -3,6 +3,7 @@ use crate::{
     diff_doc::{self, Blank, DiffDoc, Kind, Line, PatchState, Run, runs},
     diff_select::{self, Column},
     kit,
+    syntax::Token,
     theme::*,
 };
 use gpui::{
@@ -641,8 +642,7 @@ fn marker(kind: Kind) -> Div {
         .child(sign)
 }
 
-fn code(ui: &Ui, index: usize, row: &Line, column: Column) -> Div {
-    let text = ui.diff.code(row).to_owned();
+pub(crate) fn highlights(ui: &Ui, index: usize, row: &Line, column: Column) -> Vec<(Range<usize>, HighlightStyle)> {
     let color = if row.kind == Kind::Added { ADDED_HI } else { DELETED_HI };
     let changed = HighlightStyle {
         background_color: Some(rgb(color).into()),
@@ -653,11 +653,32 @@ fn code(ui: &Ui, index: usize, row: &Line, column: Column) -> Div {
         ..Default::default()
     };
     let chosen: Vec<Range<usize>> = diff_select::span(ui, index, column).into_iter().collect();
-    let highlights = if chosen.is_empty() {
-        row.words.iter().cloned().map(|span| (span, changed)).collect()
-    } else {
-        layered(&[(&chosen, selected), (&row.words, changed)])
+    let ink = |token: Token| HighlightStyle {
+        color: Some(rgb(token.color()).into()),
+        ..Default::default()
     };
+    if row.syntax.is_empty() && chosen.is_empty() {
+        return row.words.iter().cloned().map(|span| (span, changed)).collect();
+    }
+    if row.words.is_empty() && chosen.is_empty() {
+        return row.syntax.iter().map(|(span, token)| (span.clone(), ink(*token))).collect();
+    }
+    let inked: Vec<(Vec<Range<usize>>, HighlightStyle)> = Token::ALL
+        .iter()
+        .map(|token| {
+            let spans: Vec<Range<usize>> = row.syntax.iter().filter(|(_, held)| held == token).map(|(span, _)| span.clone()).collect();
+            (spans, ink(*token))
+        })
+        .filter(|layer| !layer.0.is_empty())
+        .collect();
+    let mut layers: Vec<(&[Range<usize>], HighlightStyle)> = vec![(&chosen, selected), (&row.words, changed)];
+    layers.extend(inked.iter().map(|(spans, style)| (spans.as_slice(), *style)));
+    layered(&layers)
+}
+
+fn code(ui: &Ui, index: usize, row: &Line, column: Column) -> Div {
+    let text = ui.diff.code(row).to_owned();
+    let highlights = highlights(ui, index, row, column);
     div()
         .flex_shrink_0()
         .flex_grow()
