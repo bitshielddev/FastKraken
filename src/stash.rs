@@ -1168,6 +1168,10 @@ impl State {
         }
     }
 
+    pub(crate) fn unplace(&mut self) {
+        self.placements.clear();
+    }
+
     pub fn placed(&self) -> usize {
         self.placements.len()
     }
@@ -1341,7 +1345,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
             match result {
                 Ok(entries) => {
                     tab.ui.stash.entries = entries;
-                    tab.ui.stash.place(&tab.ui.history, 0);
+                    crate::graph_view::place_stashes(&mut tab.ui);
                     if let Some(Selection::Stash(oid)) = &tab.ui.selection {
                         if let Some(title) = tab.ui.stash.title(oid) {
                             tab.ui.diff_title = title.to_owned();

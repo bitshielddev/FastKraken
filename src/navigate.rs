@@ -157,6 +157,10 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         crate::commit_options::key(tab, action, window, cx);
         return;
     }
+    if tab.ui.author_picker.open() {
+        crate::graph_view::key(tab, action, window, cx);
+        return;
+    }
     let ui = &tab.ui;
     if ui.dialog_open() || ui.help.open() {
         return;

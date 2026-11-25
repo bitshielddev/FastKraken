@@ -39,6 +39,7 @@ const PANEL_MAX: f32 = 580.;
 const CENTRE_MIN: f32 = 290.;
 const DIVIDER_WIDTH: f32 = 5.;
 const HEADINGS: f32 = 24.;
+const DIMMED: f32 = 0.4;
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -173,6 +174,7 @@ pub(crate) enum Surface {
     PushBranch,
     StashOptions,
     Coauthors,
+    Authors,
 }
 
 impl Surface {
@@ -191,7 +193,8 @@ impl Surface {
             | (Self::PullOptions, Action::Sync(crate::sync::Action::ToggleOptions))
             | (Self::PushBranch, Action::Publish(crate::publish::Action::PushBranch))
             | (Self::StashOptions, Action::Stash(crate::stash::Action::ToggleOptions))
-            | (Self::Coauthors, Action::CommitOptions(crate::commit_options::Action::OpenCoauthors)) => true,
+            | (Self::Coauthors, Action::CommitOptions(crate::commit_options::Action::OpenCoauthors))
+            | (Self::Authors, Action::GraphView(crate::graph_view::Action::OpenAuthors)) => true,
             _ => false,
         }
     }
@@ -722,6 +725,7 @@ pub struct Ui {
     pub(crate) reveal: crate::reveal::State,
     pub(crate) containing: crate::containing::State,
     pub(crate) graph_view: crate::graph_view::GraphView,
+    pub(crate) author_picker: crate::graph_view::Picker,
     pub has_more: bool,
     pub(crate) history_complete: bool,
     pub input: Entity<CommitInput>,
@@ -820,6 +824,7 @@ impl Ui {
             reveal: Default::default(),
             containing: Default::default(),
             graph_view: Default::default(),
+            author_picker: crate::graph_view::Picker::new(cx),
             has_more: false,
             history_complete: false,
             input,
@@ -857,7 +862,9 @@ impl Ui {
         for row in &rows {
             self.graph.push(&row.oid, &row.parents);
         }
-        self.stash.place(&rows, self.history.len());
+        if !self.graph_view.hide_stashes {
+            self.stash.place(&rows, self.history.len());
+        }
         self.history.extend(rows);
     }
 
@@ -1041,6 +1048,8 @@ impl Ui {
             Some(Surface::StashOptions)
         } else if self.commit_options.picking() {
             Some(Surface::Coauthors)
+        } else if self.author_picker.open() {
+            Some(Surface::Authors)
         } else {
             None
         }
@@ -1053,6 +1062,7 @@ impl Ui {
             || self.publish.branch_open()
             || self.stash.options_open()
             || self.commit_options.picking()
+            || self.author_picker.open()
     }
 
     pub(crate) fn file_ranges(&self) -> (Range<usize>, Range<usize>) {
@@ -1173,6 +1183,9 @@ pub fn bindings(cx: &mut App) {
         KeyBinding::new("up", MoveUp, Some("CoauthorPicker > CommitField")),
         KeyBinding::new("down", MoveDown, Some("CoauthorPicker > CommitField")),
         KeyBinding::new("enter", ChooseRow, Some("CoauthorPicker > CommitField")),
+        KeyBinding::new("up", MoveUp, Some("AuthorPicker > CommitField")),
+        KeyBinding::new("down", MoveDown, Some("AuthorPicker > CommitField")),
+        KeyBinding::new("enter", ChooseRow, Some("AuthorPicker > CommitField")),
         KeyBinding::new("up", MoveUp, Some("CommandPalette > CommitField")),
         KeyBinding::new("down", MoveDown, Some("CommandPalette > CommitField")),
         KeyBinding::new("pageup", MovePageUp, Some("CommandPalette > CommitField")),
@@ -1584,9 +1597,31 @@ fn named_ref<'a>(items: &'a [crate::refs::NamedRef], kind: crate::refs::Kind, na
     items[start..].iter().take_while(|item| item.kind == kind).find(|item| item.name == name)
 }
 
-pub(crate) fn row_labels(refs: &crate::refs::State, decorations: &str) -> Vec<Label> {
+pub(crate) fn labels_in_view(
+    remotes: &[String],
+    decorations: &str,
+    view: &crate::graph_view::GraphView,
+    current: Option<&str>,
+    upstream: impl Fn(&str) -> Option<String>,
+) -> Vec<Label> {
+    let mut shown = labels(remotes, decorations);
+    if view.filtered() {
+        shown.retain(|label| {
+            label.chip == kit::Chip::Head
+                || label
+                    .target
+                    .as_ref()
+                    .and_then(crate::graph_view::full_name)
+                    .is_none_or(|full| view.shows(&full, current))
+        });
+    }
+    paired(shown, upstream)
+}
+
+pub(crate) fn row_labels(ui: &Ui, decorations: &str) -> Vec<Label> {
+    let refs = &ui.refs;
     let branch = |name: &str| named_ref(&refs.items, crate::refs::Kind::Branch, name)?.upstream.clone();
-    paired(labels(&refs.remotes, decorations), branch)
+    labels_in_view(&refs.remotes, decorations, &ui.graph_view, crate::graph_view::current(ui), branch)
 }
 
 pub(crate) fn label_tip(items: &[crate::refs::NamedRef], label: &Label) -> String {
@@ -1669,7 +1704,7 @@ fn show_hidden<T: Desk>(app: &mut T, oid: &str, at: Point<Pixels>, w: &mut Windo
 }
 
 fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) -> Div {
-    let labels = row_labels(&ui.refs, decorations);
+    let labels = row_labels(ui, decorations);
     let hidden = labels.len().saturating_sub(SHOWN_LABELS);
     div()
         .flex()
@@ -1896,7 +1931,7 @@ fn heading_divider<T: Desk>(column: crate::columns::Column, at_right: bool, cx: 
 fn heading_cell<T: Desk>(
     column: crate::columns::Column,
     width: f32,
-    title: Option<&'static str>,
+    content: gpui::AnyElement,
     cx: &Context<T>,
 ) -> Div {
     div()
@@ -1906,8 +1941,41 @@ fn heading_cell<T: Desk>(
         .relative()
         .flex()
         .items_center()
-        .child(div().min_w_0().overflow_hidden().children(title.map(kit::label)))
+        .child(content)
         .child(heading_divider(column, column == crate::columns::Column::Graph, cx))
+}
+
+fn heading_title(title: Option<&'static str>) -> gpui::AnyElement {
+    div().min_w_0().overflow_hidden().children(title.map(kit::label)).into_any_element()
+}
+
+fn author_heading<T: Desk>(ui: &Ui, title: Option<&'static str>, cx: &Context<T>) -> gpui::AnyElement {
+    let chosen = ui.graph_view.author.as_ref();
+    let tip = match chosen {
+        Some(person) => format!("Showing commits by {} brighter than the rest. Click to change.", person.name),
+        None => "Filter by author: dim every commit by anyone else".to_owned(),
+    };
+    div()
+        .id("author-filter")
+        .min_w_0()
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .gap_1()
+        .cursor_pointer()
+        .children(title.map(kit::label))
+        .child(
+            kit::icon("funnel")
+                .size(px(11.))
+                .flex_shrink_0()
+                .text_color(rgb(if chosen.is_some() { ACCENT } else { TEXT_3 })),
+        )
+        .tooltip(kit::tip(tip))
+        .on_click(cx.listener(|app, _, w, cx| {
+            cx.stop_propagation();
+            app.dispatch(Action::GraphView(crate::graph_view::Action::OpenAuthors), w, cx);
+        }))
+        .into_any_element()
 }
 
 pub(crate) fn history_columns(ui: &Ui, centre_width: f32) -> crate::columns::Widths {
@@ -1927,6 +1995,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
         .id("history-headings")
         .h(px(HEADINGS))
         .flex_shrink_0()
+        .relative()
         .flex()
         .items_center()
         .pl(px(crate::columns::ROW_EDGE))
@@ -1945,13 +2014,20 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
             let x = f32::from(event.event.position.x - event.bounds.left());
             crate::columns::drag(app, column, x, f32::from(event.bounds.size.width), cx);
         }))
-        .when(shown_graph, |d| d.child(heading_cell(Column::Graph, widths.graph, None, cx)))
+        .when(shown_graph, |d| d.child(heading_cell(Column::Graph, widths.graph, heading_title(None), cx)))
         .child(div().flex_1().min_w_0().overflow_hidden().child(kit::label("Description")))
         .children(Column::RIGHT.into_iter().filter(|column| widths.of(*column) > 0.).map(|column| {
             let width = widths.of(column);
             let title = (column != Column::Author || width >= crate::columns::NAMED_AUTHOR).then(|| column.title());
-            heading_cell(column, width, title, cx)
-        }));
+            let content = if column == Column::Author { author_heading(ui, title, cx) } else { heading_title(title) };
+            heading_cell(column, width, content, cx)
+        }))
+        .when(ui.author_picker.open(), |d| {
+            d.child(
+                deferred(div().absolute().top(px(HEADINGS)).right(px(8.)).child(crate::graph_view::picker(app, cx)))
+                    .with_priority(1),
+            )
+        });
     let list = uniform_list(
         "history",
         crate::paging::items(ui),
@@ -2027,6 +2103,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     let merge = row.parents.len() > 1;
                     let marking = ui.search.in_graph();
                     let marked = ui.search.marks(&row.oid);
+                    let dimmed = ui.graph_view.dims(&row.author, &row.email);
                     kit::row(("commit", i), active)
                         .h(px(ROW))
                         .when(marked && !active, |d| d.bg(soft(FIND_MATCH, 0x8c)).border_color(rgb(FIND_CURRENT)))
@@ -2058,6 +2135,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
+                                .when(dimmed, |d| d.opacity(DIMMED))
                                 .when(
                                     crate::refs::show_labels(&ui.refs) && !row.refs.is_empty(),
                                     |d| d.child(ref_chips(ui, &row.oid, &row.refs, cx)),
@@ -2074,12 +2152,15 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                     },
                                 )),
                         )
-                        .child(history_metadata(
-                            Written { author: &row.author, email: &row.email, date: &row.date, time: row.time, oid: &row.oid },
-                            moment,
-                            widths,
-                            active,
-                        ))
+                        .child(
+                            history_metadata(
+                                Written { author: &row.author, email: &row.email, date: &row.date, time: row.time, oid: &row.oid },
+                                moment,
+                                widths,
+                                active,
+                            )
+                            .when(dimmed, |d| d.opacity(DIMMED)),
+                        )
                 })
                 .collect::<Vec<_>>()
         }),
@@ -2096,6 +2177,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
         .flex()
         .flex_col()
         .overflow_hidden()
+        .children(crate::graph_view::strip(app, cx))
         .child(headings)
         .child({
             let conflicted = ui.operation.active();
@@ -2710,6 +2792,7 @@ pub fn render<T: Desk>(
             || crate::preferences::field_focused(ui, window, cx)
             || crate::identity::panel_field_focused(ui, window, cx)
             || crate::commit_options::field_focused(ui, window, cx)
+            || crate::graph_view::field_focused(ui, window, cx)
             || (ui.message.focused(window, cx)
                 && (ui.panel_hidden || !matches!(ui.selection, Some(Selection::Commit(_))) || crate::operation::owns_panel(ui)));
         if gone {
@@ -2834,6 +2917,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Dismiss, w, cx);
             } else if ui.commit_options.picking() {
                 app.dispatch(Action::CommitOptions(crate::commit_options::Action::CloseCoauthors), w, cx);
+            } else if ui.author_picker.open() {
+                app.dispatch(Action::GraphView(crate::graph_view::Action::CloseAuthors), w, cx);
             } else if ui.sync.options_open() && ui.refs.draft.is_none() {
                 app.dispatch(Action::Sync(crate::sync::Action::Dismiss), w, cx);
             } else if ui.stash.options_open() && ui.refs.draft.is_none() {
@@ -3020,6 +3105,33 @@ mod tests {
         let (sidebar, centre, _) = widths.layout(1180., Shown { panel: false, ..both });
         assert_eq!((sidebar, centre), (200., 670. + 300. + DIVIDER_WIDTH));
         assert_eq!(widths.layout(1180., Shown { sidebar: false, panel: false }), (0., 1180., 0.));
+    }
+
+    #[test]
+    fn labels_of_refs_the_graph_leaves_out_are_dropped_before_pairing() {
+        use crate::graph_view::GraphView;
+        let remotes = ["origin".to_owned(), "up".to_owned()];
+        let upstream = |name: &str| (name == "main" || name == "x").then(|| format!("origin/{name}"));
+        let decorations = "HEAD -> main, origin/main, x, origin/x, up/x, tag: v1";
+        let names = |view: &GraphView| -> Vec<(String, Option<String>)> {
+            labels_in_view(&remotes, decorations, view, Some("main"), upstream)
+                .into_iter()
+                .map(|label| (label.name, label.remote))
+                .collect()
+        };
+        let pair = |name: &str, remote: Option<&str>| (name.to_owned(), remote.map(str::to_owned));
+        assert_eq!(
+            names(&GraphView::default()),
+            [pair("main", Some("origin/main")), pair("x", Some("origin/x")), pair("up/x", None), pair("v1", None)]
+        );
+        let origin = GraphView { hidden: ["refs/remotes/origin/".to_owned()].into(), ..GraphView::default() };
+        assert_eq!(names(&origin), [pair("main", None), pair("x", None), pair("up/x", None), pair("v1", None)]);
+        let local = GraphView { hidden: ["refs/heads/x".to_owned(), "refs/heads/main".to_owned()].into(), ..GraphView::default() };
+        assert_eq!(names(&local), [pair("main", Some("origin/main")), pair("origin/x", None), pair("up/x", None), pair("v1", None)]);
+        let solo = GraphView { solo: ["refs/remotes/up/".to_owned()].into(), ..GraphView::default() };
+        assert_eq!(names(&solo), [pair("main", None), pair("up/x", None)]);
+        let current = GraphView { only_current: true, upstream: Some("refs/remotes/origin/main".into()), ..GraphView::default() };
+        assert_eq!(names(&current), [pair("main", Some("origin/main"))]);
     }
 
     #[test]

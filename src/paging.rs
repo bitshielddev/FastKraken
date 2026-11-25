@@ -422,7 +422,7 @@ mod tests {
         commit(&f, "h.txt", "Hidden work");
         f.git(&["switch", "-q", "main"]);
         linear(&f, 2);
-        let view = GraphView { hidden: ["refs/heads/hidden".to_owned()].into() };
+        let view = GraphView { hidden: ["refs/heads/hidden".to_owned()].into(), ..GraphView::default() };
         let mut stream = HistoryStream::open(&f.repo, &view).unwrap();
         assert_eq!(subjects(&stream.next(10).unwrap()), ["Step 1", "Step 0", "Root"]);
         let mut open = HistoryStream::open(&f.repo, &GraphView::default()).unwrap();

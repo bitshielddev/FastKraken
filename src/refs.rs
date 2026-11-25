@@ -615,6 +615,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
                     tab.ui.refs.remotes = remotes;
                     tab.ui.refs.github = github;
                     tab.ui.refs.addresses = addresses;
+                    crate::graph_view::follow_upstream(tab, cx);
                 }
                 Err(error) => tab.error(error, cx),
             }
@@ -1133,6 +1134,10 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 Section::Remotes => Some("Add a remote or publish"),
                                 _ => None,
                             };
+                            let left_out = match crate::graph_view::section_prefix(section) {
+                                Some(prefix) => ui.graph_view.hidden.contains(prefix),
+                                None => ui.graph_view.hide_stashes,
+                            };
                             div()
                                 .id(("side-header", i))
                                 .group("side-header")
@@ -1186,6 +1191,14 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                             )),
                                     )
                                 })
+                                .when(left_out, |d| {
+                                    d.child(
+                                        div()
+                                            .id(("side-header-hidden", i))
+                                            .child(kit::icon("eye-off").size(px(11.)).text_color(rgb(TEXT_3)))
+                                            .tooltip(kit::tip(format!("{title} are hidden in the graph"))),
+                                    )
+                                })
                                 .child(kit::label(count.to_string()).font_weight(FontWeight::MEDIUM))
                                 .on_click(cx.listener(move |app, _, w, cx| {
                                     app.dispatch(
@@ -1194,6 +1207,19 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         cx,
                                     )
                                 }))
+                                .on_mouse_down(
+                                    MouseButton::Right,
+                                    cx.listener(move |app, event: &MouseDownEvent, w, cx| {
+                                        app.dispatch(
+                                            view::Action::Menu(Some(Menu::Object {
+                                                target: Target::Section(section),
+                                                at: event.position,
+                                            })),
+                                            w,
+                                            cx,
+                                        )
+                                    }),
+                                )
                                 .into_any_element()
                         }
                         SideRow::Folder {
@@ -1206,6 +1232,11 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let key = key.clone();
                             let remote_name = name.clone();
                             let pointer_name = name.clone();
+                            let folder_ref = format!("{}{name}/", crate::graph_view::REMOTES);
+                            let left_out = *remote && crate::graph_view::left_out(ui, &folder_ref);
+                            let eye = remote
+                                .then(|| crate::graph_view::eye(ui, folder_ref, ("remote-eye", i), "side-folder", cx))
+                                .flatten();
                             div()
                                 .id(("side-folder", i))
                                 .group("side-folder")
@@ -1227,7 +1258,8 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                     .size(px(11.))
                                     .text_color(rgb(TEXT_3)),
                                 )
-                                .child(kit::fit(name.clone()).size(12.5).color(TEXT_2).grow())
+                                .child(kit::fit(name.clone()).size(12.5).color(if left_out { TEXT_3 } else { TEXT_2 }).grow())
+                                .children(eye)
                                 .when(*remote && !ui.busy(), |d| {
                                     d.on_mouse_down(MouseButton::Right, cx.listener(move |app, event: &gpui::MouseDownEvent, w, cx| {
                                         app.dispatch(view::Action::Menu(Some(Menu::Object {
@@ -1278,8 +1310,12 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let shown = matches!((&ui.selection, &item.oid),
                                 (Some(Selection::Commit(id)), Some(oid)) if id == oid);
                             let (switch_name, menu_name) = (item.name.clone(), item.name.clone());
+                            let full = crate::graph_view::of_ref(kind, &item.name.to_string_lossy());
+                            let left_out = crate::graph_view::left_out(ui, &full);
+                            let eye = crate::graph_view::eye(ui, full, ("side-eye", i), "side-ref", cx);
                             div()
                                 .id(("side-ref", i))
+                                .group("side-ref")
                                 .h(px(TREE_ROW))
                                 .w_full()
                                 .pl(indent(*depth))
@@ -1304,7 +1340,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .child(
                                     kit::fit(label.clone())
                                         .size(12.5)
-                                        .color(if current || shown { TEXT } else { TEXT_2 })
+                                        .color(if left_out { TEXT_3 } else if current || shown { TEXT } else { TEXT_2 })
                                         .weight(if current {
                                             FontWeight::SEMIBOLD
                                         } else {
@@ -1318,6 +1354,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         .tooltip(kit::tip(crate::tracking::tooltip(item)))
                                 })
                                 .when(kind == Kind::Tag, |d| d.tooltip(kit::tip(crate::tag::tooltip(item))))
+                                .children(eye)
                                 .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
                                     let action = sidebar_click(kind, current, &switch_name, event.click_count());
                                     app.dispatch(action, w, cx)

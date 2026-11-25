@@ -254,6 +254,9 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
         "skiphooks" => Some(Action::CommitOptions(crate::commit_options::Action::ToggleSkipHooks)),
         "pushafter" => Some(Action::CommitOptions(crate::commit_options::Action::TogglePush)),
         "coauthors" => Some(Action::CommitOptions(crate::commit_options::Action::OpenCoauthors)),
+        "hideref" => Some(Action::GraphView(crate::graph_view::Action::Hide(argument.into()))),
+        "soloref" => Some(Action::GraphView(crate::graph_view::Action::Solo(argument.into()))),
+        "authors" => Some(Action::GraphView(crate::graph_view::Action::OpenAuthors)),
         "submit" => Some(Action::Commit),
         "description" => {
             tab.ui.description.update(cx, |input, cx| input.set_text(&argument.replace("\\n", "\n"), cx));

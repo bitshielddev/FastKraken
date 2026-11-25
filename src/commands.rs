@@ -30,6 +30,7 @@ pub(crate) enum Target {
     Code { path: Option<PathBuf>, line: Option<u32>, row: usize, hunk: Option<usize> },
     Lines { path: PathBuf, side: Side, count: usize },
     Columns,
+    Section(crate::refs::Section),
 }
 
 impl Target {
@@ -289,6 +290,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::credentials::COMMANDS,
         crate::cli::COMMANDS,
         crate::columns::COMMANDS,
+        crate::graph_view::COMMANDS,
     ]
     .into_iter()
     .flatten()
@@ -441,7 +443,7 @@ fn hidden_labels(ui: &Ui, oid: &str, cx: &App) -> Vec<Entry> {
     let Some(row) = ui.history.iter().find(|row| row.oid == oid) else {
         return Vec::new();
     };
-    view::row_labels(&ui.refs, &row.refs)
+    view::row_labels(ui, &row.refs)
         .into_iter()
         .skip(view::SHOWN_LABELS)
         .flat_map(|label| {
@@ -1051,7 +1053,7 @@ mod tests {
         assert_eq!(ids(Bar::Window), ["tab.next", "tab.previous"]);
         assert_eq!(bar_index(Bar::File, "repo.labels"), None);
         assert_eq!(ids(Bar::Edit), ["repo.find", "view.find-next", "view.find-previous"]);
-        assert_eq!(ids(Bar::View), ["view.sidebar", "view.panel", "view.diff-mode", "view.activity", "repo.labels"]);
+        assert_eq!(ids(Bar::View), ["view.sidebar", "view.panel", "view.diff-mode", "view.activity", "repo.labels", "graph.only-current", "graph.author"]);
         assert_eq!(
             ids(Bar::Repository),
             [

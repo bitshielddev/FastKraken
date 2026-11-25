@@ -175,6 +175,7 @@ fn front_filter(ui: &Ui) -> Option<&Entity<CommitInput>> {
         None if ui.preferences.shows_filter() => Some(&ui.preferences.filter),
         None if ui.refs.list_open && ui.refs.draft.is_none() => Some(&ui.refs.find),
         None if ui.commit_options.picking() => Some(&ui.commit_options.filter),
+        None if ui.author_picker.open() => Some(&ui.author_picker.filter),
         None => None,
     }
 }

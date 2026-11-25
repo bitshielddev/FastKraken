@@ -284,6 +284,7 @@ impl Tab {
                     .restore(settings::memory(cx).and_then(|m| m.repo(repo.common_dir())));
                 start::remember(&repo.root, cx);
                 tab.repo = Some(repo);
+                graph_view::restore(tab, cx);
                 tab.ui.autofetch.fetched = fetched;
                 autofetch::arm(tab, cx);
                 sync::restore(tab, configured, cx);
@@ -388,7 +389,8 @@ impl Tab {
         self.history_ticket += 1;
         let ticket = self.history_ticket;
         let epoch = self.epoch;
-        let view = self.ui.graph_view.clone();
+        let view = graph_view::query(&self.ui);
+        self.ui.graph_view.upstream = view.upstream.clone();
         let (stream, skip, rows, kept, anchor, place) = match reload {
             Some(reload) => {
                 self.stream = None;
@@ -479,6 +481,7 @@ impl Tab {
                         tab.ui.head = status.head.clone();
                         tab.ui.head_ref = status.head_ref;
                         tab.ui.upstream = status.upstream;
+                        graph_view::follow_upstream(tab, cx);
                         let carried = !status.unstaged.is_empty() || !status.staged.is_empty();
                         match std::mem::take(&mut tab.follow).landing(carried) {
                             Some(Landing::Head) => {
@@ -1669,6 +1672,9 @@ impl Tab {
                 }
                 if self.ui.commit_options.picking() {
                     commit_options::dispatch(self, commit_options::Action::CloseCoauthors, window, cx);
+                }
+                if self.ui.author_picker.open() {
+                    graph_view::dispatch(self, graph_view::Action::CloseAuthors, window, cx);
                 }
                 view::focus(&self.ui, window);
                 cx.notify();

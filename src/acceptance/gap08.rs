@@ -118,7 +118,7 @@ fn chips(tab: &Tab, oid: &str) -> Vec<(String, Option<String>, String)> {
     let Some(row) = tab.ui.history.iter().find(|row| row.oid == oid) else {
         return Vec::new();
     };
-    view::row_labels(&tab.ui.refs, &row.refs)
+    view::row_labels(&tab.ui, &row.refs)
         .into_iter()
         .map(|label| {
             let tip = view::label_tip(&tab.ui.refs.items, &label);
@@ -131,6 +131,41 @@ fn listed(root: &Path, args: &[&str]) -> Result<Vec<String>> {
     Ok(git(root, args)?.lines().map(str::to_owned).collect())
 }
 
+fn graph_rows(tab: &Tab) -> Vec<String> {
+    tab.ui.history.iter().map(|row| row.oid.clone()).collect()
+}
+
+fn graph_labels(tab: &Tab) -> Vec<(String, Option<String>)> {
+    tab.ui
+        .history
+        .iter()
+        .flat_map(|row| view::row_labels(&tab.ui, &row.refs))
+        .map(|label| (label.name, label.remote))
+        .collect()
+}
+
+fn strip_reads(tab: &Tab) -> String {
+    graph_view::summary(&tab.ui).join(" · ")
+}
+
+fn in_sidebar(tab: &Tab, kind: Kind, name: &str) -> bool {
+    tab.ui.refs.rows.iter().any(|row| {
+        matches!(row, refs::SideRow::Ref { index, .. }
+            if tab.ui.refs.items.get(*index).is_some_and(|item| item.kind == kind && item.name == name))
+    })
+}
+
+fn remembered_view(common: &Path) -> Result<Option<serde_json::Value>> {
+    let state = storage::override_directory().ok_or("No state folder for the replay")?;
+    let memory: serde_json::Value = serde_json::from_slice(&fs::read(state.join("state.json"))?)?;
+    let key: Vec<serde_json::Value> = common.as_os_str().as_encoded_bytes().iter().map(|byte| (*byte).into()).collect();
+    Ok(memory["repositories"]
+        .as_array()
+        .and_then(|views| views.iter().find(|view| view["directory"] == serde_json::Value::Array(key.clone())))
+        .map(|view| view["graph"].clone())
+        .filter(|graph| !graph.is_null()))
+}
+
 impl Replay<'_> {
     pub(super) async fn gap08(&mut self, dir: &Path) -> Result<()> {
         self.jump_down_to_a_tag(dir).await?;
@@ -140,7 +175,10 @@ impl Replay<'_> {
         self.mark_the_end_of_history(dir).await?;
         self.hide_a_column(dir).await?;
         self.share_a_label(dir).await?;
-        self.where_a_commit_lives(dir).await
+        self.where_a_commit_lives(dir).await?;
+        self.hide_a_branch(dir).await?;
+        self.solo_a_branch(dir).await?;
+        self.hide_a_remote(dir).await
     }
 
     fn drawn_columns(&mut self) -> Result<Widths> {
@@ -951,6 +989,366 @@ impl Replay<'_> {
             tab.ui.selection == Some(Selection::Commit(ridge.clone()))
         })
         .await?;
+        self.pass();
+        Ok(())
+    }
+
+    fn graph_menu(&mut self, target: Target) -> Result<Vec<(&'static str, String, Option<bool>, Option<Action>)>> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, &target, cx)
+                .into_iter()
+                .map(|entry| (entry.id, entry.title, entry.check, entry.action))
+                .collect()
+        })?)
+    }
+
+    fn choose_in_graph_menu(&mut self, target: Target, id: &str, title: &str) -> Result<()> {
+        let rows = self.graph_menu(target.clone())?;
+        let row = rows.iter().find(|row| row.0 == id);
+        let Some((_, shown, _, Some(action))) = row else {
+            let listed: Vec<_> = rows.iter().map(|row| (row.0, row.1.clone())).collect();
+            return Err(format!("The menu of {target:?} has no usable {id}: {listed:?}").into());
+        };
+        if shown != title {
+            return Err(format!("The menu of {target:?} names {id} {shown:?}, not {title:?}").into());
+        }
+        self.action(action.clone())
+    }
+
+    fn remembered(&mut self) -> Result<Option<serde_json::Value>> {
+        self.cx.update(|cx| settings::flush(cx))?;
+        let common = self.tab.read_with(self.cx, |tab, _| tab.repo.as_ref().map(|repo| repo.common_dir().to_owned()))?;
+        remembered_view(&common.ok_or("No repository is open")?)
+    }
+
+    async fn hide_a_branch(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0809");
+        let root = init(dir, "Spur-camp")?;
+        record(&root, "camp.txt", "Camp\n", "Pitch the spur camp")?;
+        git(&root, &["switch", "-qc", "spur"])?;
+        record(&root, "spur.txt", "Scout\n", "Scout the spur")?;
+        record(&root, "spur.txt", "Scout\nMap\n", "Map the spur")?;
+        let spur = (oid(&root, "spur~1")?, oid(&root, "spur")?);
+        git(&root, &["switch", "-q", "main"])?;
+        record(&root, "camp.txt", "Camp\nStove\n", "Light the stove")?;
+        fs::write(root.join("camp.txt"), "Camp\nStove\nSocks\n")?;
+        git(&root, &["stash", "push", "-q", "-m", "Dry the socks"])?;
+        let stash = oid(&root, "refs/stash")?;
+        let everything = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/stash", "--all"])?;
+        self.open(&root)?;
+        self.until("Spur-camp open with its stash in the graph", |tab| {
+            tab.ui.repo == "Spur-camp"
+                && graph_rows(tab) == everything
+                && tab.ui.stash.placed() == 1
+                && tab.ui.refs.lists(Kind::Branch, "spur")
+        })
+        .await?;
+        let spur_menu = self.graph_menu(Target::Branch("spur".into()))?;
+        if !spur_menu.iter().any(|row| row.0 == "graph.solo" && row.1 == "Solo") || spur_menu.iter().any(|row| row.0 == "graph.show") {
+            return Err(format!("Before hiding, spur's menu lists {:?}", spur_menu.iter().map(|row| row.0).collect::<Vec<_>>()).into());
+        }
+        self.choose_in_graph_menu(Target::Branch("spur".into()), "graph.hide", "Hide in the graph")?;
+        let without = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/heads/spur", "--exclude=refs/stash", "--all", "HEAD"])?;
+        if without.contains(&spur.0) || without.contains(&spur.1) || without.len() != 2 {
+            return Err(format!("Git lists {without:?} with spur excluded").into());
+        }
+        self.until("the spur commits gone from the graph and the strip saying one branch is hidden", |tab| {
+            graph_rows(tab) == without && strip_reads(tab) == "1 branch hidden"
+        })
+        .await?;
+        let (labels, kept, dimmed) = self.tab.read_with(self.cx, |tab, _| {
+            (graph_labels(tab), in_sidebar(tab, Kind::Branch, "spur"), graph_view::left_out(&tab.ui, "refs/heads/spur"))
+        })?;
+        if labels.iter().any(|label| label.0 == "spur") || !kept || !dimmed {
+            return Err(format!("With spur hidden the labels are {labels:?}, the sidebar lists it {kept}, dimmed {dimmed}").into());
+        }
+        let shown_again = self.graph_menu(Target::Branch("spur".into()))?;
+        if !shown_again.iter().any(|row| row.0 == "graph.show" && row.1 == "Show in the graph") {
+            return Err("A hidden branch's menu does not offer Show in the graph".into());
+        }
+
+        self.choose_in_graph_menu(Target::Branch("main".into()), "graph.hide", "Hide in the graph")?;
+        let both = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/heads/main", "--exclude=refs/heads/spur", "--exclude=refs/stash", "--all", "HEAD"])?;
+        if both != without {
+            return Err(format!("With main hidden too Git lists {both:?}").into());
+        }
+        self.until("main's commits still listed through HEAD with two branches hidden", |tab| {
+            tab.ui.graph_view.hidden.len() == 2 && graph_rows(tab) == both && strip_reads(tab) == "2 branches hidden"
+        })
+        .await?;
+        let head_label = self.tab.read_with(self.cx, |tab, _| graph_labels(tab))?;
+        if !head_label.iter().any(|label| label.0 == "main") {
+            return Err(format!("The checked-out branch lost its label: {head_label:?}").into());
+        }
+
+        let stash_menu = self.graph_menu(Target::Section(refs::Section::Stashes))?;
+        if !stash_menu.iter().any(|row| row.0 == "graph.stashes" && row.1 == "Show stashes in the graph" && row.2 == Some(true)) {
+            return Err(format!("The Stashes heading's menu lists {:?}", stash_menu.iter().map(|row| (row.0, row.2)).collect::<Vec<_>>()).into());
+        }
+        self.choose_in_graph_menu(Target::Section(refs::Section::Stashes), "graph.stashes", "Show stashes in the graph")?;
+        self.until("the stash row gone and the strip saying so", |tab| {
+            tab.ui.stash.placed() == 0
+                && tab.ui.history_items() == tab.ui.history.len()
+                && tab.ui.stash.entries.iter().any(|entry| entry.oid == stash)
+                && strip_reads(tab) == "2 branches hidden · stashes hidden"
+        })
+        .await?;
+        let stored = self.remembered()?.ok_or("Nothing is remembered for Spur-camp")?;
+        if stored["hidden"] != serde_json::json!(["refs/heads/main", "refs/heads/spur"]) || stored["hide_stashes"] != true {
+            return Err(format!("state.json remembers the view {stored}").into());
+        }
+
+        self.relaunch().await?;
+        self.until("Spur-camp reopened with both branches and the stash still left out", |tab| {
+            tab.ui.repo == "Spur-camp"
+                && tab.ui.graph_view.hidden.len() == 2
+                && tab.ui.graph_view.hide_stashes
+                && graph_rows(tab) == both
+                && !tab.ui.stash.entries.is_empty()
+                && tab.ui.stash.placed() == 0
+                && strip_reads(tab) == "2 branches hidden · stashes hidden"
+        })
+        .await?;
+
+        self.choose_in_graph_menu(Target::Branch("spur".into()), "graph.show", "Show in the graph")?;
+        let with_spur = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/heads/main", "--exclude=refs/stash", "--all", "HEAD"])?;
+        self.until("both spur commits back", |tab| {
+            graph_rows(tab) == with_spur && graph_rows(tab).contains(&spur.0) && strip_reads(tab) == "1 branch hidden · stashes hidden"
+        })
+        .await?;
+        self.action(Action::GraphView(graph_view::Action::Clear))?;
+        self.until("every commit and the stash back with no strip", |tab| {
+            !tab.ui.graph_view.active() && graph_rows(tab) == everything && tab.ui.stash.placed() == 1 && graph_view::summary(&tab.ui).is_empty()
+        })
+        .await?;
+        if let Some(stored) = self.remembered()? {
+            return Err(format!("After Clear state.json still remembers {stored}").into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn solo_a_branch(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0810");
+        let origin = dir.join("Solo-ridge-origin.git");
+        fs::create_dir(&origin)?;
+        git(&origin, &["init", "-q", "--bare", "-b", "main"])?;
+        let root = init(dir, "Solo-ridge")?;
+        let start = 1_790_000_000;
+        commit_dated(&root, "trail.txt", "Leave the trailhead", start, &[])?;
+        git(&root, &["remote", "add", "origin", &origin.display().to_string()])?;
+        git(&root, &["push", "-q", "-u", "origin", "main"])?;
+        let juniper = [("GIT_AUTHOR_NAME", "Juniper Fox"), ("GIT_AUTHOR_EMAIL", "juniper@example.invalid")];
+        git(&root, &["switch", "-qc", "ridge"])?;
+        commit_dated(&root, "ridge.txt", "Climb the ridge", start + 60, &juniper)?;
+        commit_dated(&root, "ridge.txt", "Reach the ridge top", start + 120, &juniper)?;
+        git(&root, &["switch", "-qc", "valley", "main"])?;
+        let valley = commit_dated(&root, "valley.txt", "Wade the valley", start + 180, &[])?;
+        git(&root, &["switch", "-qc", "afar", "main"])?;
+        let afar = commit_dated(&root, "afar.txt", "Survey from afar", start + 240, &[])?;
+        git(&root, &["update-ref", "refs/remotes/origin/main", &afar])?;
+        git(&root, &["switch", "-q", "main"])?;
+        git(&root, &["branch", "-qD", "afar"])?;
+        commit_dated(&root, "trail.txt", "Brew coffee", start + 300, &[])?;
+        git_is(&root, &["rev-parse", "--abbrev-ref", "main@{upstream}"], "origin/main\n")?;
+        let everything = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/stash", "--all"])?;
+        self.open(&root)?;
+        self.until("Solo-ridge open with every branch", |tab| {
+            tab.ui.repo == "Solo-ridge"
+                && graph_rows(tab) == everything
+                && tab.ui.refs.branch("main").is_some_and(|item| item.upstream.as_deref() == Some("origin/main"))
+                && tab.ui.refs.lists(Kind::Branch, "valley")
+        })
+        .await?;
+
+        self.choose_in_graph_menu(Target::Branch("ridge".into()), "graph.solo", "Solo")?;
+        let ridge = listed(&root, &["rev-list", "--topo-order", "ridge", "HEAD", "--"])?;
+        self.until("only ridge's and HEAD's history listed", |tab| {
+            graph_rows(tab) == ridge && strip_reads(tab) == "showing only ridge"
+        })
+        .await?;
+        let (labels, dimmed) = self.tab.read_with(self.cx, |tab, _| {
+            (graph_labels(tab), graph_view::left_out(&tab.ui, "refs/heads/valley") && in_sidebar(tab, Kind::Branch, "valley"))
+        })?;
+        if ridge.contains(&valley) || labels.iter().any(|label| label.0 == "valley") || !dimmed {
+            return Err(format!("While soloing ridge the labels are {labels:?} and valley is dimmed {dimmed}").into());
+        }
+        let ridge_menu = self.graph_menu(Target::Branch("ridge".into()))?;
+        if !ridge_menu.iter().any(|row| row.0 == "graph.unsolo" && row.1 == "Stop soloing") {
+            return Err("A soloed branch's menu does not offer Stop soloing".into());
+        }
+
+        self.choose_in_graph_menu(Target::Branch("valley".into()), "graph.solo", "Solo")?;
+        let two = listed(&root, &["rev-list", "--topo-order", "ridge", "valley", "HEAD", "--"])?;
+        self.until("ridge, valley and HEAD listed", |tab| {
+            graph_rows(tab) == two && strip_reads(tab) == "showing only ridge and valley"
+        })
+        .await?;
+        let title = self.graph_menu(Target::Repo)?.into_iter().find(|row| row.0 == "graph.stop-soloing").map(|row| row.1);
+        if title.as_deref() != Some("Stop soloing") {
+            return Err(format!("The repository commands name stop soloing {title:?}").into());
+        }
+        self.action(Action::Run("graph.stop-soloing"))?;
+        self.until("every commit back after soloing", |tab| {
+            graph_rows(tab) == everything && graph_view::summary(&tab.ui).is_empty()
+        })
+        .await?;
+
+        let named = |ui: &view::Ui| commands::find("graph.only-current").map(|command| (command.title)(ui, &Target::Repo));
+        let before = self.tab.read_with(self.cx, |tab, _| named(&tab.ui))?;
+        if before.as_deref() != Some("Show only the current branch") {
+            return Err(format!("The View command reads {before:?}").into());
+        }
+        self.action(Action::Run("graph.only-current"))?;
+        let current = listed(&root, &["rev-list", "--topo-order", "HEAD", "origin/main", "--"])?;
+        if !current.contains(&afar) || current.contains(&valley) {
+            return Err(format!("Git lists {current:?} for HEAD and its upstream").into());
+        }
+        self.until("only HEAD and its upstream listed", |tab| {
+            graph_rows(tab) == current && strip_reads(tab) == "showing only main and its upstream"
+        })
+        .await?;
+        let after = self.tab.read_with(self.cx, |tab, _| named(&tab.ui))?;
+        if after.as_deref() != Some("Show all branches") {
+            return Err(format!("With only the current branch shown the View command reads {after:?}").into());
+        }
+        self.action(Action::Run("graph.only-current"))?;
+        self.until("every commit back after the current branch view", |tab| {
+            graph_rows(tab) == everything && !tab.ui.graph_view.active()
+        })
+        .await?;
+
+        self.action(Action::GraphView(graph_view::Action::OpenAuthors))?;
+        self.until("the author filter open", |tab| tab.ui.author_picker.open()).await?;
+        self.tab.update(self.cx, |tab, window, cx| {
+            tab.ui.author_picker.filter.update(cx, |field, cx| field.replace_text_in_range(None, "juni", window, cx))
+        })?;
+        let offered = self.tab.read_with(self.cx, |tab, cx| graph_view::matching(&tab.ui, cx))?;
+        if offered.iter().map(|person| person.name.as_str()).collect::<Vec<_>>() != ["Juniper Fox"] {
+            return Err(format!("Typing juni offers {offered:?}").into());
+        }
+        self.key("enter")?;
+        let by_juniper: Vec<String> =
+            listed(&root, &["log", "--format=%H", "--author=juniper@example.invalid", "--exclude=refs/stash", "--all"])?;
+        if by_juniper.len() != 2 {
+            return Err(format!("Git finds {by_juniper:?} by Juniper Fox").into());
+        }
+        self.until("other authors dimmed with every commit still listed", |tab| {
+            let view = &tab.ui.graph_view;
+            !tab.ui.author_picker.open()
+                && view.author.as_ref().is_some_and(|person| person.name == "Juniper Fox")
+                && graph_rows(tab) == everything
+                && tab.ui.history.iter().all(|row| view.dims(&row.author, &row.email) != by_juniper.contains(&row.oid))
+                && strip_reads(tab) == "commits by Juniper Fox"
+        })
+        .await?;
+        self.action(Action::GraphView(graph_view::Action::Clear))?;
+        self.until("nothing dimmed and no strip", |tab| {
+            !tab.ui.graph_view.active() && tab.ui.history.iter().all(|row| !tab.ui.graph_view.dims(&row.author, &row.email))
+        })
+        .await?;
+        if let Some(stored) = self.remembered()? {
+            return Err(format!("After Clear state.json still remembers {stored}").into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn hide_a_remote(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0811");
+        let root = init(dir, "Two-remotes")?;
+        record(&root, "camp.txt", "Camp\n", "Pitch the two camps")?;
+        for remote in ["origin", "upstream"] {
+            let bare = dir.join(format!("Two-remotes-{remote}.git"));
+            fs::create_dir(&bare)?;
+            git(&bare, &["init", "-q", "--bare", "-b", "main"])?;
+            git(&root, &["remote", "add", remote, &bare.display().to_string()])?;
+        }
+        git(&root, &["push", "-q", "-u", "origin", "main"])?;
+        git(&root, &["push", "-q", "upstream", "main"])?;
+        git(&root, &["switch", "-qc", "trail"])?;
+        record(&root, "trail.txt", "Trail\n", "Mark the trail")?;
+        git(&root, &["push", "-q", "origin", "trail"])?;
+        git(&root, &["switch", "-qc", "scout", "main"])?;
+        record(&root, "scout.txt", "Scout\n", "Scout ahead")?;
+        let scout = oid(&root, "HEAD")?;
+        git(&root, &["push", "-q", "origin", "scout"])?;
+        git(&root, &["switch", "-q", "main"])?;
+        git(&root, &["branch", "-qD", "scout"])?;
+        let everything = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/stash", "--all"])?;
+        self.open(&root)?;
+        self.until("Two-remotes open with both remotes", |tab| {
+            tab.ui.repo == "Two-remotes"
+                && graph_rows(tab) == everything
+                && tab.ui.refs.remotes.len() == 2
+                && tab.ui.refs.lists(Kind::Remote, "origin/scout")
+                && tab.ui.refs.branch("main").is_some_and(|item| item.upstream.as_deref() == Some("origin/main"))
+        })
+        .await?;
+        let mut labels = self.tab.read_with(self.cx, |tab, _| graph_labels(tab))?;
+        labels.sort();
+        let pair = |name: &str, remote: Option<&str>| (name.to_owned(), remote.map(str::to_owned));
+        let all_labels = vec![
+            pair("main", Some("origin/main")),
+            pair("origin/scout", None),
+            pair("origin/trail", None),
+            pair("trail", None),
+            pair("upstream/main", None),
+        ];
+        if labels != all_labels {
+            return Err(format!("Before hiding, the labels are {labels:?}").into());
+        }
+
+        self.choose_in_graph_menu(Target::Remote("origin".into()), "graph.hide", "Hide in the graph")?;
+        let without = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/remotes/origin/*", "--exclude=refs/stash", "--all", "HEAD"])?;
+        if without.contains(&scout) {
+            return Err("Git still lists the scout commit with origin excluded".into());
+        }
+        self.until("origin's own commit gone and the strip naming the remote", |tab| {
+            graph_rows(tab) == without && strip_reads(tab) == "remote origin hidden"
+        })
+        .await?;
+        let (mut labels, listed_branches, dimmed) = self.tab.read_with(self.cx, |tab, _| {
+            (
+                graph_labels(tab),
+                ["origin/main", "origin/trail", "origin/scout"].iter().all(|name| in_sidebar(tab, Kind::Remote, name)),
+                graph_view::left_out(&tab.ui, "refs/remotes/origin/") && graph_view::left_out(&tab.ui, "refs/remotes/origin/trail"),
+            )
+        })?;
+        labels.sort();
+        if labels != [pair("main", None), pair("trail", None), pair("upstream/main", None)] || !listed_branches || !dimmed {
+            return Err(format!("With origin hidden the labels are {labels:?}, its branches listed {listed_branches}, dimmed {dimmed}").into());
+        }
+
+        self.choose_in_graph_menu(Target::RemoteBranch("origin/trail".into()), "graph.show", "Show in the graph")?;
+        self.until("origin shown again", |tab| graph_rows(tab) == everything && !tab.ui.graph_view.active()).await?;
+        let mut labels = self.tab.read_with(self.cx, |tab, _| graph_labels(tab))?;
+        labels.sort();
+        if labels != all_labels {
+            return Err(format!("With origin shown again the labels are {labels:?}").into());
+        }
+
+        let local = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/remotes/*", "--exclude=refs/stash", "--all", "HEAD"])?;
+        self.choose_in_graph_menu(Target::Section(refs::Section::Remotes), "graph.hide-section", "Hide all remotes")?;
+        self.until("no remote labels with every remote hidden", |tab| {
+            strip_reads(tab) == "all remotes hidden" && graph_rows(tab) == local
+        })
+        .await?;
+        let mut labels = self.tab.read_with(self.cx, |tab, _| graph_labels(tab))?;
+        labels.sort();
+        if labels != [pair("main", None), pair("trail", None)] {
+            return Err(format!("With every remote hidden the labels are {labels:?}").into());
+        }
+        self.choose_in_graph_menu(Target::Section(refs::Section::Remotes), "graph.show-section", "Show all remotes")?;
+        self.until("every remote back", |tab| graph_rows(tab) == everything && !tab.ui.graph_view.active()).await?;
+        let mut labels = self.tab.read_with(self.cx, |tab, _| graph_labels(tab))?;
+        labels.sort();
+        if labels != all_labels {
+            return Err(format!("With every remote shown again the labels are {labels:?}").into());
+        }
+        if let Some(stored) = self.remembered()? {
+            return Err(format!("After showing every remote state.json still remembers {stored}").into());
+        }
         self.pass();
         Ok(())
     }

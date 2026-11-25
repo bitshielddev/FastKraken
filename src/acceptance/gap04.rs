@@ -1087,6 +1087,8 @@ impl Replay<'_> {
                 ("remote.edit-address", "Edit address…"),
                 ("remote.rename", "Rename remote…"),
                 ("remote.remove", "Remove remote…"),
+                ("graph.hide", "Hide in the graph"),
+                ("graph.solo", "Solo"),
                 ("remote.copy-address", "Copy address"),
             ]
             || rows.iter().any(|(_, _, disabled)| disabled.is_some())

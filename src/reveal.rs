@@ -121,6 +121,16 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             let base = tab.ui.stash.base_of(&stash).map(str::to_owned);
             let selection = Selection::Stash(stash);
             choose(tab, &selection, window, cx);
+            if tab.ui.graph_view.hide_stashes {
+                end(tab, None);
+                tab.ui.notices.show(
+                    Notice::new(Tone::Info, "Stashes are hidden in the graph", "Its details are shown. Show stashes in the graph to see its row.")
+                        .offer("Show stashes", view::Action::GraphView(crate::graph_view::Action::ToggleStashes))
+                        .lasting(OFFERED),
+                );
+                cx.notify();
+                return;
+            }
             match base {
                 Some(base) => show(tab, selection, base, cx),
                 None => {
@@ -183,7 +193,7 @@ fn look(tab: &mut Tab, cx: &mut Context<Tab>) {
     finding.tries += 1;
     let oid = finding.oid.clone();
     let stop = finding.stop.clone();
-    let view = tab.ui.graph_view.clone();
+    let view = crate::graph_view::query(&tab.ui);
     let epoch = tab.epoch;
     Tab::work(
         cx,
@@ -338,7 +348,7 @@ mod tests {
         let doomed = tip(&f);
         f.git(&["switch", "-q", "main"]);
         f.git(&["branch", "-qD", "doomed"]);
-        let hidden = GraphView { hidden: ["refs/heads/side".to_owned()].into() };
+        let hidden = GraphView { hidden: ["refs/heads/side".to_owned()].into(), ..GraphView::default() };
         assert_eq!(place(&f.repo, &hidden, &side, &never()), Ok(Place::Hidden));
         assert_eq!(place(&f.repo, &GraphView::default(), &side, &never()), Ok(Place::At(0)));
         assert_eq!(place(&f.repo, &hidden, &doomed, &never()), Ok(Place::Unlisted));
