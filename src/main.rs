@@ -14,6 +14,7 @@ mod clone;
 mod columns;
 mod commands;
 mod commit_options;
+mod compare;
 mod containing;
 mod conflict;
 mod connect;
@@ -436,6 +437,9 @@ impl Tab {
                                 tab.select(Selection::Commit(first.oid.clone()), cx);
                             }
                         }
+                        if reset {
+                            compare::history_changed(tab, cx);
+                        }
                         reveal::landed(tab, cx);
                         cx.notify();
                     }
@@ -522,6 +526,7 @@ impl Tab {
                             })
                             .collect();
                         picked::refresh(&mut tab.ui);
+                        compare::status_changed(tab, cx);
                         if let Some(Selection::File { path, staged }) = tab.ui.selection.clone() {
                             if tab
                                 .ui
@@ -612,11 +617,12 @@ impl Tab {
             self,
             match &selection {
                 Selection::Commit(oid) => Some(oid.as_str()),
-                Selection::Changes | Selection::File { .. } | Selection::Stash(_) => None,
+                Selection::Changes | Selection::File { .. } | Selection::Stash(_) | Selection::Compare { .. } | Selection::Commits => None,
             },
             cx,
         );
-        if selection == Selection::Changes {
+        compare::selected(self, cx);
+        if matches!(selection, Selection::Changes | Selection::Commits | Selection::Compare { .. }) {
             self.clear_diff();
             cx.notify();
             return;
@@ -645,7 +651,8 @@ impl Tab {
                 .unwrap_or_else(|| oid.clone()),
             Selection::File { path, .. } => path.to_string_lossy().into_owned(),
             Selection::Stash(oid) => self.ui.stash.title(oid).unwrap_or(oid).to_owned(),
-            Selection::Changes => return,
+            Selection::Compare { .. } => compare::heading(&self.ui).map(|heading| heading.title).unwrap_or_default(),
+            Selection::Changes | Selection::Commits => return,
         };
         self.ui.diff.state = diff_doc::PatchState::Loading;
         cx.notify();
@@ -675,7 +682,10 @@ impl Tab {
                         Some(path) => repo.stash_file_diff(oid, &path, from.as_deref(), options),
                         None => repo.stash_diff(oid, options),
                     },
-                    Selection::Changes => return Err("Select a file to see its changes.".into()),
+                    Selection::Compare { from: older, to, since_fork } => {
+                        repo.compared_patch((older, to, *since_fork), commit_path.as_deref(), from.as_deref(), options)
+                    }
+                    Selection::Changes | Selection::Commits => return Err("Select a file to see its changes.".into()),
                 }?;
                 let blobs = diff_doc::binary_blobs(&diff.text);
                 let (sizes, working_size) = if blobs.is_empty() {
@@ -1586,6 +1596,7 @@ impl Tab {
             Action::Reverse(action) => reverse::dispatch(self, action, window, cx),
             Action::Pick(action) => pick::dispatch(self, action, window, cx),
             Action::Picked(action) => picked::dispatch(self, action, window, cx),
+            Action::Compare(action) => compare::dispatch(self, action, window, cx),
             Action::Lines(action) => lines::dispatch(self, action, window, cx),
             Action::Text(action) => diff_select::dispatch(self, action, window, cx),
             Action::Syntax(action) => syntax::dispatch(self, action, window, cx),

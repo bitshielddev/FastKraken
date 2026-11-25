@@ -20,6 +20,16 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             .files
             .get(index)
             .map(|file| Action::Inspect(crate::inspection::Action::OpenFile(file.path.clone()))),
+        "cpick" | "crange" => tab.ui.history.get(index).map(|row| {
+            let how = if name == "cpick" { crate::picked::How::Toggle } else { crate::picked::How::Range };
+            Action::Compare(crate::compare::Action::Pick { rev: crate::compare::Rev::Commit(row.oid.clone()), how })
+        }),
+        "cfile" => tab
+            .ui
+            .compare
+            .files
+            .get(index)
+            .map(|file| Action::Compare(crate::compare::Action::OpenFile(file.path.clone()))),
         "history" => Some(Action::Inspect(crate::inspection::Action::History)),
         "search" => {
             tab.dispatch(Action::Search(search::Action::Open), window, cx);

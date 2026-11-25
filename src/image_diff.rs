@@ -199,7 +199,9 @@ pub(crate) fn wanted(doc: &DiffDoc, selection: &Selection, root: &Path) -> Optio
     let stored = |id: &Option<String>| id.as_deref().filter(|id| !absent(id)).map(|id| Side::Stored(id.to_owned()));
     let old = stored(&file.old_blob);
     let new = match selection {
-        Selection::File { staged: false, .. } if stored(&file.new_blob).is_some() => {
+        Selection::File { staged: false, .. } | Selection::Compare { to: crate::compare::Rev::WorkingTree, .. }
+            if stored(&file.new_blob).is_some() =>
+        {
             let path = root.join(&path);
             Some(Side::Working { stamp: stamp(&path), path })
         }
@@ -512,14 +514,15 @@ pub(crate) fn selection_open(ui: &Ui) -> Option<PathBuf> {
     match &ui.selection {
         Some(Selection::Commit(_)) => ui.inspection.path.clone(),
         Some(Selection::Stash(_)) => ui.stash.open_path().map(Path::to_path_buf),
+        Some(Selection::Compare { .. }) => ui.compare.path.clone(),
         _ => None,
     }
 }
 
 pub(crate) fn owner(selection: &Selection, open: Option<PathBuf>) -> Owner {
     let open = match selection {
-        Selection::Commit(_) | Selection::Stash(_) => open,
-        Selection::File { .. } | Selection::Changes => None,
+        Selection::Commit(_) | Selection::Stash(_) | Selection::Compare { .. } => open,
+        Selection::File { .. } | Selection::Changes | Selection::Commits => None,
     };
     Owner::Diff { selection: selection.clone(), open }
 }

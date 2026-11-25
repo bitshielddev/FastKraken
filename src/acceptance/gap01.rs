@@ -495,6 +495,7 @@ impl Replay<'_> {
             ("branch.merge", "Merge into main".to_owned(), Some("main is the checked-out branch".to_owned())),
             ("branch.rename", "Rename main…".to_owned(), None),
             ("branch.delete", "Delete main…".to_owned(), Some("Switch to another branch first".to_owned())),
+            ("ref.compare-working", "Compare with my files".to_owned(), None),
             ("graph.hide", "Hide in the graph".to_owned(), None),
             ("graph.solo", "Solo".to_owned(), None),
             ("graph.unpin", "Unpin from the left".to_owned(), None),
@@ -514,6 +515,8 @@ impl Replay<'_> {
             ("branch.rebase", "Rebase feature/map onto main…".to_owned(), None),
             ("branch.rename", "Rename feature/map…".to_owned(), None),
             ("branch.delete", "Delete feature/map…".to_owned(), None),
+            ("ref.compare-current", "Compare with main".to_owned(), None),
+            ("ref.compare-working", "Compare with my files".to_owned(), None),
             ("graph.hide", "Hide in the graph".to_owned(), None),
             ("graph.solo", "Solo".to_owned(), None),
             ("graph.pin", "Pin to the left".to_owned(), None),
@@ -547,6 +550,8 @@ impl Replay<'_> {
             ("branch.rebase", "Rebase feature/map onto main…".to_owned(), reason.clone()),
             ("branch.rename", "Rename feature/map…".to_owned(), reason.clone()),
             ("branch.delete", "Delete feature/map…".to_owned(), reason.clone()),
+            ("ref.compare-current", "Compare with main".to_owned(), None),
+            ("ref.compare-working", "Compare with my files".to_owned(), None),
             ("graph.hide", "Hide in the graph".to_owned(), None),
             ("graph.solo", "Solo".to_owned(), None),
             ("graph.pin", "Pin to the left".to_owned(), None),
@@ -682,6 +687,7 @@ impl Replay<'_> {
                 "commit.merge",
                 "commit.revert",
                 "commit.reset",
+                "commit.compare-working",
                 "commit.copy-sha",
                 "commit.copy-message",
             ]
@@ -715,6 +721,8 @@ impl Replay<'_> {
             ("branch.set-upstream", format!("Set upstream of {first}…")),
             ("branch.rename", format!("Rename {first}…")),
             ("branch.delete", format!("Delete {first}…")),
+            ("ref.compare-current", "Compare with main".to_owned()),
+            ("ref.compare-working", "Compare with my files".to_owned()),
             ("graph.hide", "Hide in the graph".to_owned()),
             ("graph.solo", "Solo".to_owned()),
             ("graph.pin", "Pin to the left".to_owned()),
@@ -753,7 +761,12 @@ impl Replay<'_> {
             let expected: Vec<_> = std::iter::once(("ref.branch", "Create branch here…".to_owned()))
                 .chain([own, merge, rebase])
                 .chain(more)
-                .chain([("graph.hide", "Hide in the graph".to_owned()), ("graph.solo", "Solo".to_owned())])
+                .chain([
+                    ("ref.compare-current", "Compare with main".to_owned()),
+                    ("ref.compare-working", "Compare with my files".to_owned()),
+                    ("graph.hide", "Hide in the graph".to_owned()),
+                    ("graph.solo", "Solo".to_owned()),
+                ])
                 .chain(pinned)
                 .chain([("ref.copy-name", copy.to_owned())])
                 .collect();
@@ -795,6 +808,8 @@ impl Replay<'_> {
                         "tag.annotate",
                         "tag.delete",
                         "tag.delete-remote",
+                        "ref.compare-current",
+                        "ref.compare-working",
                         "graph.hide",
                         "graph.solo",
                         "ref.copy-name",
@@ -810,7 +825,7 @@ impl Replay<'_> {
             self.key(key)?;
         }
         let cursor = self.tab.read_with(self.cx, |tab, _| tab.ui.menu_cursor)?;
-        if cursor != (commands::Cursor { row: Some(1), open: true, sub: Some(10) }) {
+        if cursor != (commands::Cursor { row: Some(1), open: true, sub: Some(12) }) {
             return Err(format!("Up, Right and Up left the highlight at {cursor:?}").into());
         }
         let copied = {

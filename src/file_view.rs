@@ -126,8 +126,8 @@ fn absent(id: &str) -> bool {
 pub(crate) fn single(selection: &Selection, open: Option<&Path>) -> Option<PathBuf> {
     match selection {
         Selection::File { path, .. } => Some(path.clone()),
-        Selection::Commit(_) | Selection::Stash(_) => open.map(Path::to_path_buf),
-        Selection::Changes => None,
+        Selection::Commit(_) | Selection::Stash(_) | Selection::Compare { .. } => open.map(Path::to_path_buf),
+        Selection::Changes | Selection::Commits => None,
     }
 }
 
@@ -173,7 +173,7 @@ pub(crate) fn locate(diff: &DiffDoc, selection: &Selection, path: &Path, root: &
     let named = path.to_str().filter(|name| !name.is_empty() && !name.contains('\n'));
     let revision = |at: &str| named.map(|name| Origin::Revision(format!("{at}:{name}")));
     Some(match selection {
-        Selection::File { staged: false, .. } => {
+        Selection::File { staged: false, .. } | Selection::Compare { to: crate::compare::Rev::WorkingTree, .. } => {
             let on_disk = root.join(path);
             if std::fs::symlink_metadata(&on_disk).is_ok() {
                 (Origin::Working(on_disk), Version::Working)
@@ -182,8 +182,10 @@ pub(crate) fn locate(diff: &DiffDoc, selection: &Selection, path: &Path, root: &
             }
         }
         Selection::File { staged: true, .. } => (new.map(Origin::Stored).or_else(|| revision(":0"))?, Version::Changed),
-        Selection::Commit(oid) | Selection::Stash(oid) => (new.map(Origin::Stored).or_else(|| revision(oid))?, Version::Changed),
-        Selection::Changes => return None,
+        Selection::Commit(oid) | Selection::Stash(oid) | Selection::Compare { to: crate::compare::Rev::Commit(oid), .. } => {
+            (new.map(Origin::Stored).or_else(|| revision(oid))?, Version::Changed)
+        }
+        Selection::Changes | Selection::Commits => return None,
     })
 }
 
@@ -327,6 +329,7 @@ fn heading(selection: &Selection, version: Version) -> &'static str {
         (_, Version::Working) => "Working copy",
         (Selection::File { .. }, _) => "Staged",
         (Selection::Stash(_), _) => "In this stash",
+        (Selection::Compare { .. }, _) => "On the newer side",
         _ => "At this commit",
     }
 }
@@ -423,6 +426,7 @@ fn deleted_text(selection: &Option<Selection>) -> &'static str {
     match selection {
         Some(Selection::Commit(_)) => "This commit deletes the file, so the version before it is shown.",
         Some(Selection::Stash(_)) => "This stash deletes the file, so the version before it is shown.",
+        Some(Selection::Compare { .. }) => "The newer side has no such file, so the older side's version is shown.",
         _ => "This file is deleted, so the version before the deletion is shown.",
     }
 }

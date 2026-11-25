@@ -205,6 +205,7 @@ fn subject(ui: &Ui) -> Subject {
     let path = match &ui.selection {
         Some(Selection::Commit(_)) => ui.inspection.path.clone(),
         Some(Selection::Stash(_)) => ui.stash.open_path().map(std::path::Path::to_path_buf),
+        Some(Selection::Compare { .. }) => ui.compare.path.clone(),
         _ => None,
     };
     (ui.selection.clone(), path)

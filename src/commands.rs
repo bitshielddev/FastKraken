@@ -19,6 +19,7 @@ pub(crate) enum Side {
 pub(crate) enum Target {
     Repo,
     Commit(String),
+    Commits(Vec<String>),
     Branch(OsString),
     Branches(Vec<OsString>),
     RemoteBranch(OsString),
@@ -55,6 +56,10 @@ impl Target {
                     side: Side::Stash(oid.clone()),
                 },
                 _ => Self::Stash(oid.clone()),
+            },
+            Some(Selection::Compare { .. } | Selection::Commits) => match crate::compare::picked_commits(ui) {
+                commits if commits.len() > 1 => Self::Commits(commits),
+                _ => Self::Repo,
             },
             Some(Selection::Changes) | None => match crate::conflict::open_path(ui) {
                 Some(path) => Self::Conflict(path.to_path_buf()),
@@ -277,6 +282,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::reverse::COMMANDS,
         crate::recover::COMMANDS,
         crate::inspection::COMMANDS,
+        crate::compare::COMMANDS,
         crate::diff_select::COMMANDS,
         crate::handoff::COMMANDS,
         crate::diff_select::SELECT_COMMANDS,

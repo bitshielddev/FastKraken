@@ -15,6 +15,7 @@ pub(crate) enum ListId {
     Unstaged,
     Staged,
     Branches,
+    History,
 }
 
 impl ListId {
@@ -26,7 +27,7 @@ impl ListId {
         match self {
             Self::Unstaged => Some(Side::Unstaged),
             Self::Staged => Some(Side::Staged),
-            Self::Branches => None,
+            Self::Branches | Self::History => None,
         }
     }
 }

@@ -184,6 +184,8 @@ pub(crate) fn reload(tab: &mut Tab, cx: &mut Context<Tab>) {
     let path = match &selection {
         Selection::Commit(_) => tab.ui.inspection.path.clone(),
         Selection::Stash(_) => tab.ui.stash.open_path().map(std::path::Path::to_path_buf),
+        Selection::Compare { .. } => tab.ui.compare.path.clone(),
+        Selection::Commits => return,
         _ => None,
     };
     tab.load_selected_patch(selection, path, cx);

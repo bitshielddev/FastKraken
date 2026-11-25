@@ -362,6 +362,7 @@ pub(crate) fn file_of(ui: &Ui, row: usize) -> Option<PathBuf> {
         Some(Selection::Stash(_)) if ui.stash.open_path().is_some() => {
             return ui.stash.open_path().map(std::path::Path::to_path_buf);
         }
+        Some(Selection::Compare { .. }) if ui.compare.path.is_some() => return ui.compare.path.clone(),
         _ => {}
     }
     let doc = &ui.diff;

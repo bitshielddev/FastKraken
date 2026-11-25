@@ -532,7 +532,8 @@ pub(crate) fn colour_lines(path: &Path, text: &str, cancel: &AtomicBool) -> Opti
 }
 
 pub(crate) fn working_root(repo: &Repository, selection: &Selection) -> Option<PathBuf> {
-    matches!(selection, Selection::File { staged: false, .. }).then(|| repo.root.clone())
+    matches!(selection, Selection::File { staged: false, .. } | Selection::Compare { to: crate::compare::Rev::WorkingTree, .. })
+        .then(|| repo.root.clone())
 }
 
 pub(crate) fn run(tab: &mut Tab, requests: Vec<Request>, cx: &mut Context<Tab>) {

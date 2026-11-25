@@ -416,7 +416,8 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     let stashed_file = matches!(ui.selection, Some(Selection::Stash(_)))
         .then(|| ui.stash.open_path().map(std::path::Path::to_path_buf))
         .flatten();
-    let open_file = committed_file.clone().or_else(|| stashed_file.clone());
+    let compared_file = matches!(ui.selection, Some(Selection::Compare { .. })).then(|| ui.compare.path.clone()).flatten();
+    let open_file = committed_file.clone().or_else(|| stashed_file.clone()).or_else(|| compared_file.clone());
     let from = ui
         .selection
         .as_ref()
@@ -522,6 +523,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         }
         Some(Selection::Commit(oid)) => format!("patch-{oid}-{committed_file:?}"),
         Some(Selection::Stash(oid)) => format!("stash-patch-{oid}-{stashed_file:?}"),
+        Some(Selection::Compare { from, to, since_fork }) => format!("compare-patch-{from:?}-{to:?}-{since_fork}-{compared_file:?}"),
         _ => "patch".to_owned(),
     };
     let split = mode == Mode::Split;
@@ -704,6 +706,7 @@ pub(crate) fn placeholder_text(ui: &Ui, renamed: bool) -> Option<String> {
     let whole = match &ui.selection {
         Some(Selection::Commit(_)) if ui.inspection.path.is_none() => Some("commit"),
         Some(Selection::Stash(_)) if ui.stash.open_path().is_none() => Some("stash"),
+        Some(Selection::Compare { .. }) if ui.compare.path.is_none() => Some("comparison"),
         _ => None,
     };
     if let Some(text) = crate::file_view::placeholder(ui) {

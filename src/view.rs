@@ -131,6 +131,12 @@ pub enum Selection {
         path: PathBuf,
         staged: bool,
     },
+    Compare {
+        from: crate::compare::Rev,
+        to: crate::compare::Rev,
+        since_fork: bool,
+    },
+    Commits,
 }
 
 #[derive(Clone, Debug)]
@@ -572,6 +578,7 @@ pub enum Action {
     Reverse(crate::reverse::Action),
     Pick(crate::pick::Action),
     Picked(crate::picked::Action),
+    Compare(crate::compare::Action),
     Lines(crate::lines::Action),
     Text(crate::diff_select::Action),
     Syntax(crate::syntax::Action),
@@ -681,6 +688,7 @@ pub struct Ui {
     pub history: Vec<HistoryRow>,
     pub selection: Option<Selection>,
     pub(crate) picked: Option<crate::picked::Picked<PathBuf>>,
+    pub(crate) compare: crate::compare::State,
     pub(crate) lines: crate::lines::State,
     pub(crate) text: crate::diff_select::State,
     pub(crate) message: crate::inspection::Message,
@@ -784,6 +792,7 @@ impl Ui {
             history: vec![],
             selection: None,
             picked: None,
+            compare: Default::default(),
             lines: Default::default(),
             text: Default::default(),
             message: crate::inspection::Message::new(cx),
@@ -923,6 +932,12 @@ impl Ui {
                 .position(|row| &row.oid == oid)
                 .map(|commit| self.stash.commit_row(commit)),
             Selection::Stash(oid) => self.stash.stash_row(oid),
+            Selection::Compare { .. } | Selection::Commits => match self.compare.primary()? {
+                crate::compare::Rev::Commit(oid) => self.history.iter()
+                    .position(|row| &row.oid == oid)
+                    .map(|commit| self.stash.commit_row(commit)),
+                crate::compare::Rev::WorkingTree => None,
+            },
             _ => None,
         }
     }
@@ -984,7 +999,8 @@ impl Ui {
             Selection::File { path, staged } => renamed_row_origin(&self.files, path, *staged),
             Selection::Commit(oid) => self.inspection.from(oid, commit_path?),
             Selection::Stash(oid) => self.stash.from(oid, commit_path?),
-            Selection::Changes => None,
+            Selection::Compare { .. } => self.compare.from(commit_path?),
+            Selection::Changes | Selection::Commits => None,
         }
     }
 
@@ -1405,6 +1421,17 @@ fn select<T: Desk>(app: &mut T, selected: Selection, w: &mut Window, cx: &mut Co
     app.dispatch(Action::Select(selected), w, cx);
 }
 
+fn click_commit<T: Desk>(app: &mut T, oid: &str, modifiers: gpui::Modifiers, w: &mut Window, cx: &mut Context<T>) {
+    match crate::compare::how(modifiers) {
+        Some(how) => {
+            focus(app.ui(), w);
+            let rev = crate::compare::Rev::Commit(oid.to_owned());
+            app.dispatch(Action::Compare(crate::compare::Action::Pick { rev, how }), w, cx);
+        }
+        None => select(app, Selection::Commit(oid.to_owned()), w, cx),
+    }
+}
+
 pub(crate) fn press_started(ui: &mut Ui) {
     ui.closed_by_press = None;
     ui.text.unfocus();
@@ -1756,6 +1783,10 @@ fn live_label<T: Desk>(
         .cursor_pointer()
         .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
             cx.stop_propagation();
+            if crate::compare::how(event.modifiers()).is_some() {
+                click_commit(app, &oid, event.modifiers(), w, cx);
+                return;
+            }
             focus(app.ui(), w);
             app.dispatch(label_click(&oid, &target, event.click_count()), w, cx);
         }))
@@ -2308,24 +2339,34 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     };
                     let row = &ui.history[i];
                     let (oid, menu_oid) = (row.oid.clone(), row.oid.clone());
-                    let active = matches!(&ui.selection, Some(Selection::Commit(id)) if id == &oid);
+                    let active = matches!(&ui.selection, Some(Selection::Commit(id)) if id == &oid) || ui.compare.picks(&oid);
                     let checked_out = ui.head.as_deref() == Some(row.oid.as_str());
                     let merge = row.parents.len() > 1;
                     let marking = ui.search.in_graph();
                     let marked = ui.search.marks(&row.oid);
                     let dimmed = ui.graph_view.dims(&row.author, &row.email) || ui.highlight.fades(&row.oid);
-                    let dropped_on = crate::commands::Target::Commit(row.oid.clone());
-                    crate::drag::target(kit::row(("commit", i), active), dropped_on, None, crate::drag::Look::Row, cx)
+                    let shown_row = kit::row(("commit", i), active);
+                    let shown_row = if cx.has_active_drag() {
+                        let dropped_on = crate::commands::Target::Commit(row.oid.clone());
+                        crate::drag::target(shown_row, dropped_on, None, crate::drag::Look::Row, cx)
+                    } else {
+                        shown_row
+                    };
+                    shown_row
                         .h(px(ROW))
                         .when(marked && !active, |d| d.bg(soft(FIND_MATCH, 0x8c)).border_color(rgb(FIND_CURRENT)))
-                        .on_click(cx.listener(move |app, _, w, cx| {
+                        .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
                             if !cx.has_active_drag() {
-                                select(app, Selection::Commit(oid.clone()), w, cx)
+                                click_commit(app, &oid, event.modifiers(), w, cx)
                             }
                         }))
                         .on_mouse_down(
                             MouseButton::Right,
                             cx.listener(move |app, event: &MouseDownEvent, w, cx| {
+                                if let Some(menu) = crate::compare::menu_for(app.ui(), &menu_oid, event.position) {
+                                    app.dispatch(menu, w, cx);
+                                    return;
+                                }
                                 select(app, Selection::Commit(menu_oid.clone()), w, cx);
                                 let target = crate::commands::Target::Commit(menu_oid.clone());
                                 app.dispatch(
@@ -2403,7 +2444,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     ("Uncommitted changes".to_owned(), format!("{} unstaged · {} staged", unstaged.len(), staged.len()))
                 }
             });
-            kit::row("working-directory-row", ui.working())
+            kit::row("working-directory-row", ui.working() || ui.compare.picks_working_tree())
                     .h(px(ROW))
                     .when(shown_graph, |d| {
                         d.child(
@@ -2440,7 +2481,14 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                             })
                             .child(kit::fit(summary).size(TEXT_SMALL).color(TEXT_3).grow()),
                     )
-                    .on_click(cx.listener(|app, _, w, cx| select(app, Selection::Changes, w, cx)))
+                    .on_click(cx.listener(|app, event: &gpui::ClickEvent, w, cx| match crate::compare::how(event.modifiers()) {
+                        Some(how) => {
+                            focus(app.ui(), w);
+                            let rev = crate::compare::Rev::WorkingTree;
+                            app.dispatch(Action::Compare(crate::compare::Action::Pick { rev, how }), w, cx);
+                        }
+                        None => select(app, Selection::Changes, w, cx),
+                    }))
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(|app, event: &MouseDownEvent, w, cx| {
@@ -2847,6 +2895,7 @@ fn panel<T: Desk>(app: &T, width: Pixels, cx: &mut Context<T>) -> Div {
         Some(Selection::Changes | Selection::File { .. }) => shell.child(changes(app, cx)),
         Some(Selection::Commit(_)) => shell.child(crate::inspection::panel(app, cx)),
         Some(Selection::Stash(_)) => shell.child(crate::stash::details(app, cx)),
+        Some(Selection::Compare { .. } | Selection::Commits) => shell.child(crate::compare::panel(app, cx)),
         None => shell.child(
             div()
                 .p_4()
@@ -2866,7 +2915,7 @@ fn context_menu<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoElemen
         Menu::Object { target, at } => (
             *at,
             match target {
-                Target::Commit(_) => 270.,
+                Target::Commit(_) | Target::Commits(_) => 270.,
                 Target::Remote(_) => 186.,
                 Target::Stash(_) => 200.,
                 Target::Columns => 220.,
