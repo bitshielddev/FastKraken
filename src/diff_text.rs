@@ -113,10 +113,10 @@ impl Face {
 }
 
 pub(crate) fn expanded(text: &str, tab: usize) -> Cow<'_, str> {
-    if tab == 1 || !text.contains('\t') {
+    if !text.contains('\t') {
         return Cow::Borrowed(text);
     }
-    Cow::Owned(text.replace('\t', &" ".repeat(tab)))
+    Cow::Owned(text.replace('\t', &" ".repeat(tab.max(1))))
 }
 
 pub(crate) fn shown_at(text: &str, at: usize, tab: usize) -> usize {
@@ -554,7 +554,8 @@ mod tests {
     fn tabs_are_drawn_as_spaces_and_offsets_convert_both_ways() {
         let code = "\tif a\t{ é }";
         assert_eq!(expanded(code, 4), "    if a    { é }");
-        assert_eq!(expanded(code, 1), code);
+        assert_eq!(expanded(code, 1), " if a { é }");
+        assert_eq!(expanded(code, 0), " if a { é }");
         assert!(matches!(expanded("no tabs", 4), Cow::Borrowed(_)));
         assert_eq!(shown_at(code, 0, 4), 0);
         assert_eq!(shown_at(code, 1, 4), 4);
@@ -584,6 +585,8 @@ mod tests {
         let shown = expanded(code, 3);
         assert_eq!(&shown[4..8], "   y");
         assert_eq!(shown_runs("plain", vec![(1..3, 'a')], 8), [(1..3, 'a')]);
+        assert_eq!(shown_runs(code, vec![(1..2, 'b')], 1), [(1..2, 'b')]);
+        assert_eq!(&expanded(code, 1)[1..2], "x");
     }
 
     #[test]

@@ -678,6 +678,8 @@ impl Tab {
                 match result {
                     Ok((diff, doc, layout, rest, image)) => {
                         tab.diff = doc.file.is_none().then_some(diff);
+                        let shown_tab = tab.ui.diff_text.face.tab;
+                        let layout = if shown_tab == tab_width { layout } else { DiffLayout::new(&doc, shown_tab) };
                         tab.ui.replace_diff(doc, layout);
                         image_diff::follow(tab, image, owner);
                         lines::reloaded(&mut tab.ui);
