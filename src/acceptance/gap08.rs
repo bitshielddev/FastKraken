@@ -3,7 +3,7 @@ use crate::{
     PAGE,
     columns::{self, Column, Layout, Widths},
     commands::{self, Target},
-    graph_view, notice, paging,
+    containing, graph_view, inspection, notice, paging,
     refs::Kind,
     reveal, search,
     theme::ROW,
@@ -98,6 +98,35 @@ fn offered<'a>(tab: &'a Tab, title: &str) -> Option<&'a notice::Notice> {
     tab.ui.notices.items().iter().find(|notice| notice.title == title)
 }
 
+fn commit_dated(root: &Path, file: &str, message: &str, time: usize, people: &[(&str, &str)]) -> Result<String> {
+    fs::write(root.join(file), format!("{message}\n"))?;
+    git(root, &["add", "--", file])?;
+    let date = format!("{time} +0000");
+    let output = repository::bundled_command(root)?
+        .envs(people.iter().copied())
+        .env("GIT_AUTHOR_DATE", &date)
+        .env("GIT_COMMITTER_DATE", &date)
+        .args(["commit", "-qm", message])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("git commit: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    oid(root, "HEAD")
+}
+
+fn chips(tab: &Tab, oid: &str) -> Vec<(String, Option<String>, String)> {
+    let Some(row) = tab.ui.history.iter().find(|row| row.oid == oid) else {
+        return Vec::new();
+    };
+    view::row_labels(&tab.ui.refs, &row.refs)
+        .into_iter()
+        .map(|label| {
+            let tip = view::label_tip(&tab.ui.refs.items, &label);
+            (label.name, label.remote, tip)
+        })
+        .collect()
+}
+
 fn listed(root: &Path, args: &[&str]) -> Result<Vec<String>> {
     Ok(git(root, args)?.lines().map(str::to_owned).collect())
 }
@@ -109,7 +138,9 @@ impl Replay<'_> {
         self.search_by_author(dir).await?;
         self.keep_the_place_deep_down(dir).await?;
         self.mark_the_end_of_history(dir).await?;
-        self.hide_a_column(dir).await
+        self.hide_a_column(dir).await?;
+        self.share_a_label(dir).await?;
+        self.where_a_commit_lives(dir).await
     }
 
     fn drawn_columns(&mut self) -> Result<Widths> {
@@ -725,6 +756,199 @@ impl Replay<'_> {
         self.action(Action::Search(search::Action::Close))?;
         self.until("search closed and the marks gone", |tab| {
             !tab.ui.search.open() && !tab.ui.search.marks(&expected[0])
+        })
+        .await?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn share_a_label(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0807");
+        let origin = dir.join("Twin-camp-origin.git");
+        fs::create_dir(&origin)?;
+        git(&origin, &["init", "-q", "--bare", "-b", "main"])?;
+        let root = init(dir, "Twin-camp")?;
+        record(&root, "camp.txt", "Camp\n", "Pitch the twin camp")?;
+        git(&root, &["branch", "survey"])?;
+        git(&root, &["remote", "add", "origin", &origin.display().to_string()])?;
+        git(&root, &["push", "-q", "-u", "origin", "main", "survey:survey"])?;
+        git(&root, &["branch", "--unset-upstream", "survey"])?;
+        let pitched = oid(&root, "main")?;
+        git_is(&root, &["rev-parse", "origin/main", "origin/survey"], &format!("{pitched}\n{pitched}\n"))?;
+        git_is(&root, &["rev-parse", "--abbrev-ref", "main@{upstream}"], "origin/main\n")?;
+        self.open(&root)?;
+        self.until("Twin-camp open with main tracking origin/main", |tab| {
+            tab.ui.repo == "Twin-camp"
+                && tab.ui.history.len() == 1
+                && tab.ui.refs.branch("main").is_some_and(|item| item.upstream.as_deref() == Some("origin/main"))
+                && tab.ui.refs.lists(Kind::Remote, "origin/survey")
+        })
+        .await?;
+        let shown = self.tab.read_with(self.cx, |tab, _| chips(tab, &pitched))?;
+        let names: Vec<_> = shown.iter().map(|chip| (chip.0.as_str(), chip.1.as_deref())).collect();
+        if names != [("main", Some("origin/main")), ("survey", None), ("origin/survey", None)] {
+            return Err(format!("With main and origin/main on one commit the labels are {shown:?}").into());
+        }
+        let tip = &shown[0].2;
+        if !tip.contains("refs/heads/main") || !tip.contains("refs/remotes/origin/main") || !tip.contains("matches it") {
+            return Err(format!("The shared label's tooltip reads {tip:?}").into());
+        }
+        if !shown[2].2.contains("refs/remotes/origin/survey") {
+            return Err(format!("The origin/survey label's tooltip reads {:?}", shown[2].2).into());
+        }
+
+        self.action(view::pair_menu("main".into(), "origin/main".into(), point(px(300.), px(120.))))?;
+        let (rows, branch_rows, remote_rows) = self.tab.read_with(self.cx, |tab, cx| {
+            let rows: Vec<_> = tab.ui.menu.as_ref().map_or_else(Vec::new, |open| {
+                commands::entries_of(&tab.ui, open, cx)
+                    .into_iter()
+                    .map(|entry| (entry.id, entry.title, entry.children.iter().map(|child| child.id).collect::<Vec<_>>()))
+                    .collect()
+            });
+            let ids = |target: Target| commands::menu(&tab.ui, &target, cx).into_iter().map(|entry| entry.id).collect::<Vec<_>>();
+            (rows, ids(Target::Branch("main".into())), ids(Target::RemoteBranch("origin/main".into())))
+        })?;
+        let (last, first) = rows.split_last().ok_or("The shared label's menu is empty")?;
+        let first_ids: Vec<_> = first.iter().map(|row| row.0).collect();
+        if first_ids != branch_rows
+            || last.0 != "pair.remote"
+            || last.1 != "origin/main"
+            || last.2 != remote_rows
+        {
+            return Err(format!("The shared label's menu lists {rows:?}; main has {branch_rows:?}, origin/main has {remote_rows:?}").into());
+        }
+        self.action(Action::Dismiss)?;
+
+        record(&root, "camp.txt", "Camp\nFire\n", "Light the fire")?;
+        let lit = oid(&root, "main")?;
+        self.action(Action::Refresh)?;
+        self.until("the local commit listed with main one ahead of origin/main", |tab| {
+            tab.ui.history.first().is_some_and(|row| row.oid == lit)
+                && tab.ui.refs.branch("main").is_some_and(|item| item.ahead == 1 && item.oid.as_deref() == Some(lit.as_str()))
+        })
+        .await?;
+        git_is(&root, &["rev-parse", "origin/main"], &format!("{pitched}\n"))?;
+        let (top, below) = self.tab.read_with(self.cx, |tab, _| (chips(tab, &lit), chips(tab, &pitched)))?;
+        let top_names: Vec<_> = top.iter().map(|chip| (chip.0.as_str(), chip.1.as_deref())).collect();
+        let mut below_names: Vec<_> = below.iter().map(|chip| (chip.0.as_str(), chip.1.as_deref())).collect();
+        below_names[1..].sort();
+        if top_names != [("main", None)]
+            || below_names != [("survey", None), ("origin/main", None), ("origin/survey", None)]
+        {
+            return Err(format!("After the local commit the labels are {top:?} above {below:?}").into());
+        }
+        if !top[0].2.contains("1 commit ahead") || top[0].2.contains("refs/remotes/origin/main,") {
+            return Err(format!("After the local commit main's tooltip reads {:?}", top[0].2).into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn where_a_commit_lives(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0808");
+        let root = init(dir, "Ridge-map")?;
+        let start = 1_780_000_000;
+        let trail = commit_dated(&root, "trail.txt", "Lay the trail", start, &[])?;
+        git(&root, &["tag", "v1.0"])?;
+        let people = [
+            ("GIT_AUTHOR_NAME", "Juniper Fox"),
+            ("GIT_AUTHOR_EMAIL", "juniper@example.invalid"),
+            ("GIT_COMMITTER_NAME", "Rowan Ash"),
+            ("GIT_COMMITTER_EMAIL", "rowan@example.invalid"),
+        ];
+        let message = "Mark the ridge\n\nCo-authored-by: Ada Lovelace <ada@example.invalid>";
+        let ridge = commit_dated(&root, "ridge.txt", message, start + 60, &people)?;
+        git(&root, &["branch", "alpha"])?;
+        git(&root, &["branch", "beta"])?;
+        let summit = commit_dated(&root, "summit.txt", "Reach the summit", start + 120, &[])?;
+        git(&root, &["tag", "v1.2"])?;
+        git(&root, &["branch", "feature/x"])?;
+        git(&root, &["update-ref", "refs/remotes/origin/main", &summit])?;
+        commit_dated(&root, "descent.txt", "Start the descent", start + 180, &[])?;
+        git(&root, &["tag", "v2.0"])?;
+        let holders = |commit: &str| -> Result<Vec<String>> {
+            listed(&root, &["for-each-ref", "--format=%(refname:short)", &format!("--contains={commit}"), "refs/heads", "refs/remotes"])
+        };
+        let mut expected = holders(&ridge)?;
+        expected.sort();
+        if expected != ["alpha", "beta", "feature/x", "main", "origin/main"] {
+            return Err(format!("Git lists {expected:?} as holding the ridge").into());
+        }
+        let tags = listed(&root, &["for-each-ref", "--format=%(refname:short)", "--sort=creatordate", &format!("--contains={ridge}"), "refs/tags"])?;
+        if tags != ["v1.2", "v2.0"] {
+            return Err(format!("Git lists {tags:?} as the tags holding the ridge").into());
+        }
+        self.open(&root)?;
+        self.until("Ridge-map open with its refs loaded", |tab| {
+            tab.ui.repo == "Ridge-map" && tab.ui.history.len() == 4 && tab.ui.refs.lists(Kind::Branch, "feature/x")
+        })
+        .await?;
+
+        self.action(Action::Select(Selection::Commit(trail.clone())))?;
+        self.select_commit(&ridge).await?;
+        self.until("the ridge's branches and first tag in its details", |tab| {
+            tab.ui.containing.found(&ridge).is_some() && !tab.ui.containing.running()
+        })
+        .await?;
+        let (summary, first, names, people, coauthors, stale) = self.tab.read_with(self.cx, |tab, _| {
+            let found = tab.ui.containing.found(&ridge).cloned().unwrap_or_default();
+            (
+                containing::summary(&found),
+                containing::first_in(&found),
+                found.branches.iter().map(|holder| (holder.kind, holder.name.clone())).collect::<Vec<_>>(),
+                inspection::people(&tab.ui.inspection)
+                    .into_iter()
+                    .map(|person| (person.name, person.email, person.when))
+                    .collect::<Vec<_>>(),
+                tab.ui.inspection.coauthors.iter().map(|author| (author.name.clone(), author.email.clone())).collect::<Vec<_>>(),
+                tab.ui.containing.found(&trail).is_some(),
+            )
+        })?;
+        if summary != "On main, alpha and 3 more" || first.as_deref() != Some("First in v1.2") {
+            return Err(format!("The ridge's details read {summary:?} and {first:?}").into());
+        }
+        let mut listed_names: Vec<_> = names.iter().map(|name| name.1.clone()).collect();
+        listed_names.sort();
+        if listed_names != expected || names.first() != Some(&(Kind::Branch, "main".to_owned())) || names.last().map(|name| name.0) != Some(Kind::Remote) {
+            return Err(format!("The ridge's details list {names:?}, Git lists {expected:?}").into());
+        }
+        if stale {
+            return Err("The first selection's branches outlived the second selection".into());
+        }
+        let shown: Vec<_> = people.iter().map(|person| (person.0.as_str(), person.1.as_str())).collect();
+        if shown != [("Juniper Fox", "juniper@example.invalid"), ("Rowan Ash", "rowan@example.invalid")]
+            || !people[0].2.starts_with("authored ")
+            || !people[1].2.starts_with("committed ")
+            || coauthors != [("Ada Lovelace".to_owned(), "ada@example.invalid".to_owned())]
+        {
+            return Err(format!("The ridge's details name {people:?} with co-authors {coauthors:?}").into());
+        }
+
+        git(&root, &["branch", "delta", &summit])?;
+        self.action(Action::Refresh)?;
+        self.until("the new branch counted in the ridge's details", |tab| {
+            tab.ui.containing.found(&ridge).is_some_and(|found| containing::summary(found) == "On main, alpha and 4 more")
+                && !tab.ui.containing.running()
+        })
+        .await?;
+        if holders(&ridge)?.len() != 6 {
+            return Err("Git does not count six branches holding the ridge".into());
+        }
+
+        self.select_commit(&trail).await?;
+        self.until("the trail's details", |tab| tab.ui.containing.found(&trail).is_some()).await?;
+        let trail_first = self.tab.read_with(self.cx, |tab, _| tab.ui.containing.found(&trail).and_then(containing::first_in))?;
+        if trail_first.as_deref() != Some("First in v1.0") {
+            return Err(format!("The trail's details read {trail_first:?}").into());
+        }
+        let one_person = self.tab.read_with(self.cx, |tab, _| inspection::people(&tab.ui.inspection).len())?;
+        if one_person != 1 {
+            return Err(format!("The trail's details name {one_person} people").into());
+        }
+
+        self.action(Action::Containing(containing::Action::Show(Kind::Branch, "alpha".into())))?;
+        self.until("alpha's commit selected from the details", |tab| {
+            tab.ui.selection == Some(Selection::Commit(ridge.clone()))
         })
         .await?;
         self.pass();

@@ -158,6 +158,11 @@ pub enum Menu {
         oid: String,
         at: Point<Pixels>,
     },
+    Pair {
+        branch: OsString,
+        remote: OsString,
+        at: Point<Pixels>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +184,7 @@ impl Surface {
                 | (Menu::Remotes { .. }, Menu::Remotes { .. })
                 | (Menu::Changes { .. }, Menu::Changes { .. }) => true,
                 (Menu::Labels { oid: open, .. }, Menu::Labels { oid, .. }) => open == oid,
+                (Menu::Pair { branch: open, .. }, Menu::Pair { branch, .. }) => open == branch,
                 _ => false,
             },
             (Self::Branches, Action::Refs(crate::refs::Action::ToggleList))
@@ -545,6 +551,7 @@ pub enum Action {
     Tracking(crate::tracking::Action),
     Search(crate::search::Action),
     Reveal(crate::reveal::Action),
+    Containing(crate::containing::Action),
     GraphView(crate::graph_view::Action),
     Columns(crate::columns::Action),
     Stash(crate::stash::Action),
@@ -713,6 +720,7 @@ pub struct Ui {
     pub(crate) file_view: crate::file_view::State,
     pub(crate) recover: crate::recover::State,
     pub(crate) reveal: crate::reveal::State,
+    pub(crate) containing: crate::containing::State,
     pub(crate) graph_view: crate::graph_view::GraphView,
     pub has_more: bool,
     pub(crate) history_complete: bool,
@@ -810,6 +818,7 @@ impl Ui {
             file_view: Default::default(),
             recover: Default::default(),
             reveal: Default::default(),
+            containing: Default::default(),
             graph_view: Default::default(),
             has_more: false,
             history_complete: false,
@@ -1344,6 +1353,29 @@ fn trap(ui: &Ui, forward: bool, window: &mut Window, cx: &App) {
 }
 
 
+pub(crate) fn exact_time(time: i64) -> String {
+    const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const MONTHS: [&str; 12] = [
+        "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November",
+        "December",
+    ];
+    let seconds = time as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null() {
+        return String::new();
+    }
+    let day = DAYS.get(tm.tm_wday as usize).copied().unwrap_or_default();
+    let month = MONTHS.get(tm.tm_mon as usize).copied().unwrap_or_default();
+    format!(
+        "{day} {} {month} {}, {:02}:{:02}:{:02}",
+        tm.tm_mday,
+        tm.tm_year + 1900,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+
 pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1492,6 +1524,7 @@ pub(crate) struct Label {
     pub chip: kit::Chip,
     pub name: String,
     pub target: Option<crate::commands::Target>,
+    pub remote: Option<String>,
 }
 
 pub(crate) const SHOWN_LABELS: usize = 3;
@@ -1504,7 +1537,7 @@ pub(crate) fn labels(remotes: &[String], decorations: &str) -> Vec<Label> {
             let (order, chip, name) = if let Some(name) = label.strip_prefix("HEAD -> ") {
                 (0, kit::Chip::Head, name)
             } else if label == "HEAD" {
-                let head = Label { chip: kit::Chip::Head, name: "HEAD".into(), target: None };
+                let head = Label { chip: kit::Chip::Head, name: "HEAD".into(), target: None, remote: None };
                 return Some((0, head));
             } else if let Some(name) = label.strip_prefix("tag: ") {
                 (3, kit::Chip::Tag, name)
@@ -1520,11 +1553,68 @@ pub(crate) fn labels(remotes: &[String], decorations: &str) -> Vec<Label> {
                 kit::Chip::Tag => Target::Tag(name.into()),
                 _ => Target::Branch(name.into()),
             };
-            Some((order, Label { chip, name: name.to_owned(), target: Some(target) }))
+            Some((order, Label { chip, name: name.to_owned(), target: Some(target), remote: None }))
         })
         .collect();
     labels.sort_by_key(|label| label.0);
     labels.into_iter().map(|(_, label)| label).collect()
+}
+
+pub(crate) fn paired(mut labels: Vec<Label>, upstream: impl Fn(&str) -> Option<String>) -> Vec<Label> {
+    let mut index = 0;
+    while index < labels.len() {
+        let local = matches!(labels[index].target, Some(crate::commands::Target::Branch(_)));
+        let found = upstream(&labels[index].name).filter(|_| local).and_then(|wanted| {
+            labels.iter().position(|label| label.chip == kit::Chip::Remote && label.name == wanted)
+        });
+        if let Some(at) = found {
+            let remote = labels.remove(at);
+            if at < index {
+                index -= 1;
+            }
+            labels[index].remote = Some(remote.name);
+        }
+        index += 1;
+    }
+    labels
+}
+
+fn named_ref<'a>(items: &'a [crate::refs::NamedRef], kind: crate::refs::Kind, name: &str) -> Option<&'a crate::refs::NamedRef> {
+    let start = items.partition_point(|item| (item.kind as u8) < kind as u8);
+    items[start..].iter().take_while(|item| item.kind == kind).find(|item| item.name == name)
+}
+
+pub(crate) fn row_labels(refs: &crate::refs::State, decorations: &str) -> Vec<Label> {
+    let branch = |name: &str| named_ref(&refs.items, crate::refs::Kind::Branch, name)?.upstream.clone();
+    paired(labels(&refs.remotes, decorations), branch)
+}
+
+pub(crate) fn label_tip(items: &[crate::refs::NamedRef], label: &Label) -> String {
+    use crate::refs::Kind;
+    use crate::commands::Target;
+    let mut lines = Vec::new();
+    match &label.target {
+        None => lines.push("Detached HEAD: no branch is checked out".to_owned()),
+        Some(Target::Branch(_)) => {
+            let kind = if label.chip == kit::Chip::Head { "Checked-out branch" } else { "Local branch" };
+            lines.push(format!("{kind} refs/heads/{}", label.name));
+            if let Some(remote) = &label.remote {
+                lines.push(format!("Remote branch refs/remotes/{remote}, on the same commit"));
+            }
+            if let Some(item) = named_ref(items, Kind::Branch, &label.name) {
+                lines.push(crate::tracking::tooltip(item));
+            }
+        }
+        Some(Target::RemoteBranch(_)) => lines.push(format!("Remote branch refs/remotes/{}", label.name)),
+        Some(Target::Tag(_)) => {
+            lines.push(format!("Tag refs/tags/{}", label.name));
+            if let Some(item) = named_ref(items, Kind::Tag, &label.name) {
+                lines.push(crate::tag::tooltip(item));
+            }
+        }
+        Some(_) => lines.push(label.name.clone()),
+    }
+    lines.join("\n")
 }
 
 pub(crate) fn label_click(oid: &str, target: &crate::commands::Target, click_count: usize) -> Action {
@@ -1539,10 +1629,15 @@ pub(crate) fn label_menu(target: crate::commands::Target, at: Point<Pixels>) -> 
     Action::Menu(Some(Menu::Object { target, at }))
 }
 
+pub(crate) fn pair_menu(branch: OsString, remote: OsString, at: Point<Pixels>) -> Action {
+    Action::Menu(Some(Menu::Pair { branch, remote, at }))
+}
+
 fn live_label<T: Desk>(
     chip: gpui::Stateful<Div>,
     oid: String,
     target: crate::commands::Target,
+    remote: Option<String>,
     cx: &Context<T>,
 ) -> gpui::Stateful<Div> {
     let menu_target = target.clone();
@@ -1556,7 +1651,13 @@ fn live_label<T: Desk>(
             MouseButton::Right,
             cx.listener(move |app, event: &MouseDownEvent, w, cx| {
                 cx.stop_propagation();
-                app.dispatch(label_menu(menu_target.clone(), event.position), w, cx);
+                let action = match (&menu_target, &remote) {
+                    (crate::commands::Target::Branch(branch), Some(remote)) => {
+                        pair_menu(branch.clone(), remote.into(), event.position)
+                    }
+                    _ => label_menu(menu_target.clone(), event.position),
+                };
+                app.dispatch(action, w, cx);
             }),
         )
 }
@@ -1568,7 +1669,7 @@ fn show_hidden<T: Desk>(app: &mut T, oid: &str, at: Point<Pixels>, w: &mut Windo
 }
 
 fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) -> Div {
-    let labels = labels(&ui.refs.remotes, decorations);
+    let labels = row_labels(&ui.refs, decorations);
     let hidden = labels.len().saturating_sub(SHOWN_LABELS);
     div()
         .flex()
@@ -1576,6 +1677,7 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
         .items_center()
         .gap(px(6.))
         .children(labels.into_iter().take(SHOWN_LABELS).enumerate().map(|(i, label)| {
+            let tip = label_tip(&ui.refs.items, &label);
             let branch = match &label.target {
                 Some(crate::commands::Target::Branch(_)) => ui.refs.branch(&label.name),
                 _ => None,
@@ -1585,19 +1687,11 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
                 Some(distance) => format!("{} {distance}", label.name),
                 None => label.name,
             };
-            let chip = kit::chip(label.chip, text);
-            let Some(target) = label.target else {
-                return chip.into_any_element();
-            };
-            let tag = match &target {
-                crate::commands::Target::Tag(name) => ui.refs.tag(name).map(crate::tag::tooltip),
-                _ => None,
-            };
-            let live = live_label(chip.id(("label", i)), oid.to_owned(), target, cx);
-            match (branch.filter(|item| item.upstream.is_some()), tag) {
-                (Some(item), _) => live.tooltip(kit::tip(crate::tracking::tooltip(item))).into_any_element(),
-                (None, Some(tip)) => live.tooltip(kit::tip(tip)).into_any_element(),
-                (None, None) => live.into_any_element(),
+            let mark = label.remote.is_some().then_some("cloud");
+            let chip = kit::chip_marked(label.chip, text, mark).id(("label", i)).tooltip(kit::tip(tip));
+            match label.target {
+                Some(target) => live_label(chip, oid.to_owned(), target, label.remote, cx).into_any_element(),
+                None => chip.into_any_element(),
             }
         }))
         .when(hidden > 0, |d| {
@@ -1624,24 +1718,32 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
         })
 }
 
-fn history_metadata(
-    author: &str,
-    date: &str,
-    time: i64,
-    oid: &str,
-    now: i64,
-    widths: crate::columns::Widths,
-    selected: bool,
-) -> Div {
+pub(crate) struct Written<'a> {
+    pub author: &'a str,
+    pub email: &'a str,
+    pub date: &'a str,
+    pub time: i64,
+    pub oid: &'a str,
+}
+
+pub(crate) fn author_tip(author: &str, email: &str) -> String {
+    if email.is_empty() { author.to_owned() } else { format!("{author} <{email}>") }
+}
+
+fn history_metadata(written: Written, now: i64, widths: crate::columns::Widths, selected: bool) -> Div {
+    let Written { author, email, date, time, oid } = written;
     let color = if selected { TEXT_2 } else { TEXT_3 };
     let named = widths.author >= crate::columns::NAMED_AUTHOR;
+    let clipped = kit::Clipped::default();
     div()
         .flex()
         .items_center()
         .flex_shrink_0()
         .when(widths.author > 0., |d| {
+            let tip = author_tip(author, email);
             d.child(
                 div()
+                    .id("author")
                     .w(px(widths.author))
                     .flex_shrink_0()
                     .overflow_hidden()
@@ -1650,29 +1752,53 @@ fn history_metadata(
                     .items_center()
                     .gap(px(6.))
                     .child(kit::avatar(author))
-                    .when(named, |d| d.child(kit::fit(author.to_owned()).size(12.5).color(TEXT_2).grow())),
+                    .when(named, |d| {
+                        d.child(kit::fit(author.to_owned()).size(12.5).color(TEXT_2).grow().clipped(&clipped))
+                    })
+                    .when(named && email.is_empty(), |d| d.tooltip(kit::tip_when_clipped(tip.clone(), &clipped)))
+                    .when(!named || !email.is_empty(), |d| d.tooltip(kit::tip(tip))),
             )
         })
         .when(widths.date > 0., |d| {
             d.child(
                 div()
+                    .id("date")
                     .w(px(widths.date))
+                    .flex()
+                    .items_center()
                     .flex_shrink_0()
                     .overflow_hidden()
                     .pr_2()
-                    .child(kit::fit(when(time, date, now)).size(TEXT_SMALL).color(color).grow()),
+                    .child(kit::fit(when(time, date, now)).size(TEXT_SMALL).color(color).grow())
+                    .when(time > 0, |d| d.tooltip(kit::tip(exact_time(time)))),
             )
         })
         .when(widths.sha > 0., |d| {
             d.child(
                 div()
+                    .id("sha")
                     .w(px(widths.sha))
+                    .flex()
+                    .items_center()
                     .flex_shrink_0()
                     .overflow_hidden()
                     .pr_2()
-                    .child(kit::fit(oid.get(..7).unwrap_or(oid).to_owned()).mono().size(11.5).color(color).grow()),
+                    .child(kit::fit(oid.get(..7).unwrap_or(oid).to_owned()).mono().size(11.5).color(color).grow())
+                    .tooltip(kit::tip(oid.to_owned())),
             )
         })
+}
+
+fn subject_cell(id: &'static str, subject: &str, color: u32) -> gpui::Stateful<Div> {
+    let clipped = kit::Clipped::default();
+    div()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .child(kit::fit(subject.to_owned()).color(color).grow().clipped(&clipped))
+        .tooltip(kit::tip_when_clipped(subject.to_owned(), &clipped))
 }
 
 fn graph_cell<T: Desk>(
@@ -1865,9 +1991,14 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                         .items_center()
                                         .gap(px(6.))
                                         .child(kit::chip(kit::Chip::Stash, "stash"))
-                                        .child(kit::fit(entry.title.clone()).color(TEXT_2).grow()),
+                                        .child(subject_cell("subject", &entry.title, TEXT_2)),
                                 )
-                                .child(history_metadata(&entry.author, &entry.date, entry.time, &entry.oid, moment, widths, active))
+                                .child(history_metadata(
+                                    Written { author: &entry.author, email: "", date: &entry.date, time: entry.time, oid: &entry.oid },
+                                    moment,
+                                    widths,
+                                    active,
+                                ))
                                 .on_click(cx.listener({
                                     let oid = oid.clone();
                                     move |app, _, w, cx| {
@@ -1931,19 +2062,24 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                     crate::refs::show_labels(&ui.refs) && !row.refs.is_empty(),
                                     |d| d.child(ref_chips(ui, &row.oid, &row.refs, cx)),
                                 )
-                                .child(
-                                    kit::fit(row.subject.clone())
-                                        .color(if marking && !marked {
-                                            TEXT_3
-                                        } else if merge {
-                                            TEXT_2
-                                        } else {
-                                            TEXT
-                                        })
-                                        .grow(),
-                                ),
+                                .child(subject_cell(
+                                    "subject",
+                                    &row.subject,
+                                    if marking && !marked {
+                                        TEXT_3
+                                    } else if merge {
+                                        TEXT_2
+                                    } else {
+                                        TEXT
+                                    },
+                                )),
                         )
-                        .child(history_metadata(&row.author, &row.date, row.time, &row.oid, moment, widths, active))
+                        .child(history_metadata(
+                            Written { author: &row.author, email: &row.email, date: &row.date, time: row.time, oid: &row.oid },
+                            moment,
+                            widths,
+                            active,
+                        ))
                 })
                 .collect::<Vec<_>>()
         }),
@@ -2441,6 +2577,7 @@ fn context_menu<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoElemen
             },
         ),
         Menu::Labels { at, .. } => (*at, 220.),
+        Menu::Pair { at, .. } => (*at, 260.),
         Menu::Repo | Menu::CommitActions => return None,
     };
     let surface = commands::surface(commands::entries_of(ui, open, cx), width, ui.menu_cursor, cx);
@@ -2910,6 +3047,99 @@ mod tests {
         assert!(detached[0].chip == kit::Chip::Head && detached[0].target.is_none());
         assert_eq!(detached[1].target, Some(Target::Tag("v2".into())));
         assert!(labels(&remotes, "").is_empty());
+    }
+
+    #[test]
+    fn a_branch_and_the_remote_branch_it_tracks_share_one_label_on_the_same_commit() {
+        let remotes = ["origin".to_owned(), "up".to_owned()];
+        let upstream = |name: &str| match name {
+            "main" => Some("origin/main".to_owned()),
+            "feature/map" => Some("up/feature/map".to_owned()),
+            "spur" => Some("origin/spur".to_owned()),
+            _ => None,
+        };
+        let found = paired(
+            labels(&remotes, "tag: v1, origin/main, HEAD -> main, origin/HEAD, feature/map, origin/feature/map, up/feature/map, solo, origin/solo"),
+            upstream,
+        );
+        let shown: Vec<_> = found.iter().map(|label| (label.name.as_str(), label.remote.as_deref())).collect();
+        assert_eq!(
+            shown,
+            [
+                ("main", Some("origin/main")),
+                ("feature/map", Some("up/feature/map")),
+                ("solo", None),
+                ("origin/feature/map", None),
+                ("origin/solo", None),
+                ("v1", None),
+            ]
+        );
+        assert!(found[0].chip == kit::Chip::Head);
+        let apart = paired(labels(&remotes, "HEAD -> main"), upstream);
+        assert_eq!(apart.len(), 1);
+        assert_eq!(apart[0].remote, None);
+        let remote_only = paired(labels(&remotes, "origin/main, origin/spur"), upstream);
+        assert_eq!(remote_only.iter().map(|label| label.remote.clone()).collect::<Vec<_>>(), [None, None]);
+        let detached = paired(labels(&remotes, "HEAD, origin/main"), upstream);
+        assert_eq!(detached.len(), 2);
+    }
+
+    #[test]
+    fn label_tips_name_the_full_refs_and_how_far_a_branch_is_from_its_upstream() {
+        let remotes = ["origin".to_owned()];
+        let named = |kind, name: &str, upstream: Option<&str>, ahead, behind| crate::refs::NamedRef {
+            kind,
+            name: name.into(),
+            oid: Some("a".repeat(40)),
+            object: "a".repeat(40),
+            annotation: None,
+            ahead,
+            behind,
+            upstream: upstream.map(str::to_owned),
+            gone: false,
+        };
+        let items = vec![
+            named(crate::refs::Kind::Branch, "feature/x", Some("origin/feature/x"), 2, 1),
+            named(crate::refs::Kind::Branch, "main", Some("origin/main"), 0, 0),
+            named(crate::refs::Kind::Branch, "solo", None, 0, 0),
+            named(crate::refs::Kind::Remote, "origin/feature/x", None, 0, 0),
+            named(crate::refs::Kind::Remote, "origin/main", None, 0, 0),
+            named(crate::refs::Kind::Tag, "v1", None, 0, 0),
+        ];
+        let found = |decorations| {
+            let upstream = |name: &str| named_ref(&items, crate::refs::Kind::Branch, name)?.upstream.clone();
+            paired(labels(&remotes, decorations), upstream)
+        };
+        let tips: Vec<String> = found("HEAD -> main, origin/main, feature/x, solo, origin/feature/x, tag: v1")
+            .iter()
+            .map(|label| label_tip(&items, label))
+            .collect();
+        assert_eq!(
+            tips,
+            [
+                "Checked-out branch refs/heads/main\nRemote branch refs/remotes/origin/main, on the same commit\nTracks origin/main, and matches it",
+                "Local branch refs/heads/feature/x\nRemote branch refs/remotes/origin/feature/x, on the same commit\nTracks origin/feature/x. 2 commits ahead and 1 commit behind",
+                "Local branch refs/heads/solo\nTracks no remote branch",
+                "Tag refs/tags/v1\nLightweight tag at aaaaaaa",
+            ]
+        );
+        assert_eq!(label_tip(&items, &found("origin/main")[0]), "Remote branch refs/remotes/origin/main");
+        assert_eq!(label_tip(&items, &found("HEAD")[0]), "Detached HEAD: no branch is checked out");
+        assert!(named_ref(&items, crate::refs::Kind::Tag, "main").is_none());
+        assert_eq!(author_tip("Dana", "dana@example.invalid"), "Dana <dana@example.invalid>");
+        assert_eq!(author_tip("Dana", ""), "Dana");
+    }
+
+    #[test]
+    fn the_exact_time_reads_the_local_date_and_time_to_the_second() {
+        let time = 1_772_600_000;
+        let text = exact_time(time);
+        let seconds = time as libc::time_t;
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        assert!(!unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null());
+        assert!(text.ends_with(&format!("{} {:02}:{:02}:{:02}", tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec).replacen(' ', ", ", 1)));
+        assert!(text.contains(&format!(" {} ", tm.tm_mday)));
+        assert!(["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].iter().any(|day| text.starts_with(day)));
     }
 
     #[test]

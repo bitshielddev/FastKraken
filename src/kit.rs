@@ -50,6 +50,16 @@ pub struct Fit {
     family: Option<SharedString>,
     cut: Cut,
     grow: bool,
+    clipped: Option<Clipped>,
+}
+
+#[derive(Clone, Default)]
+pub struct Clipped(Rc<Cell<bool>>);
+
+impl Clipped {
+    pub fn get(&self) -> bool {
+        self.0.get()
+    }
 }
 
 pub fn fit(text: impl Into<SharedString>) -> Fit {
@@ -61,6 +71,7 @@ pub fn fit(text: impl Into<SharedString>) -> Fit {
         family: None,
         cut: Cut::End,
         grow: false,
+        clipped: None,
     }
 }
 
@@ -91,6 +102,10 @@ impl Fit {
     }
     pub fn grow(mut self) -> Self {
         self.grow = true;
+        self
+    }
+    pub fn clipped(mut self, clipped: &Clipped) -> Self {
+        self.clipped = Some(clipped.clone());
         self
     }
 
@@ -212,10 +227,14 @@ impl Element for Fit {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let whole = line.width <= bounds.size.width + px(0.5);
+        if let Some(clipped) = &self.clipped {
+            clipped.0.set(!whole);
+        }
         if bounds.size.width <= px(1.) {
             return;
         }
-        let _ = if line.width <= bounds.size.width + px(0.5) {
+        let _ = if whole {
             line.paint(bounds.origin, bounds.size.height, window, cx)
         } else {
             self.shortened(line, bounds.size.width, window).paint(
@@ -501,10 +520,13 @@ pub fn icon_btn<T: Desk>(
 }
 
 
-struct Tip(SharedString);
+struct Tip(SharedString, Option<Clipped>);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        if self.1.as_ref().is_some_and(|clipped| !clipped.get()) {
+            return div();
+        }
         div()
             .px_2()
             .py_1()
@@ -522,7 +544,15 @@ impl Render for Tip {
 
 pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text = text.into();
-    move |_, cx| cx.new(|_| Tip(text.clone())).into()
+    move |_, cx| cx.new(|_| Tip(text.clone(), None)).into()
+}
+
+pub fn tip_when_clipped(
+    text: impl Into<SharedString>,
+    clipped: &Clipped,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let (text, clipped) = (text.into(), clipped.clone());
+    move |_, cx| cx.new(|_| Tip(text.clone(), Some(clipped.clone()))).into()
 }
 
 
@@ -579,6 +609,10 @@ pub enum Chip {
 }
 
 pub fn chip(kind: Chip, text: impl Into<SharedString>) -> Div {
+    chip_marked(kind, text, None)
+}
+
+pub fn chip_marked(kind: Chip, text: impl Into<SharedString>, mark: Option<&'static str>) -> Div {
     let (fg, bg, lead) = match kind {
         Chip::Head => (ACCENT_INK, rgb(ACCENT), Some("check")),
         Chip::Local => (ACCENT, soft(ACCENT, 0x24), None),
@@ -613,6 +647,9 @@ pub fn chip(kind: Chip, text: impl Into<SharedString>) -> Div {
                     FontWeight::MEDIUM
                 }),
         )
+        .when_some(mark, |d, name| {
+            d.child(icon(name).flex_shrink_0().size(px(10.)).text_color(rgb(fg)))
+        })
 }
 
 pub fn badge(status: &str) -> Div {

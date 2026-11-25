@@ -91,9 +91,14 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
 
 struct CommitDetails {
     author: String,
+    email: String,
+    committer: String,
+    committer_email: String,
     subject: String,
     written: String,
+    committed: String,
     parents: Vec<String>,
+    coauthors: Vec<crate::commit_options::Author>,
     body: String,
     files: Vec<ChangedFile>,
     stats: HashMap<PathBuf, (u32, u32)>,
@@ -111,7 +116,7 @@ impl Repository {
         validate_oid(oid)?;
         let output = checked(self.read_command().args([
             "show",
-            "--format=%an%x00%s%x00%ad%x00%P%x00%b",
+            "--format=%an%x00%ae%x00%cn%x00%ce%x00%s%x00%ad%x00%cd%x00%P%x00%(trailers:key=Co-authored-by,valueonly)%x00%b",
             "--date=format-local:%-d %b %Y, %H:%M",
             "--no-show-signature",
             "--no-notes",
@@ -124,7 +129,7 @@ impl Repository {
             oid,
             "--",
         ]))?;
-        let mut header = output.splitn(6, |&b| b == 0);
+        let mut header = output.splitn(11, |&b| b == 0);
         let mut text = |missing: &'static str| {
             header
                 .next()
@@ -132,18 +137,28 @@ impl Repository {
                 .ok_or(missing)
         };
         let author = text("Missing commit author")?;
+        let email = text("Missing author email")?;
+        let committer = text("Missing committer")?;
+        let committer_email = text("Missing committer email")?;
         let subject = text("Missing commit subject")?;
         let written = text("Missing commit date")?;
+        let committed = text("Missing commit date")?;
         let parents = text("Missing commit parents")?;
+        let coauthors = text("Missing commit trailers")?;
         let body = text("Missing commit message")?;
         let paths = header.next().ok_or("Missing changed-file list")?;
         let paths = paths.strip_prefix(b"\n").unwrap_or(paths);
         let files = parse_changed_files(paths)?;
         Ok(CommitDetails {
             author,
+            email,
+            committer,
+            committer_email,
             subject,
             written,
+            committed,
             parents: parents.split_whitespace().map(str::to_owned).collect(),
+            coauthors: coauthors.lines().filter_map(crate::commit_options::coauthor).collect(),
             body: body.trim().to_owned(),
             files,
             stats: self.commit_stats(oid).unwrap_or_default(),
@@ -262,8 +277,12 @@ pub struct State {
     oid: Option<String>,
     loading_details: bool,
     pub author: String,
+    pub email: String,
+    pub committer: String,
+    pub committer_email: String,
     pub subject: Option<String>,
     pub written: String,
+    pub committed: String,
     pub parents: Vec<String>,
     pub body: String,
     pub(crate) coauthors: Vec<crate::commit_options::Author>,
@@ -316,6 +335,7 @@ pub enum Action {
 }
 
 pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
+    crate::containing::selected(tab, oid, cx);
     let state = &mut tab.ui.inspection;
     state.close_history();
     state.path = None;
@@ -327,8 +347,12 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
         return;
     }
     state.author.clear();
+    state.email.clear();
+    state.committer.clear();
+    state.committer_email.clear();
     state.subject = None;
     state.written.clear();
+    state.committed.clear();
     state.parents.clear();
     state.body.clear();
     state.coauthors.clear();
@@ -356,9 +380,13 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
             match result {
                 Ok(details) => {
                     state.author = details.author;
+                    state.email = details.email;
+                    state.committer = details.committer;
+                    state.committer_email = details.committer_email;
                     state.written = details.written;
+                    state.committed = details.committed;
                     state.parents = details.parents;
-                    state.coauthors = crate::commit_options::coauthors(&details.body);
+                    state.coauthors = details.coauthors;
                     state.body = details.body;
                     state.stats = details.stats;
                     state.files = details.files;
@@ -492,6 +520,66 @@ pub(crate) fn showing_history(ui: &view::Ui) -> bool {
         && (ui.inspection.history.is_some() || ui.inspection.loading_history)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Person {
+    pub name: String,
+    pub email: String,
+    pub when: String,
+}
+
+fn same_person(state: &State) -> bool {
+    state.committer.is_empty()
+        || (state.committer == state.author && state.committer_email.eq_ignore_ascii_case(&state.email))
+}
+
+pub(crate) fn people(state: &State) -> Vec<Person> {
+    if state.author.is_empty() {
+        return Vec::new();
+    }
+    let same = same_person(state);
+    let mut when = format!("authored {}", state.written);
+    if same && !state.committed.is_empty() && state.committed != state.written {
+        when.push_str(&format!(" · committed {}", state.committed));
+    }
+    let mut people = vec![Person { name: state.author.clone(), email: state.email.clone(), when }];
+    if !same {
+        people.push(Person {
+            name: state.committer.clone(),
+            email: state.committer_email.clone(),
+            when: format!("committed {}", state.committed),
+        });
+    }
+    people
+}
+
+fn person_row(index: usize, person: Person) -> gpui::Stateful<Div> {
+    let tip = view::author_tip(&person.name, &person.email);
+    div()
+        .id(("commit-person", index))
+        .flex()
+        .items_start()
+        .gap(px(6.))
+        .child(div().pt(px(1.)).child(kit::avatar(&person.name)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(kit::fit(person.name).size(TEXT_SMALL))
+                        .child(kit::fit(person.email).size(TEXT_SMALL).color(TEXT_3).grow()),
+                )
+                .child(kit::fit(person.when).size(TEXT_SMALL).color(TEXT_3)),
+        )
+        .tooltip(kit::tip(tip))
+}
+
 pub(crate) fn copy_sha(oid: &str) -> view::Action {
     view::Action::CopyText {
         text: oid.to_owned(),
@@ -557,22 +645,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     .child(kit::scrollbar("commit-body-scrollbar", &state.body_scroll)),
             )
         })
-        .when(!state.author.is_empty(), |d| {
-            d.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(kit::avatar(&state.author))
-                    .child(kit::fit(state.author.clone()).size(TEXT_SMALL))
-                    .child(
-                        kit::fit(state.written.clone())
-                            .size(TEXT_SMALL)
-                            .color(TEXT_3)
-                            .grow(),
-                    ),
-            )
-        })
+        .children(people(state).into_iter().enumerate().map(|(index, person)| person_row(index, person)))
         .children(state.coauthors.iter().enumerate().map(|(index, coauthor)| {
             div()
                 .id(("commit-coauthor", index))
@@ -584,6 +657,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .child(kit::fit("co-author").size(TEXT_SMALL).color(TEXT_3).grow())
                 .tooltip(kit::tip(coauthor.email.clone()))
         }))
+        .children(crate::containing::lines(ui, oid, cx))
         .child(
             div()
                 .flex()
@@ -890,6 +964,92 @@ mod tests {
     use super::*;
     use crate::repository::tests::Fixture;
     use std::fs;
+
+    fn details_state(details: CommitDetails) -> State {
+        State {
+            author: details.author,
+            email: details.email,
+            committer: details.committer,
+            committer_email: details.committer_email,
+            written: details.written,
+            committed: details.committed,
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn commit_details_name_the_committer_both_emails_both_dates_and_the_coauthor_trailers() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("camp.txt"), "camp\n").unwrap();
+        f.git(&["add", "camp.txt"]);
+        let message = "Pitch the camp\n\nCo-authored-by: Ada Lovelace <ada@example.invalid>\nSigned-off-by: Cedar <cedar@example.invalid>\nco-authored-by: Alan Turing <alan@example.invalid>";
+        checked(
+            f.repo
+                .command()
+                .env("GIT_AUTHOR_NAME", "Juniper Fox")
+                .env("GIT_AUTHOR_EMAIL", "juniper@example.invalid")
+                .env("GIT_AUTHOR_DATE", "2026-03-04T05:06:00Z")
+                .env("GIT_COMMITTER_NAME", "Rowan Ash")
+                .env("GIT_COMMITTER_EMAIL", "rowan@example.invalid")
+                .env("GIT_COMMITTER_DATE", "2026-05-06T07:08:00Z")
+                .args(["commit", "-qm", message]),
+        )
+        .unwrap();
+        let tip = String::from_utf8(f.git(&["rev-parse", "HEAD"])).unwrap().trim().to_owned();
+        let refs = f.git(&["for-each-ref"]);
+        let index = f.git(&["ls-files", "-s"]);
+        let details = f.repo.commit_details(&tip).unwrap();
+        assert_eq!((details.author.as_str(), details.email.as_str()), ("Juniper Fox", "juniper@example.invalid"));
+        assert_eq!((details.committer.as_str(), details.committer_email.as_str()), ("Rowan Ash", "rowan@example.invalid"));
+        assert_eq!(details.subject, "Pitch the camp");
+        assert!(details.written.contains("2026") && details.committed.contains("2026"));
+        assert_ne!(details.written, details.committed);
+        let names: Vec<_> = details.coauthors.iter().map(|author| (author.name.as_str(), author.email.as_str())).collect();
+        assert_eq!(names, [("Ada Lovelace", "ada@example.invalid"), ("Alan Turing", "alan@example.invalid")]);
+        assert!(details.body.contains("Co-authored-by: Ada Lovelace"));
+        assert_eq!(details.files.len(), 1);
+        let (written, committed) = (details.written.clone(), details.committed.clone());
+        let people = people(&details_state(details));
+        assert_eq!(
+            people,
+            [
+                Person { name: "Juniper Fox".into(), email: "juniper@example.invalid".into(), when: format!("authored {written}") },
+                Person { name: "Rowan Ash".into(), email: "rowan@example.invalid".into(), when: format!("committed {committed}") },
+            ]
+        );
+        assert_eq!(f.git(&["for-each-ref"]), refs);
+        assert_eq!(f.git(&["ls-files", "-s"]), index);
+        assert_eq!(f.git(&["status", "--porcelain=v1"]), b"");
+    }
+
+    #[test]
+    fn the_committer_line_shows_only_when_someone_else_committed() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("camp.txt"), "camp\n").unwrap();
+        f.git(&["add", "camp.txt"]);
+        checked(
+            f.repo
+                .command()
+                .env("GIT_AUTHOR_DATE", "2026-03-04T05:06:00Z")
+                .env("GIT_COMMITTER_DATE", "2026-03-04T05:06:00Z")
+                .args(["commit", "-qm", "Same hands\n\nCo-authored-by: not a trailer\nplain text"]),
+        )
+        .unwrap();
+        let tip = String::from_utf8(f.git(&["rev-parse", "HEAD"])).unwrap().trim().to_owned();
+        let details = f.repo.commit_details(&tip).unwrap();
+        assert!(details.coauthors.is_empty());
+        let written = details.written.clone();
+        let mut state = details_state(details);
+        assert_eq!(
+            people(&state),
+            [Person { name: "Cedar".into(), email: "cedar@example.invalid".into(), when: format!("authored {written}") }]
+        );
+        state.committed = "6 May 2026, 07:08".into();
+        state.committer_email = "CEDAR@example.invalid".into();
+        assert_eq!(people(&state).len(), 1);
+        assert_eq!(people(&state)[0].when, format!("authored {written} · committed 6 May 2026, 07:08"));
+        assert!(f.repo.commit_details("--all").is_err());
+    }
 
     fn write(f: &Fixture, path: &Path, content: &str) {
         fs::write(f.dir.join(path), content).unwrap();

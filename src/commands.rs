@@ -441,19 +441,22 @@ fn hidden_labels(ui: &Ui, oid: &str, cx: &App) -> Vec<Entry> {
     let Some(row) = ui.history.iter().find(|row| row.oid == oid) else {
         return Vec::new();
     };
-    view::labels(&ui.refs.remotes, &row.refs)
+    view::row_labels(&ui.refs, &row.refs)
         .into_iter()
         .skip(view::SHOWN_LABELS)
-        .filter_map(|label| {
-            let target = label.target?;
-            let icon = match label.chip {
+        .flat_map(|label| {
+            let remote = label.remote.map(|name| (kit::Chip::Remote, Target::RemoteBranch(name.as_str().into()), name));
+            label.target.map(|target| (label.chip, target, label.name)).into_iter().chain(remote)
+        })
+        .map(|(chip, target, name)| {
+            let icon = match chip {
                 kit::Chip::Remote => "cloud",
                 kit::Chip::Tag => "tag",
                 _ => "branch",
             };
-            let mut row = submenu("label", label.name, icon, Group::Switch, rows(ui, &target, cx, true));
+            let mut row = submenu("label", name, icon, Group::Switch, rows(ui, &target, cx, true));
             row.action = default_command(&target).map(|_| Action::Activate(target));
-            Some(row)
+            row
         })
         .collect()
 }
@@ -475,7 +478,21 @@ pub(crate) fn entries_of(ui: &Ui, open: &view::Menu, cx: &App) -> Vec<Entry> {
         },
         Menu::Object { target, .. } => menu(ui, target, cx),
         Menu::Labels { oid, .. } => hidden_labels(ui, oid, cx),
+        Menu::Pair { branch, remote, .. } => paired_labels(ui, branch, remote, cx),
     }
+}
+
+fn paired_labels(ui: &Ui, branch: &std::ffi::OsStr, remote: &std::ffi::OsStr, cx: &App) -> Vec<Entry> {
+    let mut entries = menu(ui, &Target::Branch(branch.to_owned()), cx);
+    let target = Target::RemoteBranch(remote.to_owned());
+    let title = remote.to_string_lossy().into_owned();
+    let mut row = submenu("pair.remote", title, "cloud", Group::Switch, rows(ui, &target, cx, true));
+    row.action = default_command(&target).map(|_| Action::Activate(target));
+    if entries.last().is_some_and(|last| last.group == Group::Switch) {
+        row.group = Group::View;
+    }
+    entries.push(row);
+    entries
 }
 
 pub(crate) fn listed(ui: &Ui, target: &Target, ids: &[&str], cx: &App) -> Vec<Entry> {

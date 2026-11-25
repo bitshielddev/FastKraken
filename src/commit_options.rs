@@ -374,21 +374,10 @@ pub(crate) fn with_coauthor(description: &str, author: &Author) -> String {
     if joined { format!("{kept}\n{trailer}") } else { format!("{kept}\n\n{trailer}") }
 }
 
-pub(crate) fn coauthors(message: &str) -> Vec<Author> {
-    let prefix = format!("{}:", COAUTHOR_KEY.to_ascii_lowercase());
-    let trailers = last_paragraph(message.trim_end());
-    if !trailers.lines().all(trailer_line) {
-        return Vec::new();
-    }
-    trailers
-        .lines()
-        .filter_map(|line| {
-            let value = line.get(prefix.len()..).filter(|_| line.to_ascii_lowercase().starts_with(&prefix))?.trim();
-            let (name, email) = value.strip_suffix('>')?.rsplit_once('<')?;
-            let name = name.trim();
-            (!name.is_empty() && !email.is_empty()).then(|| Author { name: name.to_owned(), email: email.to_owned() })
-        })
-        .collect()
+pub(crate) fn coauthor(value: &str) -> Option<Author> {
+    let (name, email) = value.trim().strip_suffix('>')?.rsplit_once('<')?;
+    let name = name.trim();
+    (!name.is_empty() && !email.is_empty()).then(|| Author { name: name.to_owned(), email: email.to_owned() })
 }
 
 pub(crate) fn authors(ui: &Ui) -> Vec<Author> {
@@ -706,10 +695,11 @@ mod tests {
             with_coauthor("Body\n\nSigned-off-by: Dan <dan@example.invalid>", &ada),
             "Body\n\nSigned-off-by: Dan <dan@example.invalid>\nCo-authored-by: Ada Lovelace <ada@example.invalid>"
         );
-        assert_eq!(coauthors(&once), [ada.clone(), alan.clone()]);
-        assert_eq!(coauthors("Subject\n\nco-authored-by: Ada Lovelace <ada@example.invalid>\nSigned-off-by: X <x@y>"), [ada]);
-        assert!(coauthors("Subject\n\nCo-authored-by: Ada <ada@example.invalid>\nnot a trailer").is_empty());
-        assert!(coauthors("Co-authored-by: nobody").is_empty());
+        assert_eq!(coauthor(" Ada Lovelace <ada@example.invalid> "), Some(ada));
+        assert_eq!(coauthor("Alan Turing<alan@example.invalid>"), Some(alan));
+        assert_eq!(coauthor("nobody"), None);
+        assert_eq!(coauthor("<only@example.invalid>"), None);
+        assert_eq!(coauthor("Nameless <>"), None);
     }
 
     #[test]

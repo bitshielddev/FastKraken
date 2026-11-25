@@ -12,6 +12,7 @@ mod clone;
 mod columns;
 mod commands;
 mod commit_options;
+mod containing;
 mod conflict;
 mod connect;
 mod credentials;
@@ -564,6 +565,7 @@ impl Tab {
             refs::refresh(self, cx);
             stash::refresh(self, cx);
             search::refresh(self, true, cx);
+            containing::refresh(self, cx);
         }
     }
 
@@ -1592,6 +1594,7 @@ impl Tab {
             Action::Publish(action) => publish::dispatch(self, action, window, cx),
             Action::Search(action) => search::dispatch(self, action, window, cx),
             Action::Reveal(action) => reveal::dispatch(self, action, window, cx),
+            Action::Containing(action) => containing::dispatch(self, action, window, cx),
             Action::GraphView(action) => graph_view::dispatch(self, action, window, cx),
             Action::Columns(action) => columns::dispatch(self, action, window, cx),
             Action::ViewChanges => {
