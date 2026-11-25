@@ -1090,6 +1090,10 @@ impl Replay<'_> {
         if current != target {
             return Err(format!("With chart.txt open the commands act on {current:?}").into());
         }
+        let reached = self.tab.read_with(self.cx, |tab, _| commands::targets(&tab.ui))?;
+        if !reached.contains(&Target::Stash(saved.clone())) {
+            return Err(format!("With chart.txt open the stash's own commands reach only {reached:?}").into());
+        }
         let rows = self.menu_rows(&target)?;
         if !rows.iter().any(|row| row.0 == "stash.restore-file" && row.1 == "Restore this file from the stash" && row.2.is_none()) {
             return Err(format!("The menu of the stashed chart.txt lists {rows:?}").into());

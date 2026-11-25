@@ -740,6 +740,10 @@ pub(crate) fn targets(ui: &Ui) -> Vec<Target> {
         let commit = Target::Commit(oid.clone());
         targets.push(current);
         targets.push(commit);
+    } else if let Target::File { side: Side::Stash(oid), .. } = &current {
+        let stash = Target::Stash(oid.clone());
+        targets.push(current);
+        targets.push(stash);
     } else if current != Target::Repo {
         targets.push(current);
     }

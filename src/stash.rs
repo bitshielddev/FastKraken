@@ -635,8 +635,24 @@ impl Repository {
         } else {
             (vec![restore.path.clone()], restore.from.iter().cloned().collect())
         };
+        for path in writes.iter().chain(&removals) {
+            let mut parent = PathBuf::new();
+            for part in path.parent().into_iter().flat_map(Path::components) {
+                parent.push(part);
+                if self.root.join(&parent).symlink_metadata().is_ok_and(|meta| !meta.is_dir()) {
+                    return Err(format!(
+                        "{} is a file in your files, where the stash has a folder. Move it aside, then restore the file.",
+                        parent.display()
+                    ));
+                }
+            }
+            if self.root.join(path).symlink_metadata().is_ok_and(|meta| meta.is_dir()) {
+                return Err(format!("{} is a folder in your files. Move it aside, then restore the file.", path.display()));
+            }
+        }
         let unlisted: Vec<PathBuf> = writes
             .iter()
+            .chain(&removals)
             .filter(|path| self.root.join(path).symlink_metadata().is_ok())
             .filter(|path| !now.iter().any(|(row, _, _)| row == *path))
             .cloned()
@@ -646,11 +662,6 @@ impl Repository {
                 "{} is in your files and Git ignores it, so it is not listed as a change. Move it aside, then restore it.",
                 ignored.display()
             ));
-        }
-        for path in &removals {
-            if self.root.join(path).symlink_metadata().is_ok_and(|meta| meta.is_dir()) {
-                return Err(format!("{} is a folder in your files. Move it aside, then restore the file.", path.display()));
-            }
         }
         let untracked: BTreeSet<PathBuf> = self.stash_untracked(oid)?.into_iter().map(|file| file.path).collect();
         let (from_untracked, from_tracked): (Vec<PathBuf>, Vec<PathBuf>) =
@@ -2829,5 +2840,57 @@ mod tests {
 
     fn seen_gone(oid: &str) -> Restore {
         Restore { oid: oid.to_owned(), path: PathBuf::new(), from: None, removed: false, head: None, rows: Vec::new() }
+    }
+
+    #[test]
+    fn restoring_a_stashed_file_refuses_files_and_folders_in_its_way() {
+        let f = Fixture::new();
+        fs::create_dir(f.dir.join("lib")).unwrap();
+        for name in ["lib/x.txt", "gone.txt"] {
+            fs::write(f.dir.join(name), format!("{name} base\n")).unwrap();
+        }
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        fs::remove_file(f.dir.join("lib/x.txt")).unwrap();
+        fs::remove_file(f.dir.join("gone.txt")).unwrap();
+        fs::write(f.dir.join("slot"), "slot stashed\n").unwrap();
+        fs::create_dir(f.dir.join("pool")).unwrap();
+        fs::write(f.dir.join("pool/new.txt"), "pool stashed\n").unwrap();
+        f.repo.push_stash(&Push { message: "Ways".into(), staged: None, files: None }).unwrap();
+        let stash = rev(&f, "refs/stash");
+
+        fs::create_dir(f.dir.join("slot")).unwrap();
+        fs::write(f.dir.join("slot/inner"), "precious\n").unwrap();
+        let err = f.repo.restore_stashed_file(&seen(&f, &stash, "slot")).unwrap_err();
+        assert_eq!(err, "slot is a folder in your files. Move it aside, then restore the file.");
+        assert_eq!(read(&f, "slot/inner").unwrap(), b"precious\n");
+        fs::remove_dir_all(f.dir.join("slot")).unwrap();
+
+        fs::write(f.dir.join("pool"), "precious\n").unwrap();
+        let err = f.repo.restore_stashed_file(&seen(&f, &stash, "pool/new.txt")).unwrap_err();
+        assert!(err.starts_with("pool is a file in your files"), "{err}");
+        assert_eq!(read(&f, "pool").unwrap(), b"precious\n");
+        fs::remove_file(f.dir.join("pool")).unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("x.txt"), "outside\n").unwrap();
+        fs::remove_dir_all(f.dir.join("lib")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), f.dir.join("lib")).unwrap();
+        let err = f.repo.restore_stashed_file(&seen(&f, &stash, "lib/x.txt")).unwrap_err();
+        assert!(err.starts_with("lib is a file in your files"), "{err}");
+        assert_eq!(fs::read(outside.path().join("x.txt")).unwrap(), b"outside\n");
+        fs::remove_file(f.dir.join("lib")).unwrap();
+        f.git(&["checkout", "--", "lib"]);
+
+        f.git(&["rm", "-q", "--cached", "gone.txt"]);
+        f.git(&["commit", "-qm", "untrack"]);
+        fs::create_dir_all(f.dir.join(".git/info")).unwrap();
+        fs::write(f.dir.join(".git/info/exclude"), "gone.txt\n").unwrap();
+        fs::write(f.dir.join("gone.txt"), "ignored copy\n").unwrap();
+        let ignored = seen(&f, &stash, "gone.txt");
+        assert!(ignored.removed && ignored.rows.is_empty());
+        assert!(f.repo.restore_stashed_file(&ignored).unwrap_err().contains("Git ignores it"));
+        assert_eq!(read(&f, "gone.txt").unwrap(), b"ignored copy\n");
+        assert_eq!(rev(&f, "refs/stash"), stash);
     }
 }
