@@ -1140,6 +1140,7 @@ pub struct State {
     files_only: bool,
     message: Option<Entity<CommitInput>>,
     path: Option<PathBuf>,
+    opening: Option<PathBuf>,
     files_scroll: gpui::UniformListScrollHandle,
 }
 
@@ -1448,6 +1449,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
 
 pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
     tab.ui.stash.path = None;
+    tab.ui.stash.opening = None;
     if oid == tab.ui.stash.detail_oid.as_deref() {
         return;
     }
@@ -1466,8 +1468,14 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
                 return;
             }
             match result {
-                Ok(files) => tab.ui.stash.files = files,
+                Ok(files) => {
+                    tab.ui.stash.files = files;
+                    if let Some(path) = tab.ui.stash.opening.take() {
+                        open_file(tab, path, cx);
+                    }
+                }
                 Err(err) => {
+                    tab.ui.stash.opening = None;
                     tab.ui.stash.detail_oid = None;
                     tab.error(err, cx);
                 }
@@ -1475,6 +1483,23 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
             cx.notify();
         },
     );
+}
+
+fn open_file(tab: &mut Tab, path: PathBuf, cx: &mut Context<Tab>) -> bool {
+    let Some(Selection::Stash(oid)) = tab.ui.selection.clone() else { return false };
+    if tab.ui.stash.file(&oid, &path).is_none() {
+        return false;
+    }
+    tab.ui.stash.path = Some(path.clone());
+    tab.ui.diff_open = true;
+    tab.load_selected_patch(Selection::Stash(oid), Some(path), cx);
+    true
+}
+
+pub(crate) fn open_when_loaded(tab: &mut Tab, path: PathBuf, cx: &mut Context<Tab>) {
+    if !open_file(tab, path.clone(), cx) {
+        tab.ui.stash.opening = Some(path);
+    }
 }
 
 pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
@@ -1530,13 +1555,7 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             return;
         }
         Action::OpenFile(path) => {
-            let Some(Selection::Stash(oid)) = tab.ui.selection.clone() else { return };
-            if tab.ui.stash.file(&oid, &path).is_none() {
-                return;
-            }
-            tab.ui.stash.path = Some(path.clone());
-            tab.ui.diff_open = true;
-            tab.load_selected_patch(Selection::Stash(oid), Some(path), cx);
+            open_file(tab, path, cx);
             return;
         }
         Action::AllChanges => {

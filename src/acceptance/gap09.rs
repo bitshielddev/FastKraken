@@ -172,6 +172,18 @@ impl Replay<'_> {
             return Err(format!("Picking down the graph reads {read:?}").into());
         }
         self.open_compared("lake.txt", "+Map the lake").await?;
+        self.action(Action::FileHistory(file_history::Action::OpenHere))?;
+        self.until("the compared file's history open", |tab| revisions(tab) == [lake.clone()] && in_history(tab, 0, &lake, "lake.txt"))
+            .await?;
+        self.key("escape")?;
+        self.until("Esc returns to the compared file", |tab| {
+            !tab.ui.file_history.open()
+                && showing(tab, &between, &expected)
+                && tab.ui.compare.path.as_deref() == Some(Path::new("lake.txt"))
+                && view::centre(&tab.ui) == view::Centre::Diff
+                && patch(tab, "+Map the lake")
+        })
+        .await?;
 
         self.select_only(&trail).await?;
         self.pick_commit(&lake, How::Toggle)?;
@@ -596,6 +608,14 @@ impl Replay<'_> {
         if untouched(&root)? != before {
             return Err("Looking at the history of camp.txt changed a ref, the index or a file".into());
         }
+        self.action(Action::Select(file("loose.txt", false)))?;
+        self.until("the untracked loose.txt open", |tab| tab.ui.selection == Some(file("loose.txt", false)) && patch(tab, "+Loose"))
+            .await?;
+        self.action(Action::FileHistory(file_history::Action::OpenHere))?;
+        let read = self.tab.read_with(self.cx, |tab, _| (tab.ui.file_history.open(), file_history::refused_here(&tab.ui)))?;
+        if read != (false, Some("This file has never been committed".to_owned())) {
+            return Err(format!("History on the open untracked loose.txt reads {read:?}").into());
+        }
 
         git(&root, &["mv", "camp.txt", "base.txt"])?;
         self.action(Action::Refresh)?;
@@ -624,6 +644,43 @@ impl Replay<'_> {
         .await?;
         if untouched(&root)? != before {
             return Err("Looking at the history of base.txt changed a ref, the index or a file".into());
+        }
+
+        git(&root, &["stash", "push", "-q"])?;
+        let saved = oid(&root, "refs/stash")?;
+        self.action(Action::Refresh)?;
+        self.until("the stash listed", |tab| tab.ui.stash.entries.iter().any(|entry| entry.oid == saved)).await?;
+        self.action(Action::Select(Selection::Stash(saved.clone())))?;
+        self.until("the stash's renamed base.txt listed", |tab| {
+            tab.ui.selection == Some(Selection::Stash(saved.clone()))
+                && tab.ui.stash.from(&saved, Path::new("base.txt")).as_deref() == Some(Path::new("camp.txt"))
+        })
+        .await?;
+        self.action(Action::Stash(crate::stash::Action::OpenFile("base.txt".into())))?;
+        self.until("the stashed base.txt open", |tab| {
+            tab.ui.diff_open && tab.ui.stash.open_path() == Some(Path::new("base.txt")) && patch(tab, "+Kettle on")
+        })
+        .await?;
+        let before = untouched(&root)?;
+        self.action(Action::FileHistory(file_history::Action::OpenHere))?;
+        self.until("the stashed rename's history follows its old name from where it was stashed", |tab| {
+            tab.ui.file_history.path() == Some(Path::new("base.txt"))
+                && tab.ui.file_history.start() == Some(head.as_str())
+                && revisions(tab) == expected
+                && in_history(tab, 0, &head, "camp.txt")
+        })
+        .await?;
+        self.key("escape")?;
+        self.until("Esc returns to the stashed base.txt", |tab| {
+            !tab.ui.file_history.open()
+                && tab.ui.selection == Some(Selection::Stash(saved.clone()))
+                && tab.ui.diff_open
+                && tab.ui.stash.open_path() == Some(Path::new("base.txt"))
+                && patch(tab, "+Kettle on")
+        })
+        .await?;
+        if untouched(&root)? != before {
+            return Err("Looking at the history of the stashed base.txt changed a ref, the index or a file".into());
         }
         self.pass();
         Ok(())

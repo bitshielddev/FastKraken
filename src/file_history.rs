@@ -262,9 +262,12 @@ pub(crate) fn parse(output: &[u8], path: &Path) -> Result<Vec<Revision>, String>
     Ok(revisions)
 }
 
+fn staged_origin(ui: &Ui, path: &Path, staged: bool) -> Option<PathBuf> {
+    ui.files.iter().find(|row| row.path == path && row.staged == staged).and_then(|row| row.from.clone())
+}
+
 fn working_request(ui: &Ui, path: &Path, staged: bool) -> Option<Request> {
-    let row = ui.files.iter().find(|row| row.path == path && row.staged == staged);
-    let followed = row.and_then(|row| row.from.clone()).unwrap_or_else(|| path.to_owned());
+    let followed = staged_origin(ui, path, staged).unwrap_or_else(|| path.to_owned());
     Some(Request { path: followed, shown: path.to_owned(), start: Start::Head, back: Back::of(ui) })
 }
 
@@ -273,7 +276,10 @@ pub(crate) fn request(ui: &Ui, path: &Path, side: &Side) -> Option<Request> {
         Side::Unstaged => return working_request(ui, path, false),
         Side::Staged => return working_request(ui, path, true),
         Side::Commit(oid) => Start::Commit(oid.clone()),
-        Side::Stash(oid) => Start::BaseOf(oid.clone()),
+        Side::Stash(oid) => {
+            let followed = ui.stash.from(oid, path).unwrap_or_else(|| path.to_owned());
+            return Some(Request { path: followed, shown: path.to_owned(), start: Start::BaseOf(oid.clone()), back: Back::of(ui) });
+        }
     };
     Some(Request { path: path.to_owned(), shown: path.to_owned(), start, back: Back::of(ui) })
 }
@@ -285,11 +291,11 @@ pub(crate) fn here(ui: &Ui) -> Option<Request> {
         Selection::Stash(oid) => request(ui, ui.stash.open_path()?, &Side::Stash(oid.clone())),
         Selection::Compare { to, .. } => {
             let path = ui.compare.path.clone()?;
-            let start = match to {
-                Rev::Commit(oid) => Start::Commit(oid.clone()),
-                Rev::WorkingTree => Start::Head,
+            let (start, followed) = match to {
+                Rev::Commit(oid) => (Start::Commit(oid.clone()), path.clone()),
+                Rev::WorkingTree => (Start::Head, staged_origin(ui, &path, true).unwrap_or_else(|| path.clone())),
             };
-            Some(Request { path: path.clone(), shown: path, start, back: Back::of(ui) })
+            Some(Request { path: followed, shown: path, start, back: Back::of(ui) })
         }
         Selection::Changes | Selection::Commits => None,
     }
@@ -310,6 +316,11 @@ fn unavailable(ui: &Ui, path: &Path, side: &Side) -> Option<String> {
         }
         Side::Commit(_) | Side::Stash(_) => None,
     }
+}
+
+pub(crate) fn refused_here(ui: &Ui) -> Option<String> {
+    let Some(Selection::File { path, staged }) = &ui.selection else { return None };
+    unavailable(ui, path, if *staged { &Side::Staged } else { &Side::Unstaged })
 }
 
 pub(crate) fn offered_here(ui: &Ui) -> bool {
@@ -393,7 +404,9 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
     match action {
         Action::Open(request) => open(tab, request, cx),
         Action::OpenHere => {
-            if let Some(request) = here(&tab.ui) {
+            if refused_here(&tab.ui).is_none()
+                && let Some(request) = here(&tab.ui)
+            {
                 open(tab, request, cx);
             }
         }
@@ -557,6 +570,16 @@ fn close(tab: &mut Tab, cx: &mut Context<Tab>) {
             tab.choose(selection.clone(), cx);
             if tab.ui.selection.as_ref() == Some(&selection) {
                 tab.ui.compare.names = back.names;
+                if let Some(path) = back.path.filter(|_| back.diff_open) {
+                    crate::compare::open_when_loaded(tab, path, cx);
+                }
+            }
+        }
+        Selection::Stash(oid) => {
+            let selection = Selection::Stash(oid);
+            tab.choose(selection.clone(), cx);
+            if let Some(path) = back.path.filter(|_| back.diff_open && tab.ui.selection.as_ref() == Some(&selection)) {
+                crate::stash::open_when_loaded(tab, path, cx);
             }
         }
         selection => tab.choose(selection, cx),
@@ -577,11 +600,18 @@ fn message(ui: &Ui) -> Option<String> {
 
 pub(crate) fn button<T: Desk>(ui: &Ui, cx: &Context<T>) -> impl IntoElement + use<T> {
     let listing = view::centre(ui) == view::Centre::FileHistory;
+    let refused = if listing { None } else { refused_here(ui) };
+    let tip = match &refused {
+        Some(reason) => reason.clone(),
+        None if listing => "Back to where you were (Esc)".to_owned(),
+        None => "Every commit that changed this file".to_owned(),
+    };
     kit::btn("file-history", "History")
         .small()
         .ghost()
         .selected(listing)
-        .tip(if listing { "Back to where you were (Esc)" } else { "Every commit that changed this file" })
+        .enabled(refused.is_none())
+        .tip(tip)
         .on(view::Action::FileHistory(if listing { Action::Close } else { Action::OpenHere }), cx)
 }
 

@@ -70,6 +70,7 @@ pub(crate) struct State {
     loading: bool,
     failed: Option<String>,
     pub(crate) path: Option<PathBuf>,
+    opening: Option<PathBuf>,
     ticket: u64,
     pub(crate) scroll: gpui::UniformListScrollHandle,
 }
@@ -120,6 +121,7 @@ impl State {
         self.loading = false;
         self.failed = None;
         self.path = None;
+        self.opening = None;
         self.scroll = gpui::UniformListScrollHandle::new();
     }
 }
@@ -376,21 +378,31 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             let names = tab.ui.compare.names.take();
             dispatch(tab, Action::Show { from, to, since_fork: on, names }, window, cx);
         }
-        Action::OpenFile(path) => {
-            let Some(selection @ Selection::Compare { .. }) = tab.ui.selection.clone() else { return };
-            if !tab.ui.compare.files.iter().any(|file| file.path == path) {
-                return;
-            }
-            tab.ui.compare.path = Some(path.clone());
-            tab.ui.diff_open = true;
-            tab.load_selected_patch(selection, Some(path), cx);
-        }
+        Action::OpenFile(path) => open_file(tab, path, cx),
         Action::AllChanges => {
             let Some(selection @ Selection::Compare { .. }) = tab.ui.selection.clone() else { return };
             tab.ui.compare.path = None;
             tab.ui.diff_open = true;
             tab.load_selected_patch(selection, None, cx);
         }
+    }
+}
+
+fn open_file(tab: &mut Tab, path: PathBuf, cx: &mut Context<Tab>) {
+    let Some(selection @ Selection::Compare { .. }) = tab.ui.selection.clone() else { return };
+    if !tab.ui.compare.files.iter().any(|file| file.path == path) {
+        return;
+    }
+    tab.ui.compare.path = Some(path.clone());
+    tab.ui.diff_open = true;
+    tab.load_selected_patch(selection, Some(path), cx);
+}
+
+pub(crate) fn open_when_loaded(tab: &mut Tab, path: PathBuf, cx: &mut Context<Tab>) {
+    if tab.ui.compare.loading {
+        tab.ui.compare.opening = Some(path);
+    } else {
+        open_file(tab, path, cx);
     }
 }
 
@@ -430,12 +442,16 @@ fn load(tab: &mut Tab, cx: &mut Context<Tab>) {
                 return;
             }
             state.loading = false;
+            let opening = state.opening.take();
             match result {
                 Ok(files) => {
                     state.files = files;
                     if state.path.as_ref().is_some_and(|path| !state.files.iter().any(|file| &file.path == path)) {
                         state.path = None;
                         tab.ui.diff_open = false;
+                    }
+                    if let Some(path) = opening {
+                        open_file(tab, path, cx);
                     }
                 }
                 Err(error) => {
