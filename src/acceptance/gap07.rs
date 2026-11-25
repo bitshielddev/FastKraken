@@ -153,7 +153,11 @@ impl Replay<'_> {
         self.find_commits_without_a_diff(dir).await?;
         let pictured = self.image_diff(dir).await;
         self.action(Action::Images(image_diff::Action::Show(image_diff::Mode::Text)))?;
-        pictured
+        pictured?;
+        self.restore_from_an_older_commit(dir).await?;
+        let undone = self.undo_a_hunk_from_a_commit(dir).await;
+        self.reset_diff_options()?;
+        undone
     }
 
     fn reset_diff_options(&mut self) -> Result<()> {
@@ -1973,6 +1977,189 @@ impl Replay<'_> {
         git_is(&root, &["ls-files", "--stage", "--", "chart.png"], &format!("100644 {side} 0\tchart.png\n"))?;
         if fs::read(root.join("chart.png"))? != png(50, 50, 31) {
             return Err("chart.png does not hold the side's chart".into());
+        }
+        self.pass();
+        Ok(())
+    }
+}
+
+const RESTORE_CMD_RETURN: &str = if cfg!(target_os = "macos") { "cmd-enter" } else { "ctrl-enter" };
+const SHOUTED: &str = "one\nTWO\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\nELEVEN\ntwelve\n";
+
+fn untouched(root: &Path, index: &str, head: &str) -> Result<()> {
+    git_is(root, &["ls-files", "--stage"], index)?;
+    git_is(root, &["rev-parse", "HEAD"], &format!("{head}\n"))
+}
+
+impl Replay<'_> {
+    async fn restore_from_an_older_commit(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0716");
+        let root = init(dir, "Restore-cove")?;
+        record(&root, "log.txt", "Day one: calm\n", "Start the log")?;
+        let first = oid(&root, "HEAD")?;
+        record(&root, "log.txt", "Day one: calm\nDay two: wind\n", "Log day two")?;
+        let second = oid(&root, "HEAD")?;
+        record(&root, "log.txt", "Day three only\n", "Rewrite the log")?;
+        let third = oid(&root, "HEAD")?;
+        record(&root, "camp.txt", "Camp: by the lake\n", "Pitch camp")?;
+        let head = oid(&root, "HEAD")?;
+        fs::write(root.join("camp.txt"), "Camp: by the lake, tent up\n")?;
+        git(&root, &["add", "--", "camp.txt"])?;
+        fs::write(root.join("log.txt"), "Day three only, and a note\n")?;
+        let index = git(&root, &["ls-files", "--stage"])?;
+        self.open(&root)?;
+        self.until("Restore-cove open with camp.txt staged and log.txt edited", |tab| {
+            tab.ui.repo == "Restore-cove" && files(tab, &["camp.txt"], &["log.txt"])
+        })
+        .await?;
+
+        self.select_commit(&first).await?;
+        self.open_file("log.txt").await?;
+        let target = Target::File { path: "log.txt".into(), side: Side::Commit(first.clone()) };
+        let rows = self.menu_rows(&target)?;
+        let offered = |id: &str, title: &str, disabled: Option<&str>| {
+            rows.iter().any(|row| row.0 == id && row.1 == title && row.2.as_deref() == disabled)
+        };
+        if !offered("file.restore-version", "Restore this version…", None)
+            || !offered("file.restore-before", "Restore the version before this commit…", Some("The file did not exist before this commit"))
+        {
+            return Err(format!("The menu of log.txt in the first commit lists {rows:?}").into());
+        }
+        self.choose(&target, "file.restore-version")?;
+        let title = format!("Restore log.txt from {}?", &first[..7]);
+        let (lines, danger) = self.asked_about(&title).await?;
+        let warned = [
+            "Your copy of log.txt has changes that are not committed. They will be replaced.",
+            "The result shows as a change to review. Nothing is staged or committed.",
+        ];
+        if !danger || lines != warned {
+            return Err(format!("The restore prompt shows {lines:?}, danger {danger}").into());
+        }
+        if self.prompt_focus()? != Some(prompt::Stop::Cancel) {
+            return Err("The restore prompt did not open with Cancel focused".into());
+        }
+        if fs::read_to_string(root.join("log.txt"))? != "Day three only, and a note\n" {
+            return Err("log.txt was replaced before the prompt was answered".into());
+        }
+        self.key(RESTORE_CMD_RETURN)?;
+        let (detail, _) = self.noticed(&format!("Restored log.txt from {}", &first[..7])).await?;
+        if detail != "It shows as a change in your files, ready to review. Nothing was staged." {
+            return Err(format!("Restoring log.txt said {detail:?}").into());
+        }
+        if fs::read(root.join("log.txt"))? != git(&root, &["show", &format!("{first}:log.txt")])?.into_bytes() {
+            return Err("log.txt does not equal its version in the first commit".into());
+        }
+        untouched(&root, &index, &head)?;
+        git_is(&root, &["status", "--porcelain=v1"], "M  camp.txt\n M log.txt\n")?;
+
+        self.select_commit(&third).await?;
+        self.open_file("log.txt").await?;
+        let target = Target::File { path: "log.txt".into(), side: Side::Commit(third.clone()) };
+        self.choose(&target, "file.restore-before")?;
+        let title = format!("Restore log.txt as it was before {}?", &third[..7]);
+        self.asked_about(&title).await?;
+        fs::write(root.join("log.txt"), "Typed meanwhile\n")?;
+        self.key(RESTORE_CMD_RETURN)?;
+        let changed = "log.txt changed since you chose to restore it. Look at it again, then restore it.";
+        self.failed("the restore refused after log.txt changed", changed).await?;
+        if fs::read_to_string(root.join("log.txt"))? != "Typed meanwhile\n" {
+            return Err("The refused restore changed log.txt".into());
+        }
+        untouched(&root, &index, &head)?;
+
+        self.until("the restore finished", |tab| !tab.ui.busy()).await?;
+        self.choose(&target, "file.restore-before")?;
+        self.asked_about(&title).await?;
+        self.key(RESTORE_CMD_RETURN)?;
+        self.noticed(&format!("Restored log.txt as it was before {}", &third[..7])).await?;
+        if fs::read(root.join("log.txt"))? != git(&root, &["show", &format!("{second}:log.txt")])?.into_bytes() {
+            return Err("log.txt does not equal its version before the third commit".into());
+        }
+        untouched(&root, &index, &head)?;
+
+        self.choose(&target, "file.restore-before")?;
+        self.until("the restore saying the file already matches", |tab| {
+            tab.ui.notices.newest().is_some_and(|notice| notice.title == "log.txt already matches that version")
+        })
+        .await?;
+        let asked = self.tab.read_with(self.cx, |tab, _| prompt::shown(&tab.ui).is_some())?;
+        if asked {
+            return Err("Restoring a version log.txt already holds opened a prompt".into());
+        }
+        self.until("log.txt listed as an unstaged change", |tab| files(tab, &["camp.txt"], &["log.txt"])).await?;
+        untouched(&root, &index, &head)?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn undo_a_hunk_from_a_commit(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0717");
+        let root = init(dir, "Undo-cove")?;
+        let log = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n";
+        record(&root, "log.txt", log, "Keep a log")?;
+        record(&root, "log.txt", SHOUTED, "Shout two numbers")?;
+        let shouted = oid(&root, "HEAD")?;
+        record(&root, "camp.txt", "Camp: by the lake\n", "Pitch camp")?;
+        let head = oid(&root, "HEAD")?;
+        let edited = SHOUTED.replace("six", "six and a half");
+        fs::write(root.join("log.txt"), &edited)?;
+        let index = git(&root, &["ls-files", "--stage"])?;
+        self.open(&root)?;
+        self.until("Undo-cove open with log.txt edited", |tab| tab.ui.repo == "Undo-cove" && files(tab, &[], &["log.txt"])).await?;
+        self.select_commit(&shouted).await?;
+        self.open_file("log.txt").await?;
+        self.until("both hunks of the commit shown with Undo in my files", |tab| {
+            patch(tab, "+ELEVEN") && tab.ui.diff.hunks.len() == 2 && crate::recover::undo_offered(&tab.ui)
+        })
+        .await?;
+        let target = self.tab.read_with(self.cx, |tab, _| {
+            row(tab, "+ELEVEN").and_then(|at| diff_select::code_target(&tab.ui, at, tab.ui.diff.lines[at].at))
+        })?;
+        let target = target.ok_or("The added ELEVEN line has no code menu")?;
+        if !matches!(target, Target::Code { hunk: Some(1), .. }) {
+            return Err(format!("The ELEVEN line's menu acts on {target:?}").into());
+        }
+        let rows = self.menu_rows(&target)?;
+        if !rows.iter().any(|row| row.0 == "code.undo-hunk" && row.1 == "Undo this hunk in my files" && row.2.is_none()) {
+            return Err(format!("The code menu of the ELEVEN line lists {rows:?}").into());
+        }
+        self.choose(&target, "code.undo-hunk")?;
+        let (detail, _) = self.noticed("Undid a hunk in log.txt").await?;
+        if detail != "It shows as a change in your files, ready to review. Nothing was staged." {
+            return Err(format!("Undoing the hunk said {detail:?}").into());
+        }
+        let inverse = edited.replace("ELEVEN", "eleven");
+        if fs::read_to_string(root.join("log.txt"))? != inverse {
+            return Err(format!("log.txt reads {:?} after undoing the hunk", fs::read_to_string(root.join("log.txt"))?).into());
+        }
+        let shown = added(&root, &["diff", "--", "log.txt"])?;
+        if shown != ["-six", "+six and a half", "-ELEVEN", "+eleven"] {
+            return Err(format!("git diff shows {shown:?} after undoing the hunk").into());
+        }
+        untouched(&root, &index, &head)?;
+
+        self.until("the undo finished", |tab| !tab.ui.busy()).await?;
+        self.choose(&target, "code.undo-hunk")?;
+        self.failed("undoing the hunk again refused", crate::recover::DIFFERENT_NOW).await?;
+        if fs::read_to_string(root.join("log.txt"))? != inverse {
+            return Err("The refused undo changed log.txt".into());
+        }
+        untouched(&root, &index, &head)?;
+
+        self.until("the refused undo finished", |tab| !tab.ui.busy()).await?;
+        self.action(Action::DiffOptions(Show::Set(Choice::WholeFile, true)))?;
+        self.until("the commit's whole file shown without Undo in my files", |tab| {
+            tab.ui.diff.options.whole_file && patch(tab, "+ELEVEN") && !crate::recover::undo_offered(&tab.ui)
+        })
+        .await?;
+        let target = self.tab.read_with(self.cx, |tab, _| {
+            row(tab, "+ELEVEN").and_then(|at| diff_select::code_target(&tab.ui, at, tab.ui.diff.lines[at].at))
+        })?;
+        let target = target.ok_or("The whole-file ELEVEN line has no code menu")?;
+        let rows = self.menu_rows(&target)?;
+        let refused = Some("Show 3 lines of context to undo a single hunk");
+        if !rows.iter().any(|row| row.0 == "code.undo-hunk" && row.2.as_deref() == refused) {
+            return Err(format!("The whole-file code menu lists {rows:?}").into());
         }
         self.pass();
         Ok(())

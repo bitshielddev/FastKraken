@@ -26,7 +26,7 @@ impl Replay<'_> {
         self.username_in_address(dir).await
     }
 
-    async fn failed(&mut self, description: &str, title: &str) -> Result<Notice> {
+    pub(super) async fn failed(&mut self, description: &str, title: &str) -> Result<Notice> {
         let wanted = title.to_owned();
         self.until(description, move |tab| {
             tab.ui.notices.newest().is_some_and(|notice| notice.tone == Tone::Error && notice.title == wanted)

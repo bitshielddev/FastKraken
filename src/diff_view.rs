@@ -543,6 +543,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     };
     let count = rows(ui);
     let whole_file = doc.options.whole_file;
+    let undoable = crate::recover::undo_offered(ui);
     let lines = uniform_list(
         SharedString::from(format!("{list_id}-{mode:?}-{wrapping}-{file_view}")),
         count,
@@ -580,6 +581,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                             text,
                             row.hunk.filter(|_| doc.stageable && !whole_file),
                             side,
+                            row.hunk.filter(|_| undoable),
                             editable,
                             split,
                             cx,
@@ -1118,6 +1120,7 @@ fn hunk_row<T: Desk>(
     text: &str,
     hunk: Option<usize>,
     side: Option<bool>,
+    undo: Option<usize>,
     editable: bool,
     split: bool,
     cx: &Context<T>,
@@ -1148,6 +1151,19 @@ fn hunk_row<T: Desk>(
         .when(!split, |d| {
             d.child(div().text_color(rgb(TEXT_2)).child(context.to_owned()))
         });
+    let row = row.when_some(undo, |d, hunk| {
+        d.child(
+            mini(
+                ("undo-hunk", hunk),
+                "Undo in my files",
+                false,
+                editable,
+                Action::Recover(crate::recover::Action::UndoHunk(hunk)),
+                cx,
+            )
+            .tooltip(kit::tip("Apply the inverse of this hunk to your files")),
+        )
+    });
     row.when_some(hunk.zip(side), |d, (hunk, staged)| {
         if staged {
             d.child(mini(

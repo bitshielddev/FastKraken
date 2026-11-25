@@ -47,6 +47,7 @@ mod pick;
 mod picked;
 mod preferences;
 mod rebase;
+mod recover;
 mod prompt;
 mod publish;
 mod refs;
@@ -1544,6 +1545,7 @@ impl Tab {
             Action::Find(action) => find::dispatch(self, action, window, cx),
             Action::Images(action) => image_diff::dispatch(self, action, window, cx),
             Action::FileView(action) => file_view::dispatch(self, action, window, cx),
+            Action::Recover(action) => recover::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),

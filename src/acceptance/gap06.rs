@@ -81,7 +81,7 @@ impl Replay<'_> {
         self.switch_carrying_changes(dir).await
     }
 
-    async fn asked_about(&mut self, title: &str) -> Result<(Vec<String>, bool)> {
+    pub(super) async fn asked_about(&mut self, title: &str) -> Result<(Vec<String>, bool)> {
         self.until(&format!("the prompt {title:?} open"), |tab| {
             prompt::shown(&tab.ui).is_some_and(|spec| spec.title == title)
         })
@@ -90,7 +90,7 @@ impl Replay<'_> {
         shown.ok_or_else(|| format!("The prompt {title:?} closed").into())
     }
 
-    async fn noticed(&mut self, title: &str) -> Result<(String, Vec<String>)> {
+    pub(super) async fn noticed(&mut self, title: &str) -> Result<(String, Vec<String>)> {
         self.until(&format!("the notice {title:?}"), |tab| {
             !tab.ui.busy() && tab.ui.notices.newest().is_some_and(|n| n.title == title)
         })

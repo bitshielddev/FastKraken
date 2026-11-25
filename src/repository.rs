@@ -212,18 +212,27 @@ impl Diff {
     }
 
     pub(crate) fn hunk_patch(&self, index: usize) -> Option<String> {
+        let (header, hunk) = self.hunk_parts(index)?;
+        let mut patch = header.to_vec();
+        patch.extend_from_slice(hunk);
+        if !patch.ends_with(b"\n") {
+            patch.push(b'\n');
+        }
+        Some(String::from_utf8_lossy(&patch).into_owned())
+    }
+
+    pub(crate) fn hunk_parts(&self, index: usize) -> Option<(&[u8], &[u8])> {
         let hunk = self.hunks.get(index)?;
         let bytes = self.bytes.get(..hunk.bytes.end)?;
         let file = (0..hunk.bytes.start)
             .rev()
             .find(|&at| bytes[at..].starts_with(b"diff --git ") && (at == 0 || bytes[at - 1] == b'\n'))?;
         let header = self.hunks.iter().map(|hunk| hunk.bytes.start).find(|&start| start >= file)?;
-        let mut patch = bytes[file..header].to_vec();
-        patch.extend_from_slice(&bytes[hunk.bytes.clone()]);
-        if !patch.ends_with(b"\n") {
-            patch.push(b'\n');
-        }
-        Some(String::from_utf8_lossy(&patch).into_owned())
+        Some((&bytes[file..header], &bytes[hunk.bytes.clone()]))
+    }
+
+    pub(crate) fn same_patch(&self, other: &Diff) -> bool {
+        !self.truncated && !other.truncated && self.bytes == other.bytes
     }
 }
 

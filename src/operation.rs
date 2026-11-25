@@ -1244,6 +1244,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::AskDiscard(_)
         | A::Discard(_)
         | A::Ignore(_)
+        | A::Recover(_)
         | A::Address(_) => false,
     };
     if allowed { Ok(()) } else { Err(kind.refusal()) }

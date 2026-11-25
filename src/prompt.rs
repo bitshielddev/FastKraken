@@ -114,6 +114,7 @@ pub(crate) enum Kind {
     Credentials(crate::credentials::Ask),
     Address(crate::address::Ask),
     Ignore(crate::ignore::Ask),
+    Recover(crate::recover::Ask),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -135,6 +136,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Credentials(ask) => crate::credentials::describe(ask),
         Kind::Address(ask) => crate::address::describe(ask, ui),
         Kind::Ignore(ask) => crate::ignore::describe(ask),
+        Kind::Recover(ask) => crate::recover::describe(ask, ui),
     }
 }
 
@@ -157,6 +159,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Credentials(ask) => crate::credentials::confirm(tab, ask, answer, cx),
         Kind::Address(ask) => crate::address::confirm(tab, ask, answer, cx),
         Kind::Ignore(ask) => crate::ignore::confirm(tab, ask, cx),
+        Kind::Recover(ask) => crate::recover::confirm(tab, ask, cx),
     }
 }
 

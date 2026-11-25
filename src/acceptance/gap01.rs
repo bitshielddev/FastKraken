@@ -949,7 +949,8 @@ impl Replay<'_> {
             .await?;
         let committed = Target::File { path: "trail.txt".into(), side: commands::Side::Commit(second.clone()) };
         let rows = self.menu_rows(&committed)?;
-        if ids(rows.clone()) != ["file.history", "file.reveal", "file.copy-path", "file.copy-full-path"]
+        let listed = ["file.restore-version", "file.restore-before", "file.history", "file.reveal", "file.copy-path", "file.copy-full-path"];
+        if ids(rows.clone()) != listed
             || rows.iter().any(|row| row.2.is_some())
         {
             return Err(format!("The menu of the committed trail.txt lists {rows:?}").into());

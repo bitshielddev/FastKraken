@@ -288,6 +288,13 @@ impl State {
         self.files.iter().find(|file| file.path == path).and_then(|file| file.from.clone())
     }
 
+    pub(crate) fn file(&self, oid: &str, path: &Path) -> Option<&ChangedFile> {
+        if self.oid.as_deref() != Some(oid) {
+            return None;
+        }
+        self.files.iter().find(|file| file.path == path)
+    }
+
     fn close_history(&mut self) {
         self.history_ticket += 1;
         self.history = None;
