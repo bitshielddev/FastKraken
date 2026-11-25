@@ -43,6 +43,7 @@ mod merge;
 mod navigate;
 mod notice;
 mod operation;
+mod paging;
 mod palette;
 mod perf;
 mod pick;
@@ -127,6 +128,7 @@ struct Tab {
     history_ticket: u64,
     status_ticket: u64,
     diff_ticket: u64,
+    stream: Option<paging::HistoryStream>,
     loading_page: bool,
     loading_status: bool,
     status_dirty: bool,
@@ -154,6 +156,7 @@ impl Tab {
             history_ticket: 0,
             status_ticket: 0,
             diff_ticket: 0,
+            stream: None,
             loading_page: false,
             loading_status: false,
             status_dirty: false,
@@ -257,6 +260,7 @@ impl Tab {
                 let epoch = tab.epoch;
                 tab.watcher = None;
                 tab.diff = None;
+                tab.stream = None;
                 tab.loading_page = false;
                 tab.loading_status = false;
                 tab.status_dirty = false;
@@ -344,6 +348,7 @@ impl Tab {
         self.watcher = None;
         self.diff = None;
         self.repo = None;
+        self.stream = None;
         self.loading_page = false;
         self.loading_status = false;
         self.status_dirty = false;
@@ -361,41 +366,51 @@ impl Tab {
     }
 
     fn load_history(&mut self, reset: bool, cx: &mut Context<Self>) {
-        self.load_rows(reset, PAGE, cx);
+        let reload = reset.then(|| paging::reload(&self.ui));
+        self.load_rows(reload, PAGE, cx);
     }
 
     fn load_history_to(&mut self, rows: usize, cx: &mut Context<Self>) {
         let wanted = rows.saturating_sub(self.ui.history.len()).max(PAGE);
-        self.load_rows(false, wanted, cx);
+        self.load_rows(None, wanted, cx);
     }
 
-    fn load_rows(&mut self, reset: bool, wanted: usize, cx: &mut Context<Self>) {
+    fn load_rows(&mut self, reload: Option<paging::Reload>, wanted: usize, cx: &mut Context<Self>) {
+        let reset = reload.is_some();
         if !reset && (self.loading_page || !self.ui.has_more) {
             return;
         }
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        let offset = if reset { 0 } else { self.ui.history.len() };
         self.history_ticket += 1;
         let ticket = self.history_ticket;
         let epoch = self.epoch;
         let view = self.ui.graph_view.clone();
+        let (stream, skip, rows, kept, place) = match reload {
+            Some(reload) => {
+                self.stream = None;
+                (None, 0, reload.rows, reload.wanted, reload.place)
+            }
+            None => (self.stream.take(), self.ui.history.len(), wanted, Vec::new(), None),
+        };
         self.loading_page = true;
         Self::work(
             cx,
-            move || repo.history_in(&view, offset, wanted + 1),
-            move |tab, result, cx| {
+            move || paging::read(&repo, &view, stream, skip, rows, &kept),
+            move |tab, (stream, result), cx| {
                 if tab.epoch != epoch || ticket != tab.history_ticket {
                     return;
                 }
                 tab.loading_page = false;
+                tab.stream = stream;
                 match result {
-                    Ok(mut page) => {
-                        tab.ui.has_more = page.len() > wanted;
-                        page.truncate(wanted);
+                    Ok((page, more)) => {
+                        tab.ui.has_more = more;
+                        tab.ui.history_complete = !more;
                         if reset {
                             tab.ui.replace_history(page);
+                            paging::restore(&tab.ui, place);
                         } else {
                             tab.ui.append_history(page);
                         }
@@ -414,6 +429,7 @@ impl Tab {
                     }
                     Err(err) => {
                         tab.ui.has_more = false;
+                        tab.ui.history_complete = false;
                         tab.error(err, cx);
                         reveal::failed(tab);
                     }

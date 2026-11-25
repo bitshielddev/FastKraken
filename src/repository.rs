@@ -479,6 +479,7 @@ impl Repository {
         self.history_in(&GraphView::default(), offset, limit)
     }
 
+    #[cfg(test)]
     pub(crate) fn history_in(&self, view: &GraphView, offset: usize, limit: usize) -> Result<Vec<Commit>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -662,7 +663,7 @@ impl Repository {
         )
     }
 
-    fn log_command(&self) -> Command {
+    pub(crate) fn log_command(&self) -> Command {
         let mut cmd = self.read_command();
         cmd.args([
             "log",
@@ -1659,7 +1660,7 @@ fn successful(output: Output) -> Result<Vec<u8>> {
     }
     Err(git_error(&output.stderr, output.status))
 }
-fn git_error(stderr: &[u8], status: std::process::ExitStatus) -> String {
+pub(crate) fn git_error(stderr: &[u8], status: std::process::ExitStatus) -> String {
     let msg = String::from_utf8_lossy(stderr);
     if msg.trim().is_empty() {
         format!("Git exited with {status}")

@@ -1,11 +1,16 @@
 use super::*;
-use crate::{graph_view, notice, refs::Kind, reveal, search, theme::ROW};
+use crate::{PAGE, graph_view, notice, paging, refs::Kind, reveal, search, theme::ROW};
+use gpui::{ScrollStrategy, point};
 use std::{io::Write, process::Stdio};
 
 const DEPTH: usize = 5_000;
 const DEEP_COMMITS: usize = 6_000;
 const SEARCHED_COMMITS: usize = 400;
 const RIDGE_COMMITS: usize = 300;
+const KEPT_DEPTH: usize = 5_500;
+const TOP_DEPTH: usize = 3_000;
+const SHORT_COMMITS: usize = 1_200;
+const SPUR_COMMITS: usize = 30;
 
 fn import(root: &Path, stream: &[u8]) -> Result<()> {
     let mut child = repository::bundled_command(root)?
@@ -38,11 +43,8 @@ fn commit_record(stream: &mut Vec<u8>, mark: usize, author: &str, subject: &str)
     stream.push(b'\n');
 }
 
-fn in_view(tab: &Tab, oid: &str) -> bool {
-    let Some(index) = tab.ui.history.iter().position(|row| row.oid == oid) else {
-        return false;
-    };
-    let row = tab.ui.stash.commit_row(index) as f32;
+fn row_in_view(tab: &Tab, row: usize) -> bool {
+    let row = row as f32;
     let scroll = tab.ui.history_scroll.0.borrow();
     if scroll.deferred_scroll_to_item.is_some() {
         return false;
@@ -50,6 +52,35 @@ fn in_view(tab: &Tab, oid: &str) -> bool {
     let top = -f32::from(scroll.base_handle.offset().y);
     let height = f32::from(scroll.base_handle.bounds().size.height);
     height > ROW && row * ROW >= top && (row + 1.) * ROW <= top + height
+}
+
+fn in_view(tab: &Tab, oid: &str) -> bool {
+    match tab.ui.history.iter().position(|row| row.oid == oid) {
+        Some(index) => row_in_view(tab, tab.ui.stash.commit_row(index)),
+        None => false,
+    }
+}
+
+fn height_in_window(tab: &Tab, oid: &str) -> Option<f32> {
+    let index = tab.ui.history.iter().position(|row| row.oid == oid)?;
+    let row = tab.ui.stash.commit_row(index) as f32;
+    let scroll = tab.ui.history_scroll.0.borrow();
+    if scroll.deferred_scroll_to_item.is_some() || f32::from(scroll.base_handle.bounds().size.height) <= ROW {
+        return None;
+    }
+    Some(row * ROW + f32::from(scroll.base_handle.offset().y))
+}
+
+fn top_row(tab: &Tab) -> Option<String> {
+    let top = -f32::from(tab.ui.history_scroll.0.borrow().base_handle.offset().y);
+    let item = (top / ROW).floor() as usize;
+    (0..tab.ui.history.len())
+        .find(|&index| tab.ui.stash.commit_row(index) == item)
+        .map(|index| tab.ui.history[index].oid.clone())
+}
+
+fn subject_at(tab: &Tab, subject: &str) -> Option<String> {
+    tab.ui.history.iter().find(|row| row.subject == subject).map(|row| row.oid.clone())
 }
 
 fn offered<'a>(tab: &'a Tab, title: &str) -> Option<&'a notice::Notice> {
@@ -64,7 +95,171 @@ impl Replay<'_> {
     pub(super) async fn gap08(&mut self, dir: &Path) -> Result<()> {
         self.jump_down_to_a_tag(dir).await?;
         self.jump_to_a_hidden_commit(dir).await?;
-        self.search_by_author(dir).await
+        self.search_by_author(dir).await?;
+        self.keep_the_place_deep_down(dir).await?;
+        self.mark_the_end_of_history(dir).await
+    }
+
+    async fn keep_the_place_deep_down(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0804");
+        let root = init(dir, "Deep-camp")?;
+        let mut stream = Vec::new();
+        let author = "Cedar Contributor <cedar@example.invalid>";
+        for mark in 1..=DEEP_COMMITS {
+            commit_record(&mut stream, mark, author, &format!("Pitch tent {mark}"));
+        }
+        import(&root, &stream)?;
+        let order = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/stash", "--all"])?;
+        let deep = order.get(KEPT_DEPTH).cloned().ok_or("The deep camp is too short")?;
+        if git(&root, &["log", "-1", "--format=%s", &deep])?.trim_end() != format!("Pitch tent {}", DEEP_COMMITS - KEPT_DEPTH) {
+            return Err(format!("Git does not list Pitch tent {} {KEPT_DEPTH} commits down", DEEP_COMMITS - KEPT_DEPTH).into());
+        }
+        self.open(&root)?;
+        self.until("the deep camp open", |tab| tab.ui.repo == "Deep-camp" && !tab.ui.history.is_empty()).await?;
+        self.action(Action::Reveal(reveal::Action::Commit(deep.clone())))?;
+        self.until("the deep commit selected and in view more than 5,000 rows down", |tab| {
+            tab.ui.selection == Some(Selection::Commit(deep.clone()))
+                && tab.ui.reveal.finding().is_none()
+                && !tab.loading_page
+                && tab.ui.history.len() > paging::KEPT
+                && in_view(tab, &deep)
+        })
+        .await?;
+        let (loaded, before) = self.tab.read_with(self.cx, |tab, _| (tab.ui.history.len(), height_in_window(tab, &deep)))?;
+        let before = before.ok_or("The deep commit has no place in the window")?;
+        fs::write(root.join("weather.txt"), "Clear skies\n")?;
+        self.during("the new file listed", |tab| !tab.ui.busy() && files(tab, &[], &["weather.txt"])).await?;
+        self.action(Action::StageAll)?;
+        self.during("the file staged", |tab| !tab.ui.busy() && files(tab, &["weather.txt"], &[])).await?;
+        let start = oid(&root, "HEAD")?;
+        self.type_commit("Note the weather")?;
+        self.until("the new commit first in the graph", |tab| {
+            !tab.loading_page
+                && tab.ui.head.as_deref().is_some_and(|head| head != start)
+                && tab.ui.history.first().is_some_and(|row| row.subject == "Note the weather")
+        })
+        .await?;
+        git_is(&root, &["log", "-1", "--format=%s"], "Note the weather\n")?;
+        git_is(&root, &["rev-parse", "HEAD~1"], &format!("{start}\n"))?;
+        let (now, row, after) = self.tab.read_with(self.cx, |tab, _| {
+            (
+                tab.ui.history.len(),
+                tab.ui.history.iter().position(|row| row.oid == deep),
+                height_in_window(tab, &deep),
+            )
+        })?;
+        if now < loaded {
+            return Err(format!("The graph held {loaded} rows before the commit and {now} after it").into());
+        }
+        if row != Some(KEPT_DEPTH + 1) {
+            return Err(format!("The deep commit is row {row:?} after the commit, not {}", KEPT_DEPTH + 1).into());
+        }
+        if !after.is_some_and(|after| (after - before).abs() < 0.5) {
+            return Err(format!("The deep commit was {before} px down the window and is now {after:?}").into());
+        }
+        let top = self.tab.read_with(self.cx, |tab, _| subject_at(tab, &format!("Pitch tent {TOP_DEPTH}")))?;
+        let top = top.ok_or("Pitch tent 3000 is not loaded")?;
+        self.tab.update(self.cx, |tab, _, cx| {
+            if let Some(index) = tab.ui.history.iter().position(|row| row.oid == top) {
+                let row = tab.ui.stash.commit_row(index) as f32;
+                tab.ui.history_scroll.0.borrow().base_handle.set_offset(point(px(0.), px(-(row * ROW + 9.))));
+            }
+            cx.notify();
+        })?;
+        self.until("Pitch tent 3000 the top row with the selected commit out of view", |tab| {
+            top_row(tab).as_ref() == Some(&top)
+                && height_in_window(tab, &top).is_some()
+                && matches!(&tab.ui.selection, Some(Selection::Commit(selected)) if !in_view(tab, selected))
+        })
+        .await?;
+        let before = self.tab.read_with(self.cx, |tab, _| height_in_window(tab, &top))?.ok_or("No height for the top row")?;
+        record(&root, "wind.txt", "Gusty\n", "Record the wind")?;
+        self.action(Action::Refresh)?;
+        self.until("the outside commit first in the graph", |tab| {
+            !tab.loading_page && tab.ui.history.first().is_some_and(|row| row.subject == "Record the wind")
+        })
+        .await?;
+        let (shown, after) = self.tab.read_with(self.cx, |tab, _| (top_row(tab), height_in_window(tab, &top)))?;
+        if shown.as_ref() != Some(&top) || !after.is_some_and(|after| (after - before).abs() < 0.5) {
+            return Err(format!("Pitch tent 3000 was the top row at {before} px; now the top row is {shown:?} and it is at {after:?}").into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn mark_the_end_of_history(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0805");
+        let root = init(dir, "Short-trail")?;
+        let mut stream = Vec::new();
+        let author = "Cedar Contributor <cedar@example.invalid>";
+        for mark in 1..=SHORT_COMMITS {
+            commit_record(&mut stream, mark, author, &format!("Walk mile {mark}"));
+        }
+        for step in 1..=SPUR_COMMITS {
+            let mark = SHORT_COMMITS + step;
+            let subject = format!("Explore the spur {step}");
+            let time = 1_800_000_000 + step * 60;
+            stream.extend_from_slice(
+                format!(
+                    "commit refs/heads/spur\nmark :{mark}\ncommitter {author} {time} +0000\ndata {}\n{subject}\n",
+                    subject.len() + 1
+                )
+                .as_bytes(),
+            );
+            if step == 1 {
+                stream.extend_from_slice(format!("from :{}\n", SHORT_COMMITS / 2).as_bytes());
+            }
+            stream.push(b'\n');
+        }
+        import(&root, &stream)?;
+        let order = listed(&root, &["rev-list", "--topo-order", "--exclude=refs/stash", "--all"])?;
+        let total = SHORT_COMMITS + SPUR_COMMITS;
+        if order.len() != total {
+            return Err(format!("Git lists {} commits, not {total}", order.len()).into());
+        }
+        self.open(&root)?;
+        self.until("the first page with a loading row at its end", |tab| {
+            tab.ui.repo == "Short-trail"
+                && tab.ui.has_more
+                && tab.ui.history.len() == PAGE
+                && paging::tail(&tab.ui).as_deref() == Some(paging::LOADING)
+                && paging::items(&tab.ui) == tab.ui.history_items() + 1
+        })
+        .await?;
+        for _ in 0..total / PAGE + 2 {
+            let (loaded, more) = self.tab.read_with(self.cx, |tab, _| (tab.ui.history.len(), tab.ui.has_more))?;
+            if !more {
+                break;
+            }
+            self.tab.update(self.cx, |tab, _, cx| {
+                let last = paging::items(&tab.ui) - 1;
+                tab.ui.history_scroll.scroll_to_item_strict(last, ScrollStrategy::Bottom);
+                cx.notify();
+            })?;
+            self.until("the next page loaded by scrolling to the bottom", |tab| {
+                !tab.loading_page && (tab.ui.history.len() > loaded || !tab.ui.has_more)
+            })
+            .await?;
+        }
+        self.tab.update(self.cx, |tab, _, cx| {
+            let last = paging::items(&tab.ui) - 1;
+            tab.ui.history_scroll.scroll_to_item_strict(last, ScrollStrategy::Bottom);
+            cx.notify();
+        })?;
+        let ending = format!("Start of history · {} commits", paging::grouped(total));
+        if ending != "Start of history · 1,230 commits" {
+            return Err(format!("The count reads {ending}").into());
+        }
+        self.until("every commit loaded and the last row marking the start of history", |tab| {
+            !tab.ui.has_more
+                && tab.ui.history.iter().map(|row| row.oid.as_str()).eq(order.iter().map(String::as_str))
+                && paging::tail(&tab.ui).as_deref() == Some(ending.as_str())
+                && paging::items(&tab.ui) == tab.ui.history_items() + 1
+                && row_in_view(tab, paging::items(&tab.ui) - 1)
+        })
+        .await?;
+        self.pass();
+        Ok(())
     }
 
     async fn jump_down_to_a_tag(&mut self, dir: &Path) -> Result<()> {

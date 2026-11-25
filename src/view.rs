@@ -715,6 +715,7 @@ pub struct Ui {
     pub(crate) reveal: crate::reveal::State,
     pub(crate) graph_view: crate::graph_view::GraphView,
     pub has_more: bool,
+    pub(crate) history_complete: bool,
     pub input: Entity<CommitInput>,
     pub description: Entity<CommitInput>,
     pub operation_message: Entity<CommitInput>,
@@ -810,6 +811,7 @@ impl Ui {
             reveal: Default::default(),
             graph_view: Default::default(),
             has_more: false,
+            history_complete: false,
             input,
             description,
             operation_message,
@@ -1647,6 +1649,31 @@ fn history_metadata(author: &str, date: &str, time: i64, oid: &str, now: i64, wi
         })
 }
 
+fn history_tail(ui: &Ui, graph_width: Pixels) -> gpui::Stateful<Div> {
+    div()
+        .id("history-tail")
+        .h(px(ROW))
+        .w_full()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .pl(px(2.))
+        .child(
+            div()
+                .w(graph_width)
+                .flex_shrink_0()
+                .pl(px(graph::LEFT - 7.))
+                .when(ui.has_more, |d| d.child(kit::spinner("history-loading"))),
+        )
+        .child(
+            div()
+                .text_size(px(TEXT_SMALL))
+                .text_color(rgb(TEXT_3))
+                .whitespace_nowrap()
+                .child(crate::paging::tail(ui).unwrap_or_default()),
+        )
+}
+
 fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
     let ui = app.ui();
     let wide = centre_width >= WIDE_CENTRE;
@@ -1675,7 +1702,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
         });
     let list = uniform_list(
         "history",
-        ui.history_items(),
+        crate::paging::items(ui),
         cx.processor(move |app, range: Range<usize>, window, cx| {
             let size = app.ui().history.len();
             if app.ui().has_more
@@ -1688,6 +1715,9 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
             let ui = app.ui();
             range
                 .map(|index| {
+                    if index >= ui.history_items() {
+                        return history_tail(ui, graph_width);
+                    }
                     let i = match ui.stash.item(index) {
                         HistoryItem::Commit(i) => i,
                         HistoryItem::Stash { stash, base, first_at_base } => {
