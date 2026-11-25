@@ -8,8 +8,10 @@ use crate::{
 };
 use gpui::{point, px};
 use std::{
+    collections::HashSet,
     io::{self, BufRead, BufReader, Read},
     process::{Child, ChildStdout, Command, Output, Stdio},
+    sync::atomic::AtomicBool,
     thread::{self, JoinHandle},
     time::{Instant, SystemTime},
 };
@@ -158,6 +160,7 @@ pub(crate) fn read(
     skip: usize,
     rows: usize,
     wanted: &[String],
+    anchor: Option<&str>,
 ) -> (Option<HistoryStream>, Result<(Vec<Commit>, bool), String>) {
     let mut stream = match stream {
         Some(stream) => stream,
@@ -174,6 +177,16 @@ pub(crate) fn read(
         let found = |page: &[Commit]| wanted.iter().all(|oid| page.iter().any(|row| &row.oid == oid));
         if stream.more() && !found(&page) {
             page.extend(stream.next(PAGE)?);
+        }
+        if let Some(oid) = anchor.filter(|oid| stream.more() && !page.iter().any(|row| row.oid == *oid)) {
+            let sought = HashSet::from([oid.to_owned()]);
+            let positions = repo.positions(&view.history_args(), &sought, &AtomicBool::new(false));
+            if let Some(&position) = positions.ok().as_ref().and_then(|positions| positions.get(oid)) {
+                let through = position + 1 + PAGE;
+                if through > stream.loaded() {
+                    page.extend(stream.next(through - stream.loaded())?);
+                }
+            }
         }
         Ok(page)
     };
@@ -203,6 +216,7 @@ pub(crate) struct Place {
 pub(crate) struct Reload {
     pub(crate) rows: usize,
     pub(crate) wanted: Vec<String>,
+    pub(crate) anchor: Option<String>,
     pub(crate) place: Option<Place>,
 }
 
@@ -262,16 +276,17 @@ pub(crate) fn reload(ui: &Ui) -> Reload {
             wanted.push(oid.clone());
         }
     }
-    match place.as_ref().map(|place| &place.key) {
-        Some(Key::Commit(oid)) => wanted.push(oid.clone()),
-        Some(Key::Stash(oid)) => wanted.extend(ui.stash.base_of(oid).map(str::to_owned)),
-        None => {}
-    }
+    let anchor = match place.as_ref().map(|place| &place.key) {
+        Some(Key::Commit(oid)) => Some(oid.clone()),
+        Some(Key::Stash(oid)) => ui.stash.base_of(oid).map(str::to_owned),
+        None => None,
+    };
+    wanted.extend(anchor.clone());
     wanted.dedup();
     let bottom = (height > 0. && items > 0)
         .then(|| (((top.max(0.) + height) / ROW).ceil() as usize).saturating_sub(1).min(items - 1));
     let deepest = [selected, place.as_ref().map(|place| place.item), bottom].into_iter().flatten().max();
-    Reload { rows: rows(ui.history.len(), deepest), wanted, place }
+    Reload { rows: rows(ui.history.len(), deepest), wanted, anchor, place }
 }
 
 pub(crate) fn restore(ui: &Ui, place: Option<Place>) {
@@ -423,20 +438,38 @@ mod tests {
         commit(&f, "a.txt", "Root");
         linear(&f, PAGE + 20);
         let wanted = String::from_utf8(f.git(&["rev-parse", &format!("HEAD~{}", PAGE)])).unwrap().trim().to_owned();
-        let (stream, page) = read(&f.repo, &GraphView::default(), None, 0, PAGE, &[wanted.clone()]);
+        let (stream, page) = read(&f.repo, &GraphView::default(), None, 0, PAGE, &[wanted.clone()], None);
         let (page, more) = page.unwrap();
         assert_eq!(page.len(), PAGE + 21);
         assert!(!more);
         assert!(page.iter().any(|row| row.oid == wanted));
         assert_eq!(stream.unwrap().loaded(), PAGE + 21);
-        let (stream, first) = read(&f.repo, &GraphView::default(), None, 0, PAGE, &[]);
+        let (stream, first) = read(&f.repo, &GraphView::default(), None, 0, PAGE, &[], None);
         assert_eq!(first.unwrap().0.len(), PAGE);
-        let (_, rest) = read(&f.repo, &GraphView::default(), None, PAGE, 5, &[]);
+        let (_, rest) = read(&f.repo, &GraphView::default(), None, PAGE, 5, &[], None);
         let (rest, more) = rest.unwrap();
         assert_eq!(rest.len(), 5);
         assert!(more);
-        let (_, next) = read(&f.repo, &GraphView::default(), stream, PAGE, 5, &[]);
+        let (_, next) = read(&f.repo, &GraphView::default(), stream, PAGE, 5, &[], None);
         assert_eq!(next.unwrap().0, rest);
+    }
+
+    #[test]
+    fn a_reload_finds_the_kept_place_however_far_new_commits_pushed_it_down() {
+        let f = Fixture::new();
+        commit(&f, "a.txt", "Root");
+        linear(&f, PAGE * 4);
+        let place = String::from_utf8(f.git(&["rev-parse", &format!("HEAD~{}", PAGE * 3)])).unwrap().trim().to_owned();
+        let (_, page) = read(&f.repo, &GraphView::default(), None, 0, PAGE, &[place.clone()], Some(&place));
+        let (page, more) = page.unwrap();
+        assert_eq!(page.iter().position(|row| row.oid == place), Some(PAGE * 3));
+        assert_eq!(page.len(), PAGE * 4 + 1);
+        assert!(!more);
+        let gone = "0".repeat(40);
+        let (_, page) = read(&f.repo, &GraphView::default(), None, 0, PAGE, &[gone.clone()], Some(&gone));
+        let (page, more) = page.unwrap();
+        assert_eq!(page.len(), PAGE * 2);
+        assert!(more);
     }
 
     #[test]
@@ -444,7 +477,7 @@ mod tests {
         let f = Fixture::new();
         commit(&f, "a.txt", "Root");
         std::fs::remove_dir_all(f.repo.common_dir().join("objects")).unwrap();
-        let (stream, result) = read(&f.repo, &GraphView::default(), None, 0, 5, &[]);
+        let (stream, result) = read(&f.repo, &GraphView::default(), None, 0, 5, &[], None);
         assert!(stream.is_none());
         assert!(result.is_err());
     }

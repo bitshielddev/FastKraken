@@ -387,17 +387,17 @@ impl Tab {
         let ticket = self.history_ticket;
         let epoch = self.epoch;
         let view = self.ui.graph_view.clone();
-        let (stream, skip, rows, kept, place) = match reload {
+        let (stream, skip, rows, kept, anchor, place) = match reload {
             Some(reload) => {
                 self.stream = None;
-                (None, 0, reload.rows, reload.wanted, reload.place)
+                (None, 0, reload.rows, reload.wanted, reload.anchor, reload.place)
             }
-            None => (self.stream.take(), self.ui.history.len(), wanted, Vec::new(), None),
+            None => (self.stream.take(), self.ui.history.len(), wanted, Vec::new(), None, None),
         };
         self.loading_page = true;
         Self::work(
             cx,
-            move || paging::read(&repo, &view, stream, skip, rows, &kept),
+            move || paging::read(&repo, &view, stream, skip, rows, &kept, anchor.as_deref()),
             move |tab, (stream, result), cx| {
                 if tab.epoch != epoch || ticket != tab.history_ticket {
                     return;
