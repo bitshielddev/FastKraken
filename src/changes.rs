@@ -48,10 +48,9 @@ impl State {
     }
 
     fn ask(&mut self, oids: Vec<String>) {
-        for oid in oids {
-            if self.asked.insert(oid.clone()) {
-                self.queue.push_back(oid);
-            }
+        let fresh: Vec<String> = oids.into_iter().filter(|oid| self.asked.insert(oid.clone())).collect();
+        for oid in fresh.into_iter().rev() {
+            self.queue.push_front(oid);
         }
     }
 
@@ -208,5 +207,18 @@ mod tests {
         assert_eq!(state.next_batch(), oids[BATCH..].to_vec());
         assert!(state.next_batch().is_empty());
         assert_eq!(state.unknown(["f".repeat(40).as_str()]), ["f".repeat(40)]);
+    }
+
+    #[test]
+    fn rows_on_screen_now_are_measured_before_rows_scrolled_past() {
+        let mut state = State::default();
+        let passed: Vec<String> = (0..BATCH).map(|n| format!("{n:040x}")).collect();
+        state.ask(passed.clone());
+        let now: Vec<String> = ["d", "e"].iter().map(|c| c.repeat(40)).collect();
+        state.ask(now.clone());
+        let first = state.next_batch();
+        assert_eq!(first[..2], now[..]);
+        assert_eq!(first[2..], passed[..BATCH - 2]);
+        assert_eq!(state.next_batch(), passed[BATCH - 2..]);
     }
 }

@@ -2213,6 +2213,9 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     HistoryItem::Stash { .. } => None,
                 })
             };
+            if let Some(oid) = ui.highlight.scrolled_away(shown_commits().map(|row| row.oid.as_str())) {
+                cx.defer_in(window, move |app, w, cx| app.dispatch(Action::Highlight(crate::highlight::Action::Leave(oid)), w, cx));
+            }
             let most = if widths.changes > 0. {
                 let wanted = ui.changes.unknown(shown_commits().map(|row| row.oid.as_str()));
                 if !wanted.is_empty() {

@@ -23,6 +23,11 @@ impl State {
         self.chain.is_some()
     }
 
+    pub(crate) fn scrolled_away<'a>(&self, shown: impl IntoIterator<Item = &'a str>) -> Option<String> {
+        let hovered = self.hovered.as_deref()?;
+        (!shown.into_iter().any(|oid| oid == hovered)).then(|| hovered.to_owned())
+    }
+
     pub(crate) fn clear(&mut self) {
         self.ticket += 1;
         self.hovered = None;
@@ -123,5 +128,17 @@ mod tests {
         assert!(!state.fades("f") && !state.showing());
         assert!(super::chain(&history, "gone").is_empty());
         assert_eq!(super::chain(&history, "f"), HashSet::from(["f", "b", "a"].map(String::from)));
+    }
+
+    #[test]
+    fn a_hovered_label_scrolled_out_of_the_list_lets_its_highlight_go() {
+        let mut state = State::default();
+        assert_eq!(state.scrolled_away(["a", "b"]), None);
+        state.hovered = Some("b".into());
+        state.chain = Some(HashSet::from(["b".to_owned()]));
+        assert_eq!(state.scrolled_away(["a", "b", "c"]), None);
+        assert_eq!(state.scrolled_away(["c", "d"]), Some("b".to_owned()));
+        state.clear();
+        assert_eq!(state.scrolled_away(["c", "d"]), None);
     }
 }
