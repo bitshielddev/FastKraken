@@ -546,6 +546,14 @@ mod tests {
     }
 
     #[test]
+    fn a_handle_not_yet_laid_out_shows_no_bar() {
+        let fresh = ScrollHandle::new();
+        assert!(!Extent::of(&fresh, Axis::Horizontal).scrollable());
+        assert!(!Extent::of(&fresh, Axis::Vertical).scrollable());
+        assert_eq!(thumb(Extent::of(&fresh, Axis::Horizontal), 400.), None);
+    }
+
+    #[test]
     fn the_strip_overlays_the_edge_of_the_area() {
         let area = area();
         let vertical = strip(area, Axis::Vertical);

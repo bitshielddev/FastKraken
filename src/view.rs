@@ -804,7 +804,7 @@ impl Ui {
     pub fn replace_diff(&mut self, lines: Vec<DiffLine>, layout: DiffLayout) {
         self.diff = lines;
         self.diff_layout = layout;
-        self.split_pan.set_offset(Point::default());
+        self.split_pan = ScrollHandle::new();
         self.diff_scroll = UniformListScrollHandle::new();
     }
 
