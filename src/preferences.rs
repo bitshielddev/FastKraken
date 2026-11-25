@@ -129,6 +129,10 @@ impl State {
         self.open && self.section == Section::Git
     }
 
+    pub(crate) fn shows_diff(&self) -> bool {
+        self.open && self.section == Section::Diff
+    }
+
     pub(crate) fn shows_tools(&self) -> bool {
         self.open && self.section == Section::Tools
     }
@@ -147,6 +151,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             let shown = settings::settings(cx).default_branch();
             state.branch.update(cx, |field, cx| field.set_text(&shown, cx));
             state.filter.update(cx, |field, cx| field.clear(cx));
+            crate::diff_text::opened(tab, cx);
             tab.ui.menu = None;
             show(tab, section, cx);
             view::focus(&tab.ui, window);
@@ -216,6 +221,7 @@ fn show(tab: &mut Tab, section: Section, cx: &mut Context<Tab>) {
             crate::publish::show_account(tab, cx);
         }
         Section::Tools => crate::tools::start(false, cx),
+        Section::Diff => crate::diff_text::look(tab, cx),
         Section::Git => {
             crate::identity::read_global(tab, cx);
             if tab.ui.preferences.git.is_none() {
@@ -352,7 +358,7 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 Section::Accounts => accounts(app, cx),
                 Section::Git => git(ui, cx),
                 Section::Commit => crate::commit_options::preferences(cx),
-                Section::Diff => diff(cx),
+                Section::Diff => crate::diff_text::preferences(ui, cx),
                 Section::Tools => crate::tools::preferences(ui, cx),
                 _ => repository(ui, cx),
             };
@@ -615,17 +621,6 @@ fn git<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
         ))
 }
 
-fn diff<T: Desk>(cx: &mut Context<T>) -> Div {
-    div().flex().flex_col().child(tick(
-        "preferences-colour-code",
-        settings::settings(cx).colour_code,
-        "Colour code by language",
-        "Keywords, strings, comments and other code take colours from the file’s language. Files over 512 KB stay plain.",
-        view::Action::Syntax(crate::syntax::Action::Toggle),
-        cx,
-    ))
-}
-
 fn repository<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     use crate::sync::{Mode as Pull, Strategy};
     let chosen = ui.sync.chosen();
@@ -721,6 +716,7 @@ pub(crate) fn field_focused(ui: &Ui, window: &Window, cx: &App) -> bool {
             && (ui.identity.global_name.focus_handle(cx).is_focused(window)
                 || ui.identity.global_email.focus_handle(cx).is_focused(window)))
         || crate::tools::field_focused(ui, window, cx)
+        || crate::diff_text::field_focused(ui, window, cx)
 }
 
 #[cfg(test)]

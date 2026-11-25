@@ -137,8 +137,9 @@ pub(crate) fn viewport(ui: &Ui) -> Option<(usize, usize)> {
     let state = ui.diff_scroll.0.borrow();
     let base = &state.base_handle;
     let height = f32::from(base.bounds().size.height);
-    let top = (-f32::from(base.offset().y) / DIFF_LINE).max(0.).round() as usize;
-    let shown = (height / DIFF_LINE).floor().max(1.) as usize;
+    let line = ui.diff_text.face.line();
+    let top = (-f32::from(base.offset().y) / line).max(0.).round() as usize;
+    let shown = (height / line).floor().max(1.) as usize;
     (height > 0.).then_some((top, shown))
 }
 

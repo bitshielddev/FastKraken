@@ -91,6 +91,10 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
         "fileview" => Some(Action::FileView(crate::file_view::Action::Show(crate::file_view::View::File))),
         "split" => Some(Action::DiffMode(crate::view::DiffMode::Split)),
         "unified" => Some(Action::DiffMode(crate::view::DiffMode::Unified)),
+        "fontsize" => Some(Action::DiffText(crate::diff_text::Action::Size(index as u32))),
+        "tabwidth" => Some(Action::DiffText(crate::diff_text::Action::Tab(index as u32))),
+        "linenumbers" => Some(Action::DiffText(crate::diff_text::Action::ToggleNumbers)),
+        "difffont" => Some(Action::DiffText(crate::diff_text::Action::Font(argument.to_owned()))),
         "branches" => Some(Action::Refs(refs::Action::ToggleList)),
         "find" => {
             tab.ui.refs.find.update(cx, |input, cx| input.set_text(argument, cx));

@@ -81,6 +81,10 @@ impl Fit {
         self.family = Some(MONO.into());
         self
     }
+    pub fn family(mut self, family: SharedString) -> Self {
+        self.family = Some(family);
+        self
+    }
     pub fn cut(mut self, cut: Cut) -> Self {
         self.cut = cut;
         self

@@ -8,11 +8,11 @@ mod graph;
 use crate::{kit, navigate::Action as Move, stash::HistoryItem, theme::*};
 pub use commit_input::CommitInput;
 pub(crate) use diff_view::{
-    Change as DiffChange, Columns as DiffColumns, Layout as DiffLayout, Mode as DiffMode, SPLIT_GUTTER as DIFF_SPLIT_GUTTER,
-    UNIFIED_GUTTER as DIFF_UNIFIED_GUTTER, WHITESPACE_HIDDEN, Wrapped as DiffWrapped, bar_texts as diff_bar_texts,
+    Change as DiffChange, Columns as DiffColumns, Layout as DiffLayout, Mode as DiffMode, WHITESPACE_HIDDEN,
+    Wrapped as DiffWrapped, bar_texts as diff_bar_texts,
     changes as diff_changes, doc_row as diff_doc_row, highlights as diff_highlights, layered as diff_layered,
     part as diff_part, part_at as diff_part_at, piece as diff_piece, placeholder_text as diff_placeholder,
-    rows as diff_rows, visual_of as diff_visual_of, width_in_cells as diff_cells,
+    rows as diff_rows, shaped as diff_shaped, visual_of as diff_visual_of, width_in_cells as diff_cells,
 };
 use crate::diff_doc::{DiffDoc, PatchState};
 use gpui::{
@@ -558,6 +558,7 @@ pub enum Action {
     Text(crate::diff_select::Action),
     Syntax(crate::syntax::Action),
     DiffOptions(crate::diff_options::Action),
+    DiffText(crate::diff_text::Action),
     Find(crate::find::Action),
     Images(crate::image_diff::Action),
     FileView(crate::file_view::Action),
@@ -704,6 +705,7 @@ pub struct Ui {
     pub(crate) commit_options: crate::commit_options::State,
     pub(crate) syntax: crate::syntax::State,
     pub(crate) diff_options: crate::diff_options::State,
+    pub(crate) diff_text: crate::diff_text::State,
     pub(crate) find: crate::find::State,
     pub(crate) images: crate::image_diff::State,
     pub(crate) file_view: crate::file_view::State,
@@ -796,6 +798,7 @@ impl Ui {
             commit_options: crate::commit_options::State::new(cx),
             syntax: crate::syntax::State::new(settings.colour_code),
             diff_options: crate::diff_options::State::new(&settings),
+            diff_text: crate::diff_text::State::new(cx),
             find: crate::find::State::new(cx),
             images: Default::default(),
             file_view: Default::default(),
@@ -879,6 +882,16 @@ impl Ui {
 
     pub(crate) fn split_pan(&self) -> &ScrollHandle {
         &self.split_pan
+    }
+
+    pub(crate) fn restyle(&mut self, face: crate::diff_text::Face) {
+        let retab = face.tab != self.diff_text.face.tab;
+        self.diff_text.face = face;
+        if retab {
+            self.diff_layout = DiffLayout::new(&self.diff, self.diff_text.face.tab);
+        }
+        self.diff_options.measured = px(0.);
+        self.rewrap();
     }
 
     pub(crate) fn rewrap(&mut self) {

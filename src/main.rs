@@ -17,6 +17,7 @@ mod credentials;
 mod diff_doc;
 mod diff_options;
 mod diff_select;
+mod diff_text;
 mod discard;
 mod environment;
 mod explain;
@@ -608,6 +609,7 @@ impl Tab {
         let epoch = self.epoch;
         let from = self.ui.renamed_from(&selection, commit_path.as_deref());
         let colour = settings::settings(cx).colour_code;
+        let tab_width = self.ui.diff_text.face.tab;
         self.ui.syntax.on = colour;
         let owner = image_diff::owner(&selection, commit_path.clone());
         let whole = file_view::wanted(&self.ui, &selection, commit_path.as_deref());
@@ -660,7 +662,7 @@ impl Tab {
                     let image = image_diff::wanted(&doc, &selection, &repo.root);
                     (doc, image, syntax::working_root(&repo, &selection))
                 };
-                let layout = DiffLayout::new(&doc);
+                let layout = DiffLayout::new(&doc, tab_width);
                 let rest = if colour {
                     let wanted = syntax::requests(&doc, working.as_deref());
                     syntax::from_cache(&mut doc, wanted)
@@ -1542,6 +1544,7 @@ impl Tab {
             Action::Text(action) => diff_select::dispatch(self, action, window, cx),
             Action::Syntax(action) => syntax::dispatch(self, action, window, cx),
             Action::DiffOptions(action) => diff_options::dispatch(self, action, window, cx),
+            Action::DiffText(action) => diff_text::dispatch(self, action, window, cx),
             Action::Find(action) => find::dispatch(self, action, window, cx),
             Action::Images(action) => image_diff::dispatch(self, action, window, cx),
             Action::FileView(action) => file_view::dispatch(self, action, window, cx),

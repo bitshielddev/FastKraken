@@ -54,6 +54,13 @@ pub(crate) struct Settings {
     pub(crate) whole_file: bool,
     pub(crate) ignore_whitespace: bool,
     pub(crate) wrap_lines: bool,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) diff_font: Option<String>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) diff_font_size: Option<u32>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) tab_width: Option<u32>,
+    pub(crate) line_numbers: bool,
 }
 
 impl Settings {
@@ -97,6 +104,10 @@ impl Default for Settings {
             whole_file: false,
             ignore_whitespace: false,
             wrap_lines: false,
+            diff_font: None,
+            diff_font_size: None,
+            tab_width: None,
+            line_numbers: true,
         }
     }
 }
@@ -599,6 +610,10 @@ mod tests {
             whole_file: true,
             ignore_whitespace: true,
             wrap_lines: true,
+            diff_font: Some("Monaco".to_owned()),
+            diff_font_size: Some(15),
+            tab_width: Some(2),
+            line_numbers: false,
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();
@@ -689,6 +704,19 @@ mod tests {
         assert_eq!(read(r#"{"clone_folder": [47, 116]}"#).clone_folder(), Some(PathBuf::from("/t")));
         assert_eq!(read(r#"{"clone_folder": "/t"}"#).clone_folder(), None);
         assert!(!read(r#"{"reopen_last": false}"#).reopen_last);
+    }
+
+    #[test]
+    fn diff_text_settings_read_back_or_fall_back_to_the_defaults() {
+        let read = |json: &str| serde_json::from_str::<Settings>(json).unwrap();
+        let older = read(r#"{"wrap_lines": true}"#);
+        assert_eq!((older.diff_font, older.diff_font_size, older.tab_width), (None, None, None));
+        assert!(older.line_numbers);
+        let chosen = read(r#"{"diff_font": "SF Mono", "diff_font_size": 14, "tab_width": 8, "line_numbers": false}"#);
+        assert_eq!(chosen.diff_font.as_deref(), Some("SF Mono"));
+        assert_eq!((chosen.diff_font_size, chosen.tab_width, chosen.line_numbers), (Some(14), Some(8), false));
+        let odd = read(r#"{"diff_font": 7, "diff_font_size": "huge", "tab_width": -2}"#);
+        assert_eq!((odd.diff_font, odd.diff_font_size, odd.tab_width), (None, None, None));
     }
 
     #[test]

@@ -327,6 +327,7 @@ pub(crate) fn mirror(tab: &mut Tab, cx: &mut Context<Tab>) {
         crate::syntax::follow(tab, chosen.colour_code, cx);
     }
     crate::diff_options::follow(tab, &chosen, cx);
+    crate::diff_text::follow(tab, &chosen);
 }
 
 

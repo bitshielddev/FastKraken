@@ -479,14 +479,16 @@ pub(crate) fn toggle<T: view::Desk>(ui: &Ui, cx: &Context<T>) -> Div {
         .child(segment("show-file", "File", "Show the whole file at this version", View::File))
 }
 
-pub(crate) fn gutter_mark(mark: Option<Touch>, first_part: bool) -> Div {
-    let cell = div().w(px(16.)).h_full().flex_shrink_0().relative();
+pub(crate) fn gutter_mark(mark: Option<Touch>, first_part: bool, width: f32) -> Div {
+    let cell = div().w(px(width)).h_full().flex_shrink_0().relative();
     let Some(mark) = mark.filter(|mark| first_part || *mark != Touch::Removed) else { return cell };
     match mark {
-        Touch::Removed => cell.child(div().absolute().top_0().left(px(3.)).w(px(10.)).h(px(2.)).bg(rgb(DELETED))),
+        Touch::Removed => {
+            cell.child(div().absolute().top_0().left(px(((width - 10.) / 2.).floor())).w(px(10.)).h(px(2.)).bg(rgb(DELETED)))
+        }
         Touch::Added | Touch::Changed => {
             let ink = if mark == Touch::Added { ADDED } else { MODIFIED };
-            cell.child(div().absolute().top_0().bottom_0().left(px(6.)).w(px(3.)).bg(rgb(ink)))
+            cell.child(div().absolute().top_0().bottom_0().left(px(((width - 3.) / 2.).floor())).w(px(3.)).bg(rgb(ink)))
         }
     }
 }

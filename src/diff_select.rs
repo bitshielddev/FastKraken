@@ -3,7 +3,6 @@ use crate::{
     commands::{Availability, Command, Group, Target},
     diff_doc::{DiffDoc, Kind},
     notice::Notice,
-    theme::*,
     view::{self, Desk, DiffMode, Selection, Tone, Ui},
 };
 use gpui::{
@@ -463,7 +462,7 @@ fn step(tab: &mut Tab, cx: &mut Context<Tab>) -> bool {
         return false;
     };
     let rows = view::diff_rows(ui);
-    let Some(visual) = scrolled(&ui.diff_scroll, edge, rows) else { return true };
+    let Some(visual) = scrolled(&ui.diff_scroll, edge, rows, ui.diff_text.face.line()) else { return true };
     let Some(row) = view::diff_doc_row(ui, visual, column) else { return true };
     let piece = view::diff_piece(ui, row, view::diff_part(ui, visual));
     let at = if edge == Edge::Above { piece.start } else { piece.end };
@@ -473,7 +472,7 @@ fn step(tab: &mut Tab, cx: &mut Context<Tab>) -> bool {
     true
 }
 
-fn scrolled(handle: &UniformListScrollHandle, edge: Edge, rows: usize) -> Option<usize> {
+fn scrolled(handle: &UniformListScrollHandle, edge: Edge, rows: usize, line: f32) -> Option<usize> {
     let state = handle.0.borrow();
     let base = &state.base_handle;
     let height = f32::from(base.bounds().size.height);
@@ -483,19 +482,19 @@ fn scrolled(handle: &UniformListScrollHandle, edge: Edge, rows: usize) -> Option
     let bottom = -base.max_offset().height;
     let mut offset = base.offset();
     offset.y = match edge {
-        Edge::Above => (offset.y + px(DIFF_LINE)).min(px(0.)),
-        _ => (offset.y - px(DIFF_LINE)).max(bottom),
+        Edge::Above => (offset.y + px(line)).min(px(0.)),
+        _ => (offset.y - px(line)).max(bottom),
     };
     base.set_offset(offset);
     let top = -f32::from(offset.y);
     let visual = match edge {
-        Edge::Above => (top / DIFF_LINE).floor(),
-        _ => ((top + height) / DIFF_LINE).ceil() - 1.,
+        Edge::Above => (top / line).floor(),
+        _ => ((top + height) / line).ceil() - 1.,
     };
     Some((visual.max(0.) as usize).min(rows - 1))
 }
 
-fn pointed(handle: &UniformListScrollHandle, y: Pixels, rows: usize) -> Option<(usize, Edge)> {
+fn pointed(handle: &UniformListScrollHandle, y: Pixels, rows: usize, line: f32) -> Option<(usize, Edge)> {
     let state = handle.0.borrow();
     let base = &state.base_handle;
     let bounds = base.bounds();
@@ -510,7 +509,7 @@ fn pointed(handle: &UniformListScrollHandle, y: Pixels, rows: usize) -> Option<(
         Edge::Inside
     };
     let inside = y.max(bounds.top()).min(bounds.bottom() - px(1.));
-    let visual = f32::from(inside - bounds.top() - base.offset().y) / DIFF_LINE;
+    let visual = f32::from(inside - bounds.top() - base.offset().y) / line;
     Some(((visual.max(0.) as usize).min(rows - 1), edge))
 }
 
@@ -527,13 +526,14 @@ pub(crate) fn hit(ui: &Ui, window: &Window, row: usize, part: usize, column: Col
         return boundary(code, piece.start);
     }
     let x = x - origin(ui, column);
-    let mut run = window.text_style().to_run(shown.len());
-    run.font.family = MONO.into();
-    let shaped = window.text_system().shape_line(shown.to_owned().into(), px(TEXT_SMALL), &[run], None);
-    let at = match unit {
-        Unit::Character => shaped.closest_index_for_x(x),
-        Unit::Word | Unit::Line => shaped.index_for_x(x).unwrap_or(shown.len()),
+    let face = &ui.diff_text.face;
+    let drawn = crate::diff_text::expanded(shown, face.tab);
+    let shaped = view::diff_shaped(window, face, &drawn);
+    let (at, nearest) = match unit {
+        Unit::Character => (shaped.closest_index_for_x(x), true),
+        Unit::Word | Unit::Line => (shaped.index_for_x(x).unwrap_or(drawn.len()), false),
     };
+    let at = crate::diff_text::stored_at(shown, at, face.tab, nearest);
     boundary(code, piece.start + at)
 }
 
@@ -574,7 +574,9 @@ pub(crate) fn moved<T: Desk>(app: &mut T, event: &MouseMoveEvent, window: &mut W
         return;
     }
     let Some(column) = ui.text.chosen.as_ref().map(|chosen| chosen.column) else { return };
-    let Some((visual, edge)) = pointed(&ui.diff_scroll, event.position.y, view::diff_rows(ui)) else { return };
+    let Some((visual, edge)) = pointed(&ui.diff_scroll, event.position.y, view::diff_rows(ui), ui.diff_text.face.line()) else {
+        return;
+    };
     let Some(row) = view::diff_doc_row(ui, visual, column) else { return };
     let at = hit(ui, window, row, view::diff_part(ui, visual), column, event.position.x, Unit::Character);
     app.dispatch(view::Action::Text(Action::DragTo { spot: Spot { row, at }, edge }), window, cx);

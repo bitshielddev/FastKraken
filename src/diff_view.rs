@@ -2,6 +2,7 @@ use super::{Action, Desk, Discard, Selection, Ui};
 use crate::{
     diff_doc::{self, Blank, DiffDoc, Kind, Line, PatchState, Run, runs},
     diff_select::{self, Column},
+    diff_text::{self, Face},
     kit,
     syntax::Token,
     theme::*,
@@ -49,19 +50,19 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
-    pub(crate) fn new(doc: &DiffDoc) -> Self {
+    pub(crate) fn new(doc: &DiffDoc, tab: usize) -> Self {
         let widest_unified = doc
             .lines
             .iter()
             .enumerate()
-            .max_by_key(|(_, row)| doc.text(row).chars().count() + if row.kind.is_code() { 13 } else { 34 })
+            .max_by_key(|(_, row)| width_in_cells(doc.text(row), tab) + if row.kind.is_code() { 13 } else { 34 })
             .map(|(index, _)| index);
         let widest_code = doc
             .lines
             .iter()
             .enumerate()
             .filter(|(_, row)| row.kind.is_code())
-            .max_by_key(|(_, row)| doc.code(row).chars().count())
+            .max_by_key(|(_, row)| width_in_cells(doc.code(row), tab))
             .map(|(index, _)| index);
         let mut split = Vec::with_capacity(doc.lines.len());
         let mut changes = Vec::new();
@@ -115,31 +116,30 @@ pub(crate) struct Columns {
     pub(crate) tab: usize,
 }
 
-pub(crate) const UNIFIED_GUTTER: f32 = 96.;
-pub(crate) const SPLIT_GUTTER: f32 = 50.;
 const WRAP_MARGIN: f32 = 14.;
 const NARROWEST: usize = 8;
 
 impl Columns {
-    pub(crate) fn fitting(width: Pixels, cell: Pixels, tab: Pixels) -> Self {
+    pub(crate) fn fitting(width: Pixels, cell: Pixels, face: &Face) -> Self {
         let cell = f32::from(cell).max(1.);
         let width = f32::from(width);
         let fit = |room: f32| ((room / cell).floor().max(0.) as usize).max(NARROWEST);
         Self {
-            unified: fit(width - UNIFIED_GUTTER - WRAP_MARGIN),
-            split: fit((width - 1.) / 2. - SPLIT_GUTTER - WRAP_MARGIN),
-            tab: ((f32::from(tab) / cell).ceil() as usize).max(1),
+            unified: fit(width - face.unified_gutter() - WRAP_MARGIN),
+            split: fit((width - 1.) / 2. - face.split_gutter() - WRAP_MARGIN),
+            tab: face.tab.max(1),
         }
     }
 }
 
-pub(crate) fn measure(window: &Window, width: Pixels) -> Columns {
-    let shaped = |text: &'static str| {
-        let mut run = window.text_style().to_run(text.len());
-        run.font.family = MONO.into();
-        window.text_system().shape_line(text.into(), px(TEXT_SMALL), &[run], None).width
-    };
-    Columns::fitting(width, shaped("0"), shaped("\t"))
+pub(crate) fn shaped(window: &Window, face: &Face, text: &str) -> gpui::ShapedLine {
+    let mut run = window.text_style().to_run(text.len());
+    run.font.family = face.family.clone();
+    window.text_system().shape_line(text.to_owned().into(), face.text(), &[run], None)
+}
+
+pub(crate) fn measure(window: &Window, width: Pixels, face: &Face) -> Columns {
+    Columns::fitting(width, shaped(window, face, "0").width, face)
 }
 
 #[derive(Debug, Default)]
@@ -526,17 +526,11 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     };
     let split = mode == Mode::Split;
     let wrapping = ui.diff_options.wrapped.is_some();
+    let face = ui.diff_text.face.clone();
     let code_width = if split && !wrapping {
         layout.widest_code.and_then(|row| doc.lines.get(row)).map(|row| {
-            let text = doc.code(row);
-            let mut run = window.text_style().to_run(text.len());
-            run.font.family = MONO.into();
-            window
-                .text_system()
-                .shape_line(text.to_owned().into(), px(TEXT_SMALL), &[run], None)
-                .width
-                .ceil()
-                + px(8.)
+            let text = diff_text::expanded(doc.code(row), face.tab);
+            shaped(window, &face, &text).width.ceil() + px(8.)
         })
     } else {
         None
@@ -549,6 +543,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         count,
         cx.processor(move |app, rows: Range<usize>, _, cx| {
             let ui = app.ui();
+            let face = &ui.diff_text.face;
             let editable = ui.can_edit_index();
             let layout = &ui.diff_layout;
             let doc = &ui.diff;
@@ -561,7 +556,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                             SplitRow::Sides { old, new } => {
                                 let at = new.or(*old).and_then(|row| doc.lines.get(row)).map_or(0, |row| row.at);
                                 return Some(line_menu(
-                                    base_row()
+                                    base_row(face)
                                         .child(split_cell(ui, index, *old, true, code_width, part, cx))
                                         .child(split_divider())
                                         .child(split_cell(ui, index, *new, false, code_width, part, cx)),
@@ -578,6 +573,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                     let first = part == 0;
                     Some(match row.kind {
                         Kind::Hunk => hunk_row(
+                            face,
                             text,
                             row.hunk.filter(|_| doc.stageable && !whole_file),
                             side,
@@ -588,30 +584,34 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                         ),
                         Kind::File => {
                             let path = text.rsplit_once(" b/").map_or(text, |(_, path)| path);
-                            base_row()
+                            base_row(face)
                                 .pl_3()
                                 .bg(rgb(PANEL))
                                 .border_b_1()
                                 .border_color(rgb(LINE))
                                 .child(kit::fit(path.to_owned()).size(12.5).weight(FontWeight::SEMIBOLD))
                         }
-                        Kind::Note | Kind::NoNewline => base_row()
-                            .pl(if split { px(12.) } else { px(96.) })
+                        Kind::Note | Kind::NoNewline => base_row(face)
+                            .pl(if split { px(12.) } else { px(face.unified_gutter()) })
                             .child(note(text)),
                         _ => line_menu(
-                            base_row()
+                            base_row(face)
                                 .when_some(line_background(row.kind), |d, bg| d.bg(rgb(bg)))
                                 .child(crate::lines::gutter(
                                     ui,
                                     item,
                                     match doc.file.as_deref() {
                                         Some(shown) => gutter_cells()
-                                            .child(number(row.new.filter(|_| first), 80.))
-                                            .child(crate::file_view::gutter_mark(shown.mark(item), first)),
+                                            .when(face.numbers, |d| {
+                                                d.child(number(face, row.new.filter(|_| first), face.number(false) * 2.))
+                                            })
+                                            .child(crate::file_view::gutter_mark(shown.mark(item), first, face.marker())),
                                         None => gutter_cells()
-                                            .child(number(row.old.filter(|_| first), 40.))
-                                            .child(number(row.new.filter(|_| first), 40.))
-                                            .child(marker(if first { row.kind } else { Kind::Context })),
+                                            .when(face.numbers, |d| {
+                                                d.child(number(face, row.old.filter(|_| first), face.number(false)))
+                                                    .child(number(face, row.new.filter(|_| first), face.number(false)))
+                                            })
+                                            .child(marker(face, if first { row.kind } else { Kind::Context })),
                                     },
                                     cx,
                                 ))
@@ -647,6 +647,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     }
     let marks = showing_marks(ui, listing_history);
     let measured = ui.diff_options.measured;
+    let face_measured = ui.diff_text.face.clone();
     let desk = cx.entity().downgrade();
     let bars = texts.then(|| bars(ui)).unwrap_or_default();
     let placeholder = (texts && doc.lines.is_empty() && doc.state != PatchState::Truncated)
@@ -685,7 +686,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                     if width == measured || width <= px(0.) {
                         return;
                     }
-                    let columns = measure(window, width);
+                    let columns = measure(window, width, &face_measured);
                     let _ = desk.update(cx, |app, cx| {
                         if crate::diff_options::resized(app.ui_mut(), width, columns) {
                             cx.notify();
@@ -919,8 +920,8 @@ fn line_menu<T: Desk>(row: Div, at: u32, rows: [Option<usize>; 2], cx: &Context<
     )
 }
 
-fn base_row() -> Div {
-    div().h(px(DIFF_LINE)).w_full().flex().items_center()
+fn base_row(face: &Face) -> Div {
+    div().h(px(face.line())).w_full().flex().items_center()
 }
 
 fn split_divider() -> Div {
@@ -928,7 +929,11 @@ fn split_divider() -> Div {
 }
 
 fn split_headings() -> Div {
-    base_row()
+    div()
+        .h(px(DIFF_LINE))
+        .w_full()
+        .flex()
+        .items_center()
         .flex_shrink_0()
         .bg(rgb(PANEL))
         .border_b_1()
@@ -969,6 +974,7 @@ fn split_cell<T: Desk>(
     }
     let column = Column::split(old);
     let first = part == 0;
+    let face = &ui.diff_text.face;
     let mut text = div()
         .id((if old { "split-old" } else { "split-new" }, index))
         .flex_1()
@@ -984,8 +990,8 @@ fn split_cell<T: Desk>(
             ui,
             at,
             gutter_cells()
-                .child(number(shown.filter(|_| first), 34.))
-                .child(marker(if first { row.kind } else { Kind::Context })),
+                .when(face.numbers, |d| d.child(number(face, shown.filter(|_| first), face.number(true))))
+                .child(marker(face, if first { row.kind } else { Kind::Context })),
             cx,
         ))
         .child(text)
@@ -999,32 +1005,32 @@ fn line_background(kind: Kind) -> Option<u32> {
     }
 }
 
-fn number(number: Option<u32>, width: f32) -> Div {
+fn number(face: &Face, number: Option<u32>, width: f32) -> Div {
     div()
         .w(px(width))
         .flex_shrink_0()
         .pr_2()
         .flex()
         .justify_end()
-        .font_family(MONO)
-        .text_size(px(TEXT_TINY))
+        .font_family(face.family.clone())
+        .text_size(face.small())
         .text_color(rgb(TEXT_OFF))
         .when_some(number, |d, number| d.child(number.to_string()))
 }
 
-fn marker(kind: Kind) -> Div {
+fn marker(face: &Face, kind: Kind) -> Div {
     let (sign, ink) = match kind {
         Kind::Added => ("+", ADDED),
         Kind::Deleted => ("−", DELETED),
         _ => ("", TEXT_3),
     };
     div()
-        .w(px(16.))
+        .w(px(face.marker()))
         .flex_shrink_0()
         .flex()
         .justify_center()
-        .font_family(MONO)
-        .text_size(px(TEXT_SMALL))
+        .font_family(face.family.clone())
+        .text_size(face.text())
         .text_color(rgb(ink))
         .child(sign)
 }
@@ -1089,23 +1095,26 @@ fn clipped(runs: Vec<(Range<usize>, HighlightStyle)>, piece: &Range<usize>) -> V
 }
 
 fn code(ui: &Ui, index: usize, row: &Line, column: Column, part: usize) -> Div {
+    let face = &ui.diff_text.face;
     let code = ui.diff.code(row);
     let (text, highlights) = if ui.diff_options.wrapped.is_some() {
         let piece = piece(ui, index, part);
-        let text = code.get(piece.clone()).unwrap_or_default().to_owned();
+        let text = code.get(piece.clone()).unwrap_or_default();
         (text, clipped(highlights(ui, index, row, column), &piece))
     } else {
-        (code.to_owned(), highlights(ui, index, row, column))
+        (code, highlights(ui, index, row, column))
     };
+    let highlights = diff_text::shown_runs(text, highlights, face.tab);
+    let text = diff_text::expanded(text, face.tab).into_owned();
     div()
         .flex_shrink_0()
         .flex_grow()
         .h_full()
         .flex()
         .items_center()
-        .font_family(MONO)
+        .font_family(face.family.clone())
         .whitespace_nowrap()
-        .text_size(px(TEXT_SMALL))
+        .text_size(face.text())
         .text_color(rgb(TEXT))
         .child(StyledText::new(text).with_highlights(highlights))
 }
@@ -1117,6 +1126,7 @@ fn note(text: &str) -> impl IntoElement {
 }
 
 fn hunk_row<T: Desk>(
+    face: &Face,
     text: &str,
     hunk: Option<usize>,
     side: Option<bool>,
@@ -1129,15 +1139,16 @@ fn hunk_row<T: Desk>(
         .get(2..)
         .and_then(|rest| rest.split_once("@@"))
         .map_or((text, ""), |(range, context)| (range.trim(), context.trim()));
-    let row = base_row()
+    let hunk_size = face.text() - px(0.5);
+    let row = base_row(face)
         .pl_3()
         .pr_2()
         .gap_2()
         .bg(rgb(HUNK))
         .border_b_1()
         .border_color(rgb(LINE))
-        .font_family(MONO)
-        .text_size(px(11.5))
+        .font_family(face.family.clone())
+        .text_size(hunk_size)
         .whitespace_nowrap()
         .child(
             div()
@@ -1146,7 +1157,7 @@ fn hunk_row<T: Desk>(
                 .child(format!("@@ {range} @@")),
         )
         .when(split, |d| {
-            d.child(kit::fit(context.to_owned()).mono().size(11.5).color(TEXT_2).grow())
+            d.child(kit::fit(context.to_owned()).family(face.family.clone()).size(f32::from(hunk_size)).color(TEXT_2).grow())
         })
         .when(!split, |d| {
             d.child(div().text_color(rgb(TEXT_2)).child(context.to_owned()))
@@ -1246,7 +1257,7 @@ mod tests {
             "@@ -1,3 +1,3 @@\n short\n-the old line is rather long\n+the new line is longer than the old one\n end\n",
         );
         let doc = doc(text);
-        let layout = Layout::new(&doc);
+        let layout = Layout::new(&doc, 4);
         let columns = Columns { unified: 12, split: 12, tab: 4 };
         let unified = wrap(&doc, &layout, Mode::Unified, columns);
         assert_eq!(unified.rows, [(0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 2), (3, 3), (4, 0)]);
@@ -1264,9 +1275,12 @@ mod tests {
 
     #[test]
     fn columns_fit_the_code_area_beside_the_gutter() {
-        let columns = Columns::fitting(px(1096.), px(10.), px(28.));
+        let face = Face { tab: 3, ..Face::default() };
+        let columns = Columns::fitting(px(1096.), px(10.), &face);
         assert_eq!(columns, Columns { unified: 98, split: 48, tab: 3 });
-        assert_eq!(Columns::fitting(px(50.), px(10.), px(10.)).unified, NARROWEST);
+        assert_eq!(Columns::fitting(px(50.), px(10.), &face).unified, NARROWEST);
+        let bare = Face { numbers: false, ..face };
+        assert_eq!(Columns::fitting(px(1096.), px(10.), &bare), Columns { unified: 106, split: 51, tab: 3 });
     }
 
     #[test]
@@ -1276,7 +1290,7 @@ mod tests {
             "@@ -4,3 +4,4 @@ section\n here\n-Old hut\n+New hut\n+New trail\n end\n",
             "@@ -20 +21,0 @@\n-deleted only\n",
         ));
-        let layout = Layout::new(&doc);
+        let layout = Layout::new(&doc, 4);
         assert_eq!(layout.split, [
             SplitRow::Shared(0),
             SplitRow::Sides { old: Some(1), new: Some(1) },
@@ -1293,13 +1307,25 @@ mod tests {
     }
 
     #[test]
+    fn the_widest_row_counts_each_tab_at_the_chosen_width() {
+        let doc = doc(concat!(
+            "diff --git a/trail b/trail\nindex 012..345 100644\n--- a/trail\n+++ b/trail\n",
+            "@@ -1,2 +1,2 @@\n abcdefgh\n-\t\tx\n+\ty\n",
+        ));
+        assert_eq!(Layout::new(&doc, 1).widest_code, Some(1));
+        assert_eq!(Layout::new(&doc, 4).widest_code, Some(2));
+        assert_eq!(Layout::new(&doc, 8).widest_code, Some(2));
+        assert_eq!(width_in_cells("\t\tx", 4), 9);
+    }
+
+    #[test]
     fn split_keeps_newline_annotations_and_file_boundaries() {
         let doc = doc(concat!(
             "diff --git a/trail b/trail\n@@ -1 +1 @@\n-Old hut\n",
             "\\ No newline at end of file\n+New hut\n\\ No newline at end of file\n",
             "diff --git a/map b/map\n@@ -0,0 +1 @@\n+map\n\n[an unexpected line]\n",
         ));
-        let layout = Layout::new(&doc);
+        let layout = Layout::new(&doc, 4);
         assert_eq!(layout.split, [
             SplitRow::Shared(0),
             SplitRow::Shared(1),

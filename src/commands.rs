@@ -270,6 +270,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::diff_select::SELECT_COMMANDS,
         crate::syntax::COMMANDS,
         crate::diff_options::COMMANDS,
+        crate::diff_text::COMMANDS,
         crate::image_diff::COMMANDS,
         crate::file_view::COMMANDS,
         crate::palette::COMMANDS,
