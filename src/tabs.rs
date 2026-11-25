@@ -319,6 +319,9 @@ pub(crate) fn mirror(tab: &mut Tab, cx: &mut Context<Tab>) {
         let field = ui.tools.command.clone();
         field.update(cx, |field, cx| field.set_text(&chosen.editor_command, cx));
     }
+    if tab.ui.syntax.on != chosen.colour_code {
+        crate::syntax::follow(tab, chosen.colour_code, cx);
+    }
 }
 
 

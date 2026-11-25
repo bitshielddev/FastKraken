@@ -563,18 +563,22 @@ pub(crate) fn start(tab: &mut Tab, cx: &mut Context<Tab>) {
     run(tab, rest, cx);
 }
 
+pub(crate) fn follow(tab: &mut Tab, on: bool, cx: &mut Context<Tab>) {
+    tab.ui.syntax.on = on;
+    if on {
+        start(tab, cx);
+    } else {
+        tab.ui.syntax.stop();
+        clear(&mut tab.ui.diff);
+    }
+}
+
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, _window: &mut Window, cx: &mut Context<Tab>) {
     match action {
         Action::Toggle => {
             let on = !settings::settings(cx).colour_code;
             Settings::update(cx, |s| s.colour_code = on);
-            tab.ui.syntax.on = on;
-            if on {
-                start(tab, cx);
-            } else {
-                tab.ui.syntax.stop();
-                clear(&mut tab.ui.diff);
-            }
+            follow(tab, on, cx);
             let title = if on { "Code is coloured by language" } else { "Code is shown without colours" };
             tab.ui.notices.show(Notice::new(Tone::Info, title, ""));
         }

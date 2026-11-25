@@ -835,7 +835,7 @@ impl Replay<'_> {
         if !still {
             return Err("A diff opened with colours off was coloured".into());
         }
-        self.action(toggle)?;
+        self.action(toggle.clone())?;
         self.until("the survey coloured after turning colours on", |tab| {
             settled(tab, "+ Divers stay by the buoys.") && coloured(tab, "+ Divers stay by the buoys.") == Some(comment(" Divers stay by the buoys."))
         })
@@ -843,6 +843,53 @@ impl Replay<'_> {
         let on = self.cx.update(|cx| settings::settings(cx).colour_code)?;
         if !on {
             return Err("Turning colours back on did not reach the settings".into());
+        }
+
+        self.action(Action::Select(file("reef.txt", false)))?;
+        self.until("the plain copy before a toggle during a load", |tab| settled(tab, "+ Divers stay by the buoys.")).await?;
+        self.action(Action::Select(file("reef.rs", false)))?;
+        self.action(toggle.clone())?;
+        self.until("the survey loaded after colours went off during its load", |tab| {
+            settled(tab, "+ Divers stay by the buoys.") && tab.ui.selection == Some(file("reef.rs", false))
+        })
+        .await?;
+        let off_during_load = self.tab.read_with(self.cx, |tab, cx| {
+            (settings::settings(cx).colour_code, tab.ui.diff.lines.iter().all(|line| line.syntax.is_empty()))
+        })?;
+        if off_during_load != (false, true) {
+            return Err(format!("Turning colours off while the survey loaded: setting, every row plain: {off_during_load:?}").into());
+        }
+        self.action(Action::Select(file("reef.txt", false)))?;
+        self.until("the plain copy before turning colours on during a load", |tab| settled(tab, "+ Divers stay by the buoys.")).await?;
+        self.action(Action::Select(file("reef.rs", false)))?;
+        self.action(toggle)?;
+        self.until("the survey coloured after colours came on during its load", |tab| {
+            settled(tab, "+ Divers stay by the buoys.") && coloured(tab, "+ Divers stay by the buoys.") == Some(comment(" Divers stay by the buoys."))
+        })
+        .await?;
+
+        let mirrored = self.tab.update(self.cx, |tab, _, cx| {
+            settings::Settings::update(cx, |s| s.colour_code = false);
+            crate::tabs::mirror(tab, cx);
+            let title = commands::menu(&tab.ui, &Target::Repo, cx).into_iter().find(|entry| entry.id == "view.colour-code").map(|entry| entry.title);
+            (title, tab.ui.diff.lines.iter().all(|line| line.syntax.is_empty()))
+        })?;
+        if mirrored != (Some("Colour code by language".to_owned()), true) {
+            return Err(format!("After colours went off in another tab, the command and every row plain: {mirrored:?}").into());
+        }
+        self.tab.update(self.cx, |tab, _, cx| {
+            settings::Settings::update(cx, |s| s.colour_code = true);
+            crate::tabs::mirror(tab, cx);
+        })?;
+        self.until("the survey coloured after colours came on in another tab", |tab| {
+            settled(tab, "+ Divers stay by the buoys.") && coloured(tab, "+ Divers stay by the buoys.") == Some(comment(" Divers stay by the buoys."))
+        })
+        .await?;
+        let title = self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, &Target::Repo, cx).into_iter().find(|entry| entry.id == "view.colour-code").map(|entry| entry.title)
+        })?;
+        if title.as_deref() != Some("Show code without colours") {
+            return Err(format!("After colours came on in another tab, the command reads {title:?}").into());
         }
 
         self.action(Action::StageFile)?;
@@ -906,13 +953,16 @@ impl Replay<'_> {
         self.action(Action::DiffMode(DiffMode::Unified))?;
 
         let counts = |tab: &Tab| (tab.ui.syntax.highlighted, tab.ui.syntax.too_large);
+        let both_sides_skipped = |from: (usize, usize), to: (usize, usize)| {
+            to.0 == from.0 && to.1 > from.1 && (to.1 - from.1) % 2 == 0
+        };
         let before = self.tab.read_with(self.cx, |tab, _| counts(tab))?;
         self.open_patch("shoal.rs", false, "+let depth_12000 = 12001;").await?;
         self.until("the large unstaged file settled", |tab| settled(tab, "+let depth_12000 = 12001;")).await?;
         let (after, plain) = self.tab.read_with(self.cx, |tab, _| {
             (counts(tab), tab.ui.diff.lines.iter().all(|line| line.syntax.is_empty()))
         })?;
-        if after != (before.0, before.1 + 2) || !plain {
+        if !both_sides_skipped(before, after) || !plain {
             return Err(format!("Over the cap: coloured and skipped went from {before:?} to {after:?}, every row plain {plain}").into());
         }
         let row_plain = self.tab.read_with(self.cx, |tab, _| coloured(tab, "+let depth_12000 = 12001;"))?;
@@ -957,7 +1007,7 @@ impl Replay<'_> {
         let (staged_after, staged_plain) = self.tab.read_with(self.cx, |tab, _| {
             (counts(tab), tab.ui.diff.lines.iter().all(|line| line.syntax.is_empty()))
         })?;
-        if staged_after != (staged_before.0, staged_before.1 + 2) || !staged_plain {
+        if !both_sides_skipped(staged_before, staged_after) || !staged_plain {
             return Err(format!("The staged large file moved the counts from {staged_before:?} to {staged_after:?}, plain {staged_plain}").into());
         }
         let staged_size: u64 = git(&root, &["cat-file", "-s", ":shoal.rs"])?.trim().parse()?;

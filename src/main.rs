@@ -662,7 +662,12 @@ impl Tab {
                         tab.ui.replace_diff(doc, layout);
                         lines::reloaded(&mut tab.ui);
                         diff_select::reloaded(&mut tab.ui);
-                        syntax::run(tab, rest, cx);
+                        let on = tab.ui.syntax.on;
+                        if on == colour {
+                            syntax::run(tab, rest, cx);
+                        } else {
+                            syntax::follow(tab, on, cx);
+                        }
                     }
                     Err(err) => {
                         tab.ui.diff.state = diff_doc::PatchState::Unreadable(err.clone());
