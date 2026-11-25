@@ -315,7 +315,7 @@ impl Repository {
             doc.state = PatchState::Unreadable(TOO_LARGE.to_owned());
             return Ok(Prepared { resolved, doc, layout: DiffLayout::default(), refused: Some(TOO_LARGE.to_owned()), stamp });
         }
-        let contents = self.file_contents(&origin, file_view::FILE_LIMIT)?;
+        let contents = self.file_contents(&origin, LIMIT as usize)?;
         let (doc, _) = file_view::shape(&DiffDoc::default(), &Selection::Changes, path, &origin, version, contents);
         let refused = matches!(doc.state, PatchState::Binary { .. }).then(|| BINARY.to_owned());
         let layout = DiffLayout::new(&doc, tab);
@@ -1264,6 +1264,24 @@ filename \"docs/notes \\303\\251.md\"
         assert!(f.repo.blame_lines(Some("HEAD"), Path::new("small.txt"), &Link::new(true), sink).is_err());
         assert!(f.repo.blame_contents(&Blamed { path: "small.txt".into(), at: At::ParentOf(tip) }, 4).is_err());
         assert!(f.repo.blame_contents(&Blamed { path: "small.txt".into(), at: At::Commit("main".into()) }, 4).is_err());
+    }
+
+    #[test]
+    fn a_file_under_the_cap_but_over_the_file_view_limit_is_shown_whole() {
+        let f = Fixture::new();
+        let lines = (file_view::FILE_LIMIT + file_view::FILE_LIMIT / 2) / 16;
+        let text: String = (0..lines).map(|line| format!("line {line:010}\n")).collect();
+        assert!(text.len() > file_view::FILE_LIMIT && (text.len() as u64) < LIMIT);
+        write(&f, "long.txt", &text);
+        f.repo.commit("Add a long file").unwrap();
+        let tip = head(&f, "HEAD");
+        for at in [At::Commit(tip), At::Working] {
+            let prepared = f.repo.blame_contents(&Blamed { path: "long.txt".into(), at }, 4).unwrap();
+            assert!(prepared.refused.is_none());
+            assert_eq!(prepared.doc.state, PatchState::Text);
+            assert_eq!(prepared.doc.lines.len(), lines);
+            assert_eq!(prepared.doc.file.as_ref().and_then(|shown| shown.contents.as_deref()), Some(text.as_str()));
+        }
     }
 
     fn opened(link: &Link) -> State {
