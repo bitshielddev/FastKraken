@@ -293,6 +293,7 @@ impl Repository {
         }
         let mut input = Vec::new();
         for entry in entries {
+            input.extend_from_slice(b"./");
             input.extend_from_slice(entry.path.as_os_str().as_encoded_bytes());
             input.push(0);
         }
@@ -300,7 +301,7 @@ impl Repository {
         check.env_remove("GIT_LITERAL_PATHSPECS").args(["--no-optional-locks", "check-ignore", "--stdin", "-z"]);
         let output = run_with_input(&mut check, input).map_err(|error| format!("Run bundled Git: {error}"))?;
         match output.status.code() {
-            Some(0 | 1) => Ok(nul_list(&output.stdout).map(raw_path).collect()),
+            Some(0 | 1) => Ok(nul_list(&output.stdout).map(|name| raw_path(name.strip_prefix(b"./").unwrap_or(name))).collect()),
             _ => Err(git_error(&output.stderr, output.status)),
         }
     }
@@ -338,7 +339,7 @@ fn listed_paths(command: &mut std::process::Command, link: &Link, limit: usize) 
         for (at, byte) in bytes.iter().enumerate() {
             if *byte == 0 {
                 count += 1;
-                if count >= limit {
+                if count > limit {
                     kept.extend_from_slice(&bytes[..=at]);
                     full.store(true, Ordering::SeqCst);
                     stop.cancel();
@@ -1322,6 +1323,41 @@ mod tests {
         let paths: Vec<String> = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect();
         assert_eq!(paths, [".gitignore", "fresh.txt", "src/main.rs"]);
         assert_eq!(untouched(&f), before);
+    }
+
+    #[test]
+    fn a_working_folder_with_names_that_look_like_pathspec_magic_still_lists_and_marks_ignored_files() {
+        let f = Fixture::new();
+        write(&f, ".gitignore", "*.log\n");
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "first"]);
+        write(&f, ":(exclude)odd.txt", "odd\n");
+        write(&f, ":!bang.log", "bang\n");
+        write(&f, "debug.log", "log\n");
+        let root = f.repo.browse_folder(&Rev::WorkingTree, Path::new("")).unwrap();
+        assert_eq!(listed(&root), [
+            (".gitignore".to_owned(), Kind::File, false),
+            (":!bang.log".to_owned(), Kind::File, true),
+            (":(exclude)odd.txt".to_owned(), Kind::File, false),
+            ("debug.log".to_owned(), Kind::File, true),
+        ]);
+    }
+
+    #[test]
+    fn a_list_exactly_as_long_as_the_limit_is_not_capped() {
+        let f = Fixture::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            write(&f, name, "x\n");
+        }
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "first"]);
+        let (all, capped) = f.repo.tracked_paths(&Link::new(true), 3).unwrap();
+        assert_eq!((all.len(), capped), (3, false));
+        let (some, capped) = f.repo.tracked_paths(&Link::new(true), 2).unwrap();
+        assert_eq!((some.len(), capped), (2, true));
+        let head = Rev::Commit(id(&f, "HEAD"));
+        let (all, capped) = f.repo.browse_paths(&head, &Link::new(true), 3).unwrap();
+        assert_eq!((all.len(), capped), (3, false));
     }
 
     #[test]
