@@ -90,6 +90,9 @@ pub(crate) fn target<T: Desk>(
     look: Look,
     cx: &Context<T>,
 ) -> Stateful<Div> {
+    if !cx.has_active_drag() {
+        return element;
+    }
     let ends: Vec<Target> = std::iter::once(onto.clone()).chain(also.clone()).collect();
     let checked_ends = ends.clone();
     element

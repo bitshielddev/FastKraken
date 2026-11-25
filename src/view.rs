@@ -1862,6 +1862,7 @@ pub(crate) fn author_tip(author: &str, email: &str) -> String {
 }
 
 const CHANGE_COUNT: f32 = 22.;
+const CELL_GAP: f32 = 8.;
 
 fn change_bar(size: crate::changes::Size, most: u32, room: f32) -> Div {
     let length = room * size.lines() as f32 / most.max(1) as f32;
@@ -1877,16 +1878,28 @@ fn change_bar(size: crate::changes::Size, most: u32, room: f32) -> Div {
         .child(div().h_full().flex_1().bg(rgb(DELETED)))
 }
 
-fn changes_cell(width: f32, size: Option<(crate::changes::Size, u32)>, color: u32) -> gpui::Stateful<Div> {
-    let cell = div().id("changes").w(px(width)).flex().items_center().flex_shrink_0().overflow_hidden().pr_2().gap(px(4.));
+fn tipped<F: Fn(&mut Window, &mut App) -> gpui::AnyView + 'static>(
+    cell: Div,
+    id: &'static str,
+    tip: Option<F>,
+) -> gpui::AnyElement {
+    match tip {
+        Some(tip) => cell.id(id).tooltip(tip).into_any_element(),
+        None => cell.into_any_element(),
+    }
+}
+
+fn changes_cell(width: f32, size: Option<(crate::changes::Size, u32)>, color: u32, pointed: bool) -> gpui::AnyElement {
+    let cell = div().w(px(width)).flex().items_center().flex_shrink_0().overflow_hidden().pr_2().gap(px(4.));
     match size {
         Some((size, most)) => {
             let room = (width - 8. - 4. - CHANGE_COUNT).max(0.);
-            cell.child(div().w(px(CHANGE_COUNT)).flex_shrink_0().child(kit::fit(size.files.to_string()).size(TEXT_SMALL).color(color)))
-                .child(change_bar(size, most, room))
-                .tooltip(kit::tip(size.tip()))
+            let cell = cell
+                .child(div().w(px(CHANGE_COUNT)).flex_shrink_0().child(kit::fit(size.files.to_string()).size(TEXT_SMALL).color(color)))
+                .child(change_bar(size, most, room));
+            tipped(cell, "changes", pointed.then(|| kit::tip_with(move || size.tip())))
         }
-        None => cell,
+        None => cell.into_any_element(),
     }
 }
 
@@ -1896,95 +1909,106 @@ fn history_metadata(
     widths: crate::columns::Widths,
     selected: bool,
     size: Option<(crate::changes::Size, u32)>,
+    pointed: bool,
 ) -> Div {
     let Written { author, email, date, time, oid } = written;
     let color = if selected { TEXT_2 } else { TEXT_3 };
     let named = widths.author >= crate::columns::NAMED_AUTHOR;
-    let clipped = kit::Clipped::default();
     div()
         .flex()
         .items_center()
         .flex_shrink_0()
         .when(widths.author > 0., |d| {
-            let tip = author_tip(author, email);
-            d.child(
-                div()
-                    .id("author")
-                    .w(px(widths.author))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .pr_2()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(kit::avatar(author))
-                    .when(named, |d| {
-                        d.child(kit::fit(author.to_owned()).size(12.5).color(TEXT_2).grow().clipped(&clipped))
-                    })
-                    .when(named && email.is_empty(), |d| d.tooltip(kit::tip_when_clipped(tip.clone(), &clipped)))
-                    .when(!named || !email.is_empty(), |d| d.tooltip(kit::tip(tip))),
-            )
+            let clipped = kit::Clipped::default();
+            let cell = div()
+                .w(px(widths.author))
+                .flex_shrink_0()
+                .overflow_hidden()
+                .pr_2()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(kit::avatar(author))
+                .when(named, |d| {
+                    let name = kit::fit(author.to_owned()).size(12.5).color(TEXT_2).grow();
+                    d.child(if pointed { name.clipped(&clipped) } else { name })
+                });
+            let cell = if !pointed {
+                cell.into_any_element()
+            } else if named && email.is_empty() {
+                cell.id("author").tooltip(kit::tip_when_clipped(author.to_owned(), &clipped)).into_any_element()
+            } else {
+                let (author, email) = (author.to_owned(), email.to_owned());
+                tipped(cell, "author", Some(kit::tip_with(move || author_tip(&author, &email))))
+            };
+            d.child(cell)
         })
-        .when(widths.changes > 0., |d| d.child(changes_cell(widths.changes, size, color)))
+        .when(widths.changes > 0., |d| d.child(changes_cell(widths.changes, size, color, pointed)))
         .when(widths.date > 0., |d| {
-            d.child(
-                div()
-                    .id("date")
-                    .w(px(widths.date))
-                    .flex()
-                    .items_center()
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .pr_2()
-                    .child(kit::fit(when(time, date, now)).size(TEXT_SMALL).color(color).grow())
-                    .when(time > 0, |d| d.tooltip(kit::tip(exact_time(time)))),
-            )
+            let text = kit::fit(when(time, date, now)).size(TEXT_SMALL).color(color).cell(widths.date, CELL_GAP);
+            d.child(match pointed && time > 0 {
+                true => div().id("date").flex_shrink_0().flex().child(text).tooltip(kit::tip_with(move || exact_time(time))).into_any_element(),
+                false => text.into_any_element(),
+            })
         })
         .when(widths.sha > 0., |d| {
-            d.child(
-                div()
-                    .id("sha")
-                    .w(px(widths.sha))
-                    .flex()
-                    .items_center()
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .pr_2()
-                    .child(kit::fit(oid.get(..7).unwrap_or(oid).to_owned()).mono().size(11.5).color(color).grow())
-                    .tooltip(kit::tip(oid.to_owned())),
-            )
+            let text = kit::fit(oid.get(..7).unwrap_or(oid).to_owned()).mono().size(11.5).color(color).cell(widths.sha, CELL_GAP);
+            d.child(match pointed {
+                true => div().id("sha").flex_shrink_0().flex().child(text).tooltip(kit::tip(oid.to_owned())).into_any_element(),
+                false => text.into_any_element(),
+            })
         })
 }
 
-fn subject_cell(id: &'static str, subject: &str, body: Option<&str>, color: u32) -> gpui::Stateful<Div> {
-    let clipped = kit::Clipped::default();
+fn subject_cell(id: &'static str, subject: &str, body: Option<&str>, color: u32, pointed: bool) -> gpui::AnyElement {
     let body = body.filter(|body| !body.is_empty());
-    let text = kit::fit(subject.to_owned()).color(color).clipped(&clipped);
-    div()
-        .id(id)
+    let subject = gpui::SharedString::from(subject.to_owned());
+    let clipped = kit::Clipped::default();
+    let text = kit::fit(subject.clone()).color(color);
+    let text = if pointed { text.clipped(&clipped) } else { text };
+    if !pointed && body.is_none() {
+        return text.grow().into_any_element();
+    }
+    let cell = div()
         .flex_1()
         .min_w_0()
         .flex()
         .items_center()
         .child(if body.is_some() { text } else { text.grow() })
-        .when_some(body, |d, body| d.child(kit::fit(format!("   {body}")).color(TEXT_3).grow()))
-        .tooltip(kit::tip_when_clipped(subject.to_owned(), &clipped))
+        .when_some(body, |d, body| d.child(kit::fit(format!("   {body}")).color(TEXT_3).grow()));
+    if pointed {
+        cell.id(id).tooltip(kit::tip_when_clipped(subject, &clipped)).into_any_element()
+    } else {
+        cell.into_any_element()
+    }
+}
+
+pub(crate) fn pointed_item(handle: &UniformListScrollHandle, row: f32, window: &Window) -> Option<usize> {
+    let state = handle.0.borrow();
+    let bounds = state.base_handle.bounds();
+    let mouse = window.mouse_position();
+    if !bounds.contains(&mouse) {
+        return None;
+    }
+    let y = f32::from(mouse.y - bounds.top() - state.base_handle.offset().y);
+    (y >= 0.).then(|| (y / row) as usize)
 }
 
 fn graph_cell<T: Desk>(
     lane_art: impl IntoElement,
     lanes: graph::Lanes,
     limit: f32,
+    pointed: bool,
     cx: &Context<T>,
 ) -> gpui::Stateful<Div> {
-    let tab = cx.weak_entity();
     div()
         .id("lanes")
         .w(px(lanes.width))
         .h_full()
         .flex_shrink_0()
         .child(lane_art)
-        .when(limit > 0., |d| {
+        .when(limit > 0. && pointed, |d| {
+            let tab = cx.weak_entity();
             d.on_scroll_wheel(cx.listener(move |app, event: &gpui::ScrollWheelEvent, _, cx| {
                 let delta = event.delta.pixel_delta(px(ROW));
                 let (across, down) = (f32::from(delta.x), f32::from(delta.y));
@@ -2206,6 +2230,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                 cx.defer_in(window, |app, w, cx| app.dispatch(Action::More, w, cx));
             }
             let ui = app.ui();
+            let pointed = pointed_item(&ui.history_scroll, ROW, window);
             let shown_commits = || {
                 range.clone().filter(|index| *index < ui.history_items()).filter_map(|index| match ui.stash.item(index) {
                     HistoryItem::Commit(i) => ui.history.get(i),
@@ -2229,7 +2254,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     if index >= ui.history_items() {
                         return history_tail(ui, graph_width);
                     }
-                    let lanes_here = |art| graph_cell(art, lanes, limit, cx);
+                    let lanes_here = |art| graph_cell(art, lanes, limit, pointed == Some(index), cx);
                     let i = match ui.stash.item(index) {
                         HistoryItem::Commit(i) => i,
                         HistoryItem::Stash { stash, base, first_at_base } => {
@@ -2250,7 +2275,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                         .items_center()
                                         .gap(px(6.))
                                         .child(kit::chip(kit::Chip::Stash, "stash"))
-                                        .child(subject_cell("subject", &entry.title, None, TEXT_2)),
+                                        .child(subject_cell("subject", &entry.title, None, TEXT_2, pointed == Some(index))),
                                 )
                                 .child(history_metadata(
                                     Written { author: &entry.author, email: "", date: &entry.date, time: entry.time, oid: &entry.oid },
@@ -2258,6 +2283,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                     widths,
                                     active,
                                     None,
+                                    pointed == Some(index),
                                 ))
                                 .on_click(cx.listener({
                                     let oid = oid.clone();
@@ -2336,6 +2362,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                     } else {
                                         TEXT
                                     },
+                                    pointed == Some(index),
                                 )),
                         )
                         .child(
@@ -2345,6 +2372,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                 widths,
                                 active,
                                 ui.changes.of(&row.oid).map(|size| (size, most)),
+                                pointed == Some(index),
                             )
                             .when(dimmed, |d| d.opacity(DIMMED)),
                         )

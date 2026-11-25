@@ -1179,7 +1179,7 @@ pub(crate) fn distance(item: &NamedRef) -> Option<String> {
     }
 }
 
-fn count_buttons<T: Desk>(item: &NamedRef, current: bool, row: usize, cx: &mut Context<T>) -> Vec<gpui::AnyElement> {
+fn count_buttons<T: Desk>(item: &NamedRef, current: bool, row: usize, pointed: bool, cx: &mut Context<T>) -> Vec<gpui::AnyElement> {
     crate::tracking::counts(item, current)
         .into_iter()
         .enumerate()
@@ -1192,7 +1192,7 @@ fn count_buttons<T: Desk>(item: &NamedRef, current: bool, row: usize, cx: &mut C
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(RAISED)))
                 .child(kit::label(text).font_weight(FontWeight::MEDIUM))
-                .tooltip(kit::tip(tip))
+                .when(pointed, |d| d.tooltip(kit::tip(tip)))
                 .on_click(cx.listener(move |app, _, w, cx| {
                     cx.stop_propagation();
                     crate::commands::run_for(app, id, target.clone(), w, cx);
@@ -1216,9 +1216,10 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
     uniform_list(
         "sidebar",
         count,
-        cx.processor(|app, range: Range<usize>, _, cx| {
+        cx.processor(|app, range: Range<usize>, window, cx| {
             let ui = app.ui();
             let cursor = ui.navigate.side_cursor(ui);
+            let pointed = view::pointed_item(&ui.refs.scroll, TREE_ROW, window);
             range
                 .filter_map(|i| {
                     let row = ui.refs.rows.get(i)?;
@@ -1373,7 +1374,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let folder_ref = format!("{}{name}/", crate::graph_view::REMOTES);
                             let left_out = *remote && crate::graph_view::left_out(ui, &folder_ref);
                             let eye = remote
-                                .then(|| crate::graph_view::eye(ui, folder_ref, ("remote-eye", i), "side-folder", cx))
+                                .then(|| crate::graph_view::eye(ui, folder_ref, ("remote-eye", i), "side-folder", pointed == Some(i), cx))
                                 .flatten();
                             let dropped_on = Target::Remote(name.clone());
                             div()
@@ -1469,7 +1470,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let picked = kind == Kind::Branch && crate::sidebar::is_picked(ui, &item.name);
                             let full = crate::graph_view::of_ref(kind, &item.name.to_string_lossy());
                             let left_out = crate::graph_view::left_out(ui, &full);
-                            let eye = crate::graph_view::eye(ui, full, ("side-eye", i), "side-ref", cx);
+                            let eye = crate::graph_view::eye(ui, full, ("side-eye", i), "side-ref", pointed == Some(i), cx);
                             let chip = match kind {
                                 Kind::Branch if current => kit::Chip::Head,
                                 Kind::Branch => kit::Chip::Local,
@@ -1516,11 +1517,11 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         .grow(),
                                 )
                                 .when(kind == Kind::Branch, |d| {
-                                    d.children(count_buttons(item, current, i, cx))
+                                    d.children(count_buttons(item, current, i, pointed == Some(i), cx))
                                         .when(item.gone, |d| d.child(kit::label("gone")))
-                                        .tooltip(kit::tip(crate::tracking::tooltip(item)))
+                                        .when(pointed == Some(i), |d| d.tooltip(kit::tip(crate::tracking::tooltip(item))))
                                 })
-                                .when(kind == Kind::Tag, |d| d.tooltip(kit::tip(crate::tag::tooltip(item))))
+                                .when(kind == Kind::Tag && pointed == Some(i), |d| d.tooltip(kit::tip(crate::tag::tooltip(item))))
                                 .children(eye)
                                 .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
                                     let modifiers = event.modifiers();

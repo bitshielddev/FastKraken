@@ -51,6 +51,7 @@ pub struct Fit {
     cut: Cut,
     grow: bool,
     clipped: Option<Clipped>,
+    cell: Option<(f32, f32)>,
 }
 
 #[derive(Clone, Default)]
@@ -72,6 +73,7 @@ pub fn fit(text: impl Into<SharedString>) -> Fit {
         cut: Cut::End,
         grow: false,
         clipped: None,
+        cell: None,
     }
 }
 
@@ -106,6 +108,11 @@ impl Fit {
     }
     pub fn clipped(mut self, clipped: &Clipped) -> Self {
         self.clipped = Some(clipped.clone());
+        self
+    }
+
+    pub fn cell(mut self, width: f32, trailing: f32) -> Self {
+        self.cell = Some((width, trailing));
         self
     }
 
@@ -197,7 +204,11 @@ impl Element for Fit {
         style.flex_shrink = 1.;
         style.min_size.width = px(0.).into();
         style.size.height = px((self.size * 1.4).round()).into();
-        if self.grow {
+        if let Some((width, trailing)) = self.cell {
+            style.flex_shrink = 0.;
+            style.size.width = px((width - trailing).max(0.)).into();
+            style.margin.right = px(trailing).into();
+        } else if self.grow {
             style.flex_grow = 1.;
             style.flex_basis = px(0.).into();
         } else {
@@ -547,6 +558,13 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
     move |_, cx| cx.new(|_| Tip(text.clone(), None)).into()
 }
 
+pub fn tip_with<S: Into<SharedString>>(text: impl Fn() -> S + 'static) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    move |_, cx| {
+        let text = text().into();
+        cx.new(|_| Tip(text, None)).into()
+    }
+}
+
 pub fn tip_when_clipped(
     text: impl Into<SharedString>,
     clipped: &Clipped,
@@ -701,7 +719,26 @@ pub fn moved_from(status: &str, from: &std::path::Path) -> String {
     format!("{verb} from {}", from.display())
 }
 
-pub fn avatar(name: &str) -> Div {
+pub struct Avatar {
+    initials: SharedString,
+    color: u32,
+    size: Pixels,
+    text: Pixels,
+}
+
+impl Avatar {
+    pub fn size(mut self, size: Pixels) -> Self {
+        self.size = size;
+        self
+    }
+
+    pub fn text_size(mut self, text: Pixels) -> Self {
+        self.text = text;
+        self
+    }
+}
+
+pub fn avatar(name: &str) -> Avatar {
     const COLORS: [u32; 6] = [0x7fb3e6, 0xd9a55a, 0xa898f0, 0x8fd0a0, 0xe88fb0, 0x6fc9c9];
     let hash = name
         .bytes()
@@ -712,18 +749,77 @@ pub fn avatar(name: &str) -> Div {
         .take(2)
         .flat_map(char::to_uppercase)
         .collect();
-    div()
-        .size(px(16.))
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .bg(rgb(COLORS[hash as usize % COLORS.len()]))
-        .text_size(px(8.))
-        .font_weight(FontWeight::BOLD)
-        .text_color(rgb(CANVAS))
-        .child(initials)
+    Avatar { initials: initials.into(), color: COLORS[hash as usize % COLORS.len()], size: px(16.), text: px(8.) }
+}
+
+impl IntoElement for Avatar {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Avatar {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.flex_shrink = 0.;
+        style.size.width = self.size.into();
+        style.size.height = self.size.into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut Window, _: &mut App) {}
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.paint_quad(gpui::fill(bounds, rgb(self.color)).corner_radii(self.size / 2.));
+        if self.initials.is_empty() {
+            return;
+        }
+        let mut font = window.text_style().font();
+        font.weight = FontWeight::BOLD;
+        let run = TextRun {
+            len: self.initials.len(),
+            font,
+            color: rgb(CANVAS).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let size = self.text;
+        let line = window.text_system().shape_line(self.initials.clone(), size, &[run], None);
+        let height = (size * 1.4).round();
+        let origin = point(
+            bounds.origin.x + (bounds.size.width - line.width) / 2.,
+            bounds.origin.y + (bounds.size.height - height) / 2.,
+        );
+        let _ = line.paint(origin, height, window, cx);
+    }
 }
 
 pub fn checkbox(checked: bool) -> Div {
