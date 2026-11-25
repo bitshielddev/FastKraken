@@ -17,6 +17,7 @@ use std::{
 pub(crate) const DIFFERENT_NOW: &str = "These lines are different now, so the change could not be undone automatically.";
 const DELETED: &str = "Deleted";
 const ADDED: &str = "Added";
+const SUBMODULE: &str = "This hunk moves a submodule to another commit, which cannot be undone in your files.";
 const REVIEW: &str = "It shows as a change in your files, ready to review. Nothing was staged.";
 
 #[derive(Clone, Debug)]
@@ -339,6 +340,15 @@ fn reverse_patch(header: &[u8], hunk: &[u8]) -> Option<Vec<u8>> {
     Some(patch)
 }
 
+fn moves_a_submodule(header: &[u8]) -> bool {
+    header.split(|&b| b == b'\n').any(|line| {
+        ["index ", "new file mode ", "deleted file mode ", "old mode ", "new mode "]
+            .iter()
+            .any(|start| line.starts_with(start.as_bytes()))
+            && line.ends_with(b" 160000")
+    })
+}
+
 fn line(bytes: &[u8]) -> &[u8] {
     bytes.strip_suffix(b"\n").unwrap_or(bytes)
 }
@@ -509,10 +519,11 @@ impl Repository {
         if !latest.same_patch(diff) {
             return Err("The diff shown is not this commit's any more. Open it again, then undo the hunk.".into());
         }
-        let patch = diff
-            .hunk_parts(undo.hunk)
-            .and_then(|(header, hunk)| reverse_patch(header, hunk))
-            .ok_or("This hunk is no longer in the diff.")?;
+        let (header, hunk) = diff.hunk_parts(undo.hunk).ok_or("This hunk is no longer in the diff.")?;
+        if moves_a_submodule(header) {
+            return Err(SUBMODULE.into());
+        }
+        let patch = reverse_patch(header, hunk).ok_or("This hunk is no longer in the diff.")?;
         let output = run_with_input(
             self.command().args(["apply", "--reverse", "--whitespace=nowarn", "-"]),
             patch,
@@ -841,6 +852,26 @@ mod tests {
         f.repo.undo_commit_hunk(&undo, &diff).unwrap();
         assert_eq!(read(&f, "camp.txt"), "Tent\n");
         assert_eq!(listed(&f), "?? camp.txt\n");
+    }
+
+    #[test]
+    fn undoing_a_submodule_hunk_is_refused_rather_than_reported_done() {
+        let f = Fixture::new();
+        f.git(&["commit", "--allow-empty", "-qm", "One"]);
+        let one = head(&f, "HEAD");
+        f.git(&["commit", "--allow-empty", "-qm", "Two"]);
+        let two = head(&f, "HEAD");
+        f.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{one},sub")]);
+        f.git(&["commit", "-qm", "Add the submodule"]);
+        f.git(&["update-index", "--cacheinfo", &format!("160000,{two},sub")]);
+        f.git(&["commit", "-qm", "Move the submodule"]);
+        let moved = head(&f, "HEAD");
+        fs::create_dir(f.dir.join("sub")).unwrap();
+        let (undo, diff) = undo_of(&f, &moved, Some("sub"), 0);
+        assert_eq!(diff.hunks.len(), 1);
+        assert_eq!(f.repo.undo_commit_hunk(&undo, &diff).unwrap_err(), SUBMODULE);
+        assert_eq!(f.git(&["ls-files", "-s", "sub"]), format!("160000 {two} 0\tsub\n").into_bytes());
+        assert!(!moves_a_submodule(b"diff --git a/x 160000 b/x 160000\nindex 1..2 100644\n--- a/x 160000\t\n+++ b/x 160000\t\n"));
     }
 
     #[test]
