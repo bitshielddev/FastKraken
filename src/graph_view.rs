@@ -657,7 +657,7 @@ pub(crate) fn eye<T: Desk>(
     }
     let view = &ui.graph_view;
     if !pointed && view.hidden_by(&full).is_none() && !view.solo.contains(&full) {
-        return None;
+        return Some(div().size(px(18.)).flex_shrink_0().into_any_element());
     }
     let (icon, tip, color, action, always) = if let Some(entry) = view.hidden_by(&full) {
         let tip = if entry == full { "Show in the graph".to_owned() } else { format!("Show in the graph, with everything in {}", short(entry)) };

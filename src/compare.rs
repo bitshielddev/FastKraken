@@ -463,6 +463,10 @@ pub(crate) fn history_changed(tab: &mut Tab, cx: &mut Context<Tab>) {
     let before = picked.len();
     if !picked.retain(&listed) {
         tab.ui.compare.clear_pick();
+        if tab.ui.selection == Some(Selection::Commits) {
+            let landing = tab.ui.history.first().map_or(Selection::Changes, |row| Selection::Commit(row.oid.clone()));
+            tab.select(landing, cx);
+        }
         return;
     }
     if picked.len() == before {

@@ -341,7 +341,39 @@ impl Replay<'_> {
         if kept != (Some(Selection::Commits), vec![newest, second, fourth]) {
             return Err(format!("After the menu the pick is {kept:?}").into());
         }
+        self.hide_every_picked_commit(dir).await?;
         self.pass();
         Ok(())
+    }
+
+    async fn hide_every_picked_commit(&mut self, dir: &Path) -> Result<()> {
+        let root = init(dir, "Hidden-run")?;
+        record(&root, "camp.txt", "camp\n", "Pitch the camp")?;
+        git(&root, &["switch", "-qc", "ridge"])?;
+        let mut ridge = Vec::new();
+        for n in 0..4 {
+            record(&root, &format!("ridge-{n}.txt"), "ridge\n", &format!("Survey ridge {n}"))?;
+            ridge.push(oid(&root, "HEAD")?);
+        }
+        git(&root, &["switch", "-q", "main"])?;
+        record(&root, "lake.txt", "lake\n", "Map the lake")?;
+        let lake = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Hidden-run open with six commits", |tab| tab.ui.repo == "Hidden-run" && tab.ui.history.len() == 6).await?;
+        self.select_only(&ridge[3]).await?;
+        self.pick_commit(&ridge[1], How::Toggle)?;
+        self.pick_commit(&ridge[0], How::Toggle)?;
+        self.until("three ridge commits that are not one run", |tab| {
+            tab.ui.selection == Some(Selection::Commits) && tab.ui.compare.count() == 3
+        })
+        .await?;
+        self.action(Action::GraphView(crate::graph_view::Action::Hide("refs/heads/ridge".into())))?;
+        self.until("ridge hidden and the empty pick left for the newest commit", |tab| {
+            tab.ui.history.len() == 2
+                && tab.ui.selection == Some(Selection::Commit(lake.clone()))
+                && tab.ui.compare.count() == 0
+                && heading(tab).is_none()
+        })
+        .await
     }
 }
