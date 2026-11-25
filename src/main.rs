@@ -28,6 +28,7 @@ mod help;
 mod hooks;
 mod identity;
 mod ignore;
+mod image_diff;
 mod init;
 mod instance;
 mod inspection;
@@ -608,6 +609,7 @@ impl Tab {
         self.ui.syntax.on = colour;
         let options = self.ui.diff_options.request();
         let working = syntax::working_root(&repo, &selection);
+        let owner = image_diff::owner(&selection, commit_path.clone());
         Self::work(
             cx,
             move || {
@@ -648,22 +650,24 @@ impl Tab {
                     options,
                 });
                 let layout = DiffLayout::new(&doc);
+                let image = image_diff::wanted(&doc, &selection, &repo.root);
                 let rest = if colour {
                     let wanted = syntax::requests(&doc, working.as_deref());
                     syntax::from_cache(&mut doc, wanted)
                 } else {
                     Vec::new()
                 };
-                Ok::<_, String>((Arc::new(diff), doc, layout, rest))
+                Ok::<_, String>((Arc::new(diff), doc, layout, rest, image))
             },
             move |tab, result, cx| {
                 if tab.epoch != epoch || tab.diff_ticket != ticket {
                     return;
                 }
                 match result {
-                    Ok((diff, doc, layout, rest)) => {
+                    Ok((diff, doc, layout, rest, image)) => {
                         tab.diff = Some(diff);
                         tab.ui.replace_diff(doc, layout);
+                        image_diff::follow(tab, image, owner);
                         lines::reloaded(&mut tab.ui);
                         diff_select::reloaded(&mut tab.ui);
                         let on = tab.ui.syntax.on;
@@ -674,6 +678,7 @@ impl Tab {
                         }
                     }
                     Err(err) => {
+                        image_diff::follow(tab, None, owner);
                         tab.ui.diff.state = diff_doc::PatchState::Unreadable(err.clone());
                         if !tab.ui.diff_open {
                             tab.error(err, cx);
@@ -1528,6 +1533,7 @@ impl Tab {
             Action::Syntax(action) => syntax::dispatch(self, action, window, cx),
             Action::DiffOptions(action) => diff_options::dispatch(self, action, window, cx),
             Action::Find(action) => find::dispatch(self, action, window, cx),
+            Action::Images(action) => image_diff::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
@@ -1702,6 +1708,7 @@ impl Render for Tab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         perf::schedule(self, window, cx);
         notice::schedule(self, cx);
+        image_diff::settle(self, window, cx);
         view::render(self, window, cx)
     }
 }

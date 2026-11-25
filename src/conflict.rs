@@ -642,10 +642,13 @@ pub(crate) fn chooser<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .child(kit::grow())
         .child(kit::icon_btn("close-chooser", "x", "Back to the graph (Esc)", view::Action::Conflict(Action::Close), cx));
     let mut cards = Vec::new();
-    for (side, name, full) in [
+    for (index, (side, name, full)) in [
         (Side::Current, "Current", snapshot.ours()),
         (Side::Incoming, "Incoming", snapshot.theirs()),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let version = conflict.side(side);
         let id = match (version.is_some(), conflict.shape.deleted(), side) {
             (false, _, _) => "conflict.delete",
@@ -679,6 +682,7 @@ pub(crate) fn chooser<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         .child(div().flex_shrink_0().text_size(px(TEXT_SMALL)).font_weight(FontWeight::SEMIBOLD).child(name))
                         .child(kit::fit(full).size(TEXT_SMALL).color(TEXT_3).grow()),
                 )
+                .children(crate::image_diff::chooser_card(ui, index))
                 .child(div().text_size(px(TEXT_BASE)).text_color(rgb(TEXT_2)).child(holds(version)))
                 .children(button),
         );

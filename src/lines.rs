@@ -114,7 +114,10 @@ fn dragged(doc: &DiffDoc, drag: &Drag, to: usize) -> BTreeSet<usize> {
 pub(crate) fn side(ui: &Ui) -> Option<bool> {
     match &ui.selection {
         Some(Selection::File { staged, .. })
-            if ui.diff.stageable && !ui.loading_diff() && view::centre(ui) == view::Centre::Diff =>
+            if ui.diff.stageable
+                && !ui.loading_diff()
+                && view::centre(ui) == view::Centre::Diff
+                && crate::image_diff::showing(ui).is_none() =>
         {
             Some(*staged)
         }

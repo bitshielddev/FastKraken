@@ -6,6 +6,7 @@ use crate::{
     lines::{self, How},
     prompt,
     diff_options::{Action as Show, Choice},
+    image_diff,
     theme::DIFF_LINE,
     view::{DiffMode, diff_placeholder},
 };
@@ -149,7 +150,10 @@ impl Replay<'_> {
         };
         self.reset_diff_options()?;
         shown?;
-        self.find_commits_without_a_diff(dir).await
+        self.find_commits_without_a_diff(dir).await?;
+        let pictured = self.image_diff(dir).await;
+        self.action(Action::Images(image_diff::Action::Show(image_diff::Mode::Text)))?;
+        pictured
     }
 
     fn reset_diff_options(&mut self) -> Result<()> {
@@ -1665,6 +1669,295 @@ impl Replay<'_> {
         }
         self.action(Action::CommitOptions(crate::commit_options::Action::CloseCoauthors))?;
         self.until("the co-author picker closed", |tab| !tab.ui.commit_options.picking()).await?;
+        self.pass();
+        Ok(())
+    }
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+fn adler32(bytes: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &byte in bytes {
+        a = (a + byte as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
+fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend((data.len() as u32).to_be_bytes());
+    let mut body = kind.to_vec();
+    body.extend_from_slice(data);
+    out.extend_from_slice(&body);
+    out.extend(crc32(&body).to_be_bytes());
+}
+
+fn png_header(width: u32, height: u32) -> Vec<u8> {
+    let mut header = width.to_be_bytes().to_vec();
+    header.extend(height.to_be_bytes());
+    header.extend([8, 6, 0, 0, 0]);
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    png_chunk(&mut out, b"IHDR", &header);
+    out
+}
+
+fn png(width: u32, height: u32, seed: u8) -> Vec<u8> {
+    let mut raw = Vec::new();
+    for y in 0..height {
+        raw.push(0);
+        for x in 0..width {
+            raw.extend([seed ^ x as u8, y as u8, seed.wrapping_mul(3), 255]);
+        }
+    }
+    let mut stream = vec![0x78, 0x01];
+    let blocks: Vec<&[u8]> = raw.chunks(65535).collect();
+    for (index, block) in blocks.iter().enumerate() {
+        stream.push((index + 1 == blocks.len()) as u8);
+        stream.extend((block.len() as u16).to_le_bytes());
+        stream.extend((!(block.len() as u16)).to_le_bytes());
+        stream.extend_from_slice(block);
+    }
+    stream.extend(adler32(&raw).to_be_bytes());
+    let mut out = png_header(width, height);
+    png_chunk(&mut out, b"IDAT", &stream);
+    png_chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+fn bmp(width: u32, height: u32) -> Vec<u8> {
+    let row = (width * 3).div_ceil(4) * 4;
+    let pixels = row * height;
+    let mut out = b"BM".to_vec();
+    out.extend((54 + pixels).to_le_bytes());
+    out.extend(0u32.to_le_bytes());
+    out.extend(54u32.to_le_bytes());
+    out.extend(40u32.to_le_bytes());
+    out.extend((width as i32).to_le_bytes());
+    out.extend((height as i32).to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(24u16.to_le_bytes());
+    out.extend(0u32.to_le_bytes());
+    out.extend(pixels.to_le_bytes());
+    out.extend(2835u32.to_le_bytes());
+    out.extend(2835u32.to_le_bytes());
+    out.extend([0u8; 8]);
+    for y in 0..height {
+        for x in 0..row {
+            out.push(if x < width * 3 { (x * 40 + y * 90) as u8 } else { 0 });
+        }
+    }
+    out
+}
+
+fn svg(width: u32, height: u32) -> String {
+    format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\">\n  <rect width=\"{width}\" height=\"{height}\" fill=\"navy\"/>\n</svg>\n")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Seen {
+    Absent,
+    Drawn(u32, u32, u64),
+    Refused(u32, u32, u64, &'static str),
+}
+
+fn seen(held: &image_diff::Held, side: usize) -> Option<Seen> {
+    if held.request.sides[side].is_none() {
+        return Some(Seen::Absent);
+    }
+    let picture = held.picture(side)?;
+    let (width, height) = picture.size?;
+    let bytes = picture.bytes?;
+    Some(match image_diff::notice(picture) {
+        Some(notice) => Seen::Refused(width, height, bytes, notice),
+        None if picture.shown() => Seen::Drawn(width, height, bytes),
+        None => return None,
+    })
+}
+
+fn pictured(tab: &Tab, path: &str, expected: [Seen; 2], labels: [&str; 2]) -> bool {
+    let Some(held) = image_diff::showing(&tab.ui) else { return false };
+    held.request.path == Path::new(path)
+        && held.settled()
+        && image_diff::labels(&held.request) == labels
+        && (0..2).all(|side| seen(held, side) == Some(expected[side]))
+        && crate::find::here(&tab.ui).is_none()
+        && !crate::diff_options::showing(&tab.ui)
+}
+
+fn length(root: &Path, path: &str) -> Result<u64> {
+    Ok(fs::metadata(root.join(path))?.len())
+}
+
+impl Replay<'_> {
+    async fn image_diff(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0715");
+        let root = init(dir, "Image-cove")?;
+        fs::write(root.join("chart.png"), png(40, 30, 11))?;
+        fs::write(root.join("logo.svg"), svg(24, 16))?;
+        fs::write(root.join("old.bmp"), bmp(3, 2))?;
+        git(&root, &["add", "--", "."])?;
+        git(&root, &["commit", "-qm", "Chart the cove"])?;
+        let base = oid(&root, "HEAD")?;
+        let old_chart = git(&root, &["cat-file", "-s", "HEAD:chart.png"])?.trim().parse::<u64>()?;
+        let old_logo = git(&root, &["cat-file", "-s", "HEAD:logo.svg"])?.trim().parse::<u64>()?;
+        let old_bmp = git(&root, &["cat-file", "-s", "HEAD:old.bmp"])?.trim().parse::<u64>()?;
+        fs::write(root.join("chart.png"), png(64, 48, 23))?;
+        fs::write(root.join("logo.svg"), svg(32, 16))?;
+        fs::write(root.join("buoy.png"), png(10, 20, 5))?;
+        fs::write(root.join("poster.png"), png_header(20000, 20000))?;
+        fs::remove_file(root.join("old.bmp"))?;
+        let (new_chart, new_logo, buoy, poster) =
+            (length(&root, "chart.png")?, length(&root, "logo.svg")?, length(&root, "buoy.png")?, length(&root, "poster.png")?);
+        self.open(&root)?;
+        self.until("Image-cove with its pictures changed", |tab| {
+            tab.ui.repo == "Image-cove" && files(tab, &[], &["chart.png", "logo.svg", "old.bmp", "buoy.png", "poster.png"])
+        })
+        .await?;
+
+        self.action(Action::Select(file("chart.png", false)))?;
+        let chart = [Seen::Drawn(40, 30, old_chart), Seen::Drawn(64, 48, new_chart)];
+        self.until("the unstaged chart drawn before and after with both sizes", |tab| {
+            tab.ui.diff_open && pictured(tab, "chart.png", chart, ["Before", "After"])
+        })
+        .await?;
+        let captions = self.tab.read_with(self.cx, |tab, _| {
+            let held = image_diff::showing(&tab.ui)?;
+            Some([0, 1].map(|side| held.picture(side).map(|picture| image_diff::caption(picture, true))))
+        })?;
+        let expected = [
+            Some(format!("40 × 30 · {}", crate::conflict::size(old_chart))),
+            Some(format!("64 × 48 · {}", crate::conflict::size(new_chart))),
+        ];
+        if captions != Some(expected.clone()) {
+            return Err(format!("The chart's captions read {captions:?}, not {expected:?}").into());
+        }
+
+        self.action(Action::Select(file("buoy.png", false)))?;
+        self.until("the untracked buoy drawn as added", |tab| {
+            pictured(tab, "buoy.png", [Seen::Absent, Seen::Drawn(10, 20, buoy)], ["", "Added"])
+        })
+        .await?;
+        self.action(Action::Select(file("old.bmp", false)))?;
+        self.until("the deleted bitmap drawn as deleted", |tab| {
+            pictured(tab, "old.bmp", [Seen::Drawn(3, 2, old_bmp), Seen::Absent], ["Deleted", ""])
+        })
+        .await?;
+        self.action(Action::Select(file("poster.png", false)))?;
+        self.until("the huge poster sized but not drawn", |tab| {
+            pictured(tab, "poster.png", [Seen::Absent, Seen::Refused(20000, 20000, poster, "Too large to preview")], ["", "Added"])
+        })
+        .await?;
+
+        self.action(Action::Select(file("logo.svg", false)))?;
+        self.until("the logo shown as text with an image toggle", |tab| {
+            patch(tab, "+<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"16\">")
+                && image_diff::offers_toggle(&tab.ui)
+                && image_diff::showing(&tab.ui).is_none()
+                && crate::find::here(&tab.ui).is_some()
+        })
+        .await?;
+        let title = self.find_command("view.image-or-text")?;
+        if title != Some(("Show the image".to_owned(), None)) {
+            return Err(format!("For an SVG diff the image command reads {title:?}").into());
+        }
+        let action = self.tab.read_with(self.cx, |tab, cx| command_action(tab, "view.image-or-text", &Target::Repo, cx))?;
+        self.action(action.ok_or("The image command has no action")?)?;
+        self.until("the logo drawn before and after", |tab| {
+            tab.ui.images.mode == image_diff::Mode::Image
+                && pictured(tab, "logo.svg", [Seen::Drawn(24, 16, old_logo), Seen::Drawn(32, 16, new_logo)], ["Before", "After"])
+        })
+        .await?;
+        let title = self.find_command("view.image-or-text")?;
+        if title != Some(("Show the image as text".to_owned(), None)) {
+            return Err(format!("With the logo drawn the image command reads {title:?}").into());
+        }
+        self.action(Action::Images(image_diff::Action::Show(image_diff::Mode::Text)))?;
+        self.until("the logo back as text", |tab| {
+            image_diff::showing(&tab.ui).is_none() && patch(tab, "-<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"16\">")
+        })
+        .await?;
+
+        self.action(Action::Select(file("chart.png", false)))?;
+        self.until("the chart selected again", |tab| pictured(tab, "chart.png", chart, ["Before", "After"])).await?;
+        self.action(Action::StageFile)?;
+        self.until("the chart staged", |tab| files(tab, &["chart.png"], &["logo.svg", "old.bmp", "buoy.png", "poster.png"])).await?;
+        sized(&root, ":chart.png", new_chart)?;
+        self.action(Action::Select(file("chart.png", true)))?;
+        self.until("the staged chart drawn from the index", |tab| {
+            tab.ui.selection == Some(file("chart.png", true)) && pictured(tab, "chart.png", chart, ["Before", "After"])
+        })
+        .await?;
+
+        self.action(Action::StageAll)?;
+        self.until("every change staged", |tab| {
+            files(tab, &["chart.png", "logo.svg", "old.bmp", "buoy.png", "poster.png"], &[])
+        })
+        .await?;
+        self.type_commit("Redraw the cove")?;
+        self.until("the picture commit made", |tab| {
+            tab.ui.files.is_empty() && tab.ui.history.first().is_some_and(|row| row.subject == "Redraw the cove")
+        })
+        .await?;
+        let head = oid(&root, "HEAD")?;
+        sized(&root, "HEAD:chart.png", new_chart)?;
+        self.select_commit(&head).await?;
+        self.open_file("chart.png").await?;
+        self.until("the committed chart drawn before and after", |tab| {
+            pictured(tab, "chart.png", chart, ["Before", "After"])
+        })
+        .await?;
+        self.action(Action::CloseDiff)?;
+        self.until("the diff closed and its pictures let go", |tab| !tab.ui.diff_open && tab.ui.images.holding() == 0).await?;
+        self.action(Action::OpenDiff)?;
+        self.until("the reopened chart drawn again", |tab| pictured(tab, "chart.png", chart, ["Before", "After"])).await?;
+        self.action(Action::CloseDiff)?;
+        self.until("the diff closed again", |tab| !tab.ui.diff_open && tab.ui.images.holding() == 0).await?;
+
+        git(&root, &["switch", "-qc", "side", &base])?;
+        fs::write(root.join("chart.png"), png(50, 50, 31))?;
+        git(&root, &["commit", "-qam", "Chart the cove from the side"])?;
+        let side_chart = git(&root, &["cat-file", "-s", "side:chart.png"])?.trim().parse::<u64>()?;
+        git(&root, &["switch", "-q", "main"])?;
+        self.until("the side branch seen", |tab| tab.ui.branch == "main").await?;
+        self.begin_merge("side").await?;
+        self.until("the merge stopped on the chart", |tab| {
+            tab.ui.operation.active() && tab.ui.operation.conflicted() == [Path::new("chart.png")]
+        })
+        .await?;
+        self.action(Action::Merge(crate::merge::Action::Open("chart.png".into())))?;
+        self.until("both versions of the chart drawn in the chooser", |tab| {
+            crate::view::centre(&tab.ui) == crate::view::Centre::Chooser
+                && image_diff::conflict_preview(&tab.ui).is_some_and(|held| {
+                    held.settled()
+                        && seen(held, 0) == Some(Seen::Drawn(64, 48, new_chart))
+                        && seen(held, 1) == Some(Seen::Drawn(50, 50, side_chart))
+                        && held.picture(0).map(|picture| image_diff::caption(picture, false)).as_deref() == Some("64 × 48")
+                })
+        })
+        .await?;
+        self.action(Action::Conflict(crate::conflict::Action::Take("chart.png".into(), crate::merge::Side::Incoming)))?;
+        self.until("the chart resolved with the side's version and the previews let go", |tab| {
+            tab.ui.operation.conflicted().is_empty()
+                && tab.ui.operation.resolved() == [Path::new("chart.png")]
+                && tab.ui.images.chooser.is_none()
+                && tab.ui.images.holding() == 0
+        })
+        .await?;
+        let side = oid(&root, "side:chart.png")?;
+        git_is(&root, &["ls-files", "--stage", "--", "chart.png"], &format!("100644 {side} 0\tchart.png\n"))?;
+        if fs::read(root.join("chart.png"))? != png(50, 50, 31) {
+            return Err("chart.png does not hold the side's chart".into());
+        }
         self.pass();
         Ok(())
     }

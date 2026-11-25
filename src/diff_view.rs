@@ -424,6 +424,8 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         ui.diff_title.clone()
     };
     let editable = ui.can_edit_index();
+    let picture = crate::image_diff::showing(ui);
+    let texts = !listing_history && picture.is_none();
     let header = div()
         .min_h(px(34.))
         .flex_shrink_0()
@@ -496,11 +498,12 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         .when(committed_file.is_some(), |d| {
             d.child(crate::inspection::history_button(app, cx))
         })
-        .when(!listing_history && !doc.lines.is_empty(), |d| {
+        .when(crate::image_diff::offers_toggle(ui), |d| d.child(crate::image_diff::toggle(ui, cx)))
+        .when(texts && !doc.lines.is_empty(), |d| {
             d.child(mode_control(mode, cx))
         })
-        .when(!listing_history, |d| d.child(options_control(ui, cx)))
-        .when(!listing_history && !doc.lines.is_empty(), |d| d.child(change_buttons(cx)))
+        .when(texts, |d| d.child(options_control(ui, cx)))
+        .when(texts && !doc.lines.is_empty(), |d| d.child(change_buttons(cx)))
         .child(kit::icon_btn(
             "close-diff",
             "x",
@@ -633,10 +636,10 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     let marks = showing_marks(ui, listing_history);
     let measured = ui.diff_options.measured;
     let desk = cx.entity().downgrade();
-    let bars = (!listing_history).then(|| bars(ui)).unwrap_or_default();
-    let placeholder = (!listing_history && doc.lines.is_empty() && doc.state != PatchState::Truncated)
+    let bars = texts.then(|| bars(ui)).unwrap_or_default();
+    let placeholder = (texts && doc.lines.is_empty() && doc.state != PatchState::Truncated)
         .then(|| placeholder(ui, from.is_some()));
-    let showing = !listing_history && placeholder.is_none();
+    let showing = texts && placeholder.is_none();
     div()
         .flex_1()
         .min_h_0()
@@ -650,7 +653,8 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             d.child(crate::inspection::file_history(app, cx))
         })
         .children(bars)
-        .children(crate::lines::bar(ui, cx))
+        .when(texts, |d| d.children(crate::lines::bar(ui, cx)))
+        .children(picture.map(crate::image_diff::view))
         .children(placeholder)
         .when(showing, |d| {
             let sideways = if split {

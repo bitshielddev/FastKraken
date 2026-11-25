@@ -77,7 +77,10 @@ fn store(settings: &mut Settings, choice: Choice, on: bool) {
 }
 
 pub(crate) fn showing(ui: &Ui) -> bool {
-    view::centre(ui) == view::Centre::Diff && !ui.diff.lines.is_empty() && !crate::inspection::showing_history(ui)
+    view::centre(ui) == view::Centre::Diff
+        && !ui.diff.lines.is_empty()
+        && !crate::inspection::showing_history(ui)
+        && crate::image_diff::showing(ui).is_none()
 }
 
 pub(crate) fn resized(ui: &mut Ui, width: Pixels, columns: DiffColumns) -> bool {

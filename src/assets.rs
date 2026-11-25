@@ -1,5 +1,11 @@
 use gpui::{AssetSource, SharedString};
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
+
+pub(crate) const LENT: &str = "lent/";
 
 macro_rules! icons {
     ($($name:literal),* $(,)?) => {
@@ -44,8 +50,20 @@ icons!(
 
 pub struct Assets;
 
+fn lent() -> std::sync::MutexGuard<'static, HashMap<String, Vec<u8>>> {
+    static LENT_BYTES: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
+    LENT_BYTES.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub(crate) fn lend(name: String, bytes: Vec<u8>) {
+    lent().insert(name, bytes);
+}
+
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        if path.starts_with(LENT) {
+            return Ok(lent().remove(path).map(Cow::Owned));
+        }
         Ok(ICONS
             .iter()
             .find(|(name, _)| *name == path)
