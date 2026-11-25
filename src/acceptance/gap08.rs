@@ -5,6 +5,7 @@ use std::{io::Write, process::Stdio};
 const DEPTH: usize = 5_000;
 const DEEP_COMMITS: usize = 6_000;
 const SEARCHED_COMMITS: usize = 400;
+const RIDGE_COMMITS: usize = 300;
 
 fn import(root: &Path, stream: &[u8]) -> Result<()> {
     let mut child = repository::bundled_command(root)?
@@ -192,6 +193,49 @@ impl Replay<'_> {
         if !git(&root, &["for-each-ref", &format!("--contains={abandoned}")])?.is_empty() {
             return Err("A ref still contains the abandoned commit".into());
         }
+        let camp = oid(&root, "main")?;
+        let mut stream = Vec::new();
+        for mark in 1..=RIDGE_COMMITS {
+            let subject = format!("Climb the ridge {mark}");
+            let time = 1_800_000_000 + mark * 60;
+            stream.extend_from_slice(
+                format!(
+                    "commit refs/heads/ridge\nmark :{mark}\ncommitter Cedar Contributor <cedar@example.invalid> {time} +0000\ndata {}\n{subject}\n",
+                    subject.len() + 1
+                )
+                .as_bytes(),
+            );
+            if mark == 1 {
+                stream.extend_from_slice(format!("from {camp}\n").as_bytes());
+            }
+            stream.push(b'\n');
+        }
+        import(&root, &stream)?;
+        let ridge = oid(&root, "ridge")?;
+        self.action(Action::Refresh)?;
+        self.until("a long ridge above the camp", |tab| tab.ui.history.first().is_some_and(|row| row.oid == ridge))
+            .await?;
+        self.action(Action::Reveal(reveal::Action::Commit(camp.clone())))?;
+        self.until("the camp selected and in view below the ridge", |tab| {
+            tab.ui.selection == Some(Selection::Commit(camp.clone()))
+                && tab.ui.reveal.finding().is_none()
+                && in_view(tab, &camp)
+        })
+        .await?;
+        self.action(Action::GraphView(graph_view::Action::Hide("refs/heads/ridge".into())))?;
+        self.until("the ridge hidden", |tab| {
+            tab.ui.graph_view.filtered() && !tab.ui.history.iter().any(|row| row.oid == ridge)
+        })
+        .await?;
+        self.action(Action::GraphView(graph_view::Action::Clear))?;
+        self.until("the filter cleared and the camp still selected and in view below the ridge", |tab| {
+            !tab.ui.graph_view.filtered()
+                && tab.ui.history.first().is_some_and(|row| row.oid == ridge)
+                && tab.ui.selection == Some(Selection::Commit(camp.clone()))
+                && tab.ui.reveal.finding().is_none()
+                && in_view(tab, &camp)
+        })
+        .await?;
         self.pass();
         Ok(())
     }
@@ -282,6 +326,15 @@ impl Replay<'_> {
         let last = expected.last().cloned().ok_or("No matches")?;
         self.until("Shift-Return from the first match goes round to the last, deep in history", |tab| {
             tab.ui.selection == Some(Selection::Commit(last.clone())) && in_view(tab, &last)
+        })
+        .await?;
+        record(&root, "route.txt", "Juniper route\n", "Mark a juniper on the route")?;
+        let fresh = oid(&root, "HEAD")?;
+        self.action(Action::Refresh)?;
+        self.until("a new matching commit marked in the graph", |tab| {
+            tab.ui.search.in_graph()
+                && tab.ui.history.first().is_some_and(|row| row.oid == fresh)
+                && tab.ui.search.marks(&fresh)
         })
         .await?;
         self.action(Action::Search(search::Action::Close))?;

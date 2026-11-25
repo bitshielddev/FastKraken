@@ -61,6 +61,9 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             }
             tab.ui.graph_view = GraphView::default();
             tab.load_history(true, cx);
+            if tab.loading_page {
+                crate::reveal::reloading(tab);
+            }
             if let Some(Selection::Commit(oid)) = tab.ui.selection.clone() {
                 crate::reveal::dispatch(tab, crate::reveal::Action::Commit(oid), window, cx);
             }

@@ -181,6 +181,9 @@ pub fn refresh(tab: &mut Tab, force: bool, cx: &mut Context<Tab>) {
                     match result {
                         Ok(rows) => {
                             state.rows = rows;
+                            if state.in_graph {
+                                state.marked = state.shown().iter().map(|row| row.oid.clone()).collect();
+                            }
                             if !force {
                                 state.scroll.scroll_to_item(0, ScrollStrategy::Top);
                             }

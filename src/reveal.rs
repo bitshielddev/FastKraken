@@ -29,6 +29,7 @@ pub enum Action {
 pub(crate) struct State {
     finding: Option<Finding>,
     ticket: u64,
+    reloading: bool,
 }
 
 struct Finding {
@@ -93,6 +94,9 @@ fn said(place: Place, oid: &str) -> Notice {
 }
 
 fn row_of(ui: &Ui, selection: &Selection, oid: &str) -> Option<usize> {
+    if ui.reveal.reloading {
+        return None;
+    }
     match selection {
         Selection::Stash(stash) => ui.stash.stash_row(stash),
         _ => ui.history.iter().position(|row| row.oid == oid).map(|index| ui.stash.commit_row(index)),
@@ -246,7 +250,17 @@ fn pump(tab: &mut Tab, cx: &mut Context<Tab>) {
 }
 
 pub(crate) fn landed(tab: &mut Tab, cx: &mut Context<Tab>) {
+    tab.ui.reveal.reloading = false;
     pump(tab, cx);
+}
+
+pub(crate) fn reloading(tab: &mut Tab) {
+    tab.ui.reveal.reloading = true;
+}
+
+pub(crate) fn failed(tab: &mut Tab) {
+    tab.ui.reveal.reloading = false;
+    end(tab, None);
 }
 
 pub(crate) fn chose(tab: &mut Tab, selection: &Selection) {

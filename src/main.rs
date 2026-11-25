@@ -415,7 +415,7 @@ impl Tab {
                     Err(err) => {
                         tab.ui.has_more = false;
                         tab.error(err, cx);
-                        reveal::landed(tab, cx);
+                        reveal::failed(tab);
                     }
                 }
             },
