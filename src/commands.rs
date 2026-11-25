@@ -44,7 +44,13 @@ impl Target {
                 },
                 _ => Self::Commit(oid.clone()),
             },
-            Some(Selection::Stash(oid)) => Self::Stash(oid.clone()),
+            Some(Selection::Stash(oid)) => match ui.stash.open_path() {
+                Some(path) if ui.diff_open => Self::File {
+                    path: path.to_path_buf(),
+                    side: Side::Stash(oid.clone()),
+                },
+                _ => Self::Stash(oid.clone()),
+            },
             Some(Selection::Changes) | None => match crate::conflict::open_path(ui) {
                 Some(path) => Self::Conflict(path.to_path_buf()),
                 None => Self::Repo,

@@ -1193,7 +1193,13 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         A::Branch(action) => matches!(action, crate::branch::Action::Restore { .. }),
         A::Tag(action) => matches!(action, crate::tag::Action::Restore { .. }),
         A::Tracking(action) => matches!(action, crate::tracking::Action::RestoreRemote { .. }),
-        A::Stash(action) => matches!(action, crate::stash::Action::Restore { .. } | crate::stash::Action::Dismiss),
+        A::Stash(action) => matches!(
+            action,
+            crate::stash::Action::Restore { .. }
+                | crate::stash::Action::Dismiss
+                | crate::stash::Action::OpenFile(_)
+                | crate::stash::Action::AllChanges
+        ),
         A::Sync(action) => {
             use crate::sync::Action as S;
             matches!(action, S::RestoreForced { .. } | S::Dismiss | S::TogglePrune | S::SetDefault(_))

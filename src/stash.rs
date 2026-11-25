@@ -33,6 +33,12 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
             _ => None,
         }
     }
+    fn stashed_file<'a>(ui: &Ui, target: &'a Target) -> Option<(&'a String, &'a PathBuf)> {
+        match target {
+            Target::File { path, side: Side::Stash(oid) } if ui.stash.file(oid, path).is_some() => Some((oid, path)),
+            _ => None,
+        }
+    }
     fn worktree_files(target: &Target) -> Option<Vec<PathBuf>> {
         match target {
             Target::File { path, side: Side::Unstaged | Side::Staged } => Some(vec![path.clone()]),
@@ -69,7 +75,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
             },
             |_, _| Some(view::Action::Stash(Action::ToggleOptions)),
         )
-        .words(&["name stash", "stash message", "stash staged only", "staged changes only"])
+        .words(&["name stash", "stash message", "stash staged only", "staged changes only", "stash selected files"])
         .icon("stash")
         .bar(Bar::Repository),
         Command::new(
@@ -103,6 +109,25 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
             },
             |_, target| worktree_files(target).map(|paths| view::Action::Stash(Action::SaveFiles(paths))),
         )
+        .icon("stash"),
+        Command::new(
+            "stash.restore-file",
+            Group::Stash,
+            |ui, target| match stashed_file(ui, target).and_then(|(oid, path)| ui.stash.file(oid, path)) {
+                Some(file) if file.status == DELETED => "Remove this file, as the stash does".into(),
+                _ => "Restore this file from the stash".into(),
+            },
+            |ui, target, _| match stashed_file(ui, target) {
+                Some(_) => Availability::unless(restore_refusal(ui)),
+                None => Availability::Hidden,
+            },
+            |ui, target| {
+                stashed_file(ui, target).map(|(oid, path)| {
+                    view::Action::Stash(Action::AskRestoreFile { oid: oid.clone(), path: path.clone() })
+                })
+            },
+        )
+        .words(&["apply stashed file", "apply file from stash", "checkout file from stash"])
         .icon("stash"),
         Command::new(
             "stash.apply",
@@ -170,6 +195,31 @@ fn refusal(ui: &Ui, staged: bool) -> Option<String> {
     })
 }
 
+fn restore_refusal(ui: &Ui) -> Option<String> {
+    index_edit(ui).or_else(|| crate::commands::operating(ui))
+}
+
+fn submit_refusal(ui: &Ui) -> Option<String> {
+    if !ui.stash.files_only {
+        return refusal(ui, ui.stash.staged_only);
+    }
+    index_edit(ui).or_else(|| crate::commands::operating(ui)).or_else(|| {
+        selected_files(ui).is_none().then(|| "Select the files to stash in the list of changes first".to_owned())
+    })
+}
+
+pub(crate) fn selected_files(ui: &Ui) -> Option<Vec<PathBuf>> {
+    if let Some((paths, _)) = crate::picked::files(ui) {
+        return Some(paths);
+    }
+    match &ui.selection {
+        Some(Selection::File { path, staged }) if ui.files.iter().any(|file| &file.path == path && file.staged == *staged) => {
+            Some(vec![path.clone()])
+        }
+        _ => None,
+    }
+}
+
 fn staged_paths(ui: &Ui) -> Vec<PathBuf> {
     ui.files.iter().filter(|file| file.staged).map(|file| file.path.clone()).collect()
 }
@@ -220,7 +270,56 @@ pub(crate) struct Untracked {
 pub struct Push {
     pub message: String,
     pub staged: Option<Vec<PathBuf>>,
+    pub files: Option<Vec<PathBuf>>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Restore {
+    pub oid: String,
+    pub path: PathBuf,
+    pub from: Option<PathBuf>,
+    pub removed: bool,
+    pub head: Option<String>,
+    pub rows: Vec<(PathBuf, bool, &'static str)>,
+}
+
+impl Restore {
+    fn of(ui: &Ui, oid: &str, file: &ChangedFile) -> Self {
+        let mut restore = Self {
+            oid: oid.to_owned(),
+            path: file.path.clone(),
+            from: file.from.clone(),
+            removed: file.status == DELETED,
+            head: ui.head.clone(),
+            rows: Vec::new(),
+        };
+        restore.rows = restore.touching(ui.files.iter().map(|row| (&row.path, row.from.as_ref(), row.staged, row.status)));
+        restore
+    }
+
+    fn affected(&self) -> Vec<&PathBuf> {
+        std::iter::once(&self.path).chain(&self.from).collect()
+    }
+
+    fn touching<'a>(
+        &self,
+        rows: impl Iterator<Item = (&'a PathBuf, Option<&'a PathBuf>, bool, &'static str)>,
+    ) -> Vec<(PathBuf, bool, &'static str)> {
+        let affected = self.affected();
+        let mut touching: Vec<_> = rows
+            .filter(|(path, from, _, _)| affected.contains(path) || from.is_some_and(|from| affected.contains(&from)))
+            .map(|(path, _, staged, status)| (path.clone(), staged, status))
+            .collect();
+        touching.sort();
+        touching
+    }
+
+    fn name(&self) -> String {
+        self.path.display().to_string()
+    }
+}
+
+const DELETED: &str = "Deleted";
 
 pub(crate) fn push_changes(cmd: &mut std::process::Command) -> Result<(), String> {
     saved(&checked(cmd.env("LC_ALL", "C"))?)
@@ -462,6 +561,143 @@ impl Repository {
         read_diff(cmd, None, false)
     }
 
+    pub(crate) fn stash_file_diff(&self, oid: &str, path: &Path, from: Option<&Path>) -> Result<Diff, String> {
+        validate_oid(oid)?;
+        validate_path(path)?;
+        if let Some(from) = from {
+            validate_path(from)?;
+        }
+        let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let index = scratch.path().join("index");
+        let untracked = format!("{oid}^3");
+        let mut read = self.read_command();
+        read.env("GIT_INDEX_FILE", &index).args(["read-tree", oid]);
+        if self.stash_has_untracked(oid)? {
+            read.arg(&untracked);
+        }
+        checked(&mut read)?;
+        let mut cmd = self.read_command();
+        cmd.env("GIT_INDEX_FILE", &index)
+            .args(["diff", "--cached"])
+            .args(patch_options(true))
+            .arg(format!("{oid}^1"))
+            .arg("--")
+            .args(from)
+            .arg(path);
+        read_diff(cmd, None, false)
+    }
+
+    fn stash_has_untracked(&self, oid: &str) -> Result<bool, String> {
+        validate_oid(oid)?;
+        let output = self
+            .read_command()
+            .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
+            .arg(format!("{oid}^3^{{tree}}"))
+            .run()
+            .map_err(|e| format!("Run bundled Git: {e}"))?;
+        Ok(output.status.success())
+    }
+
+    fn restore_stashed_file(&self, restore: &Restore) -> Result<Outcome, String> {
+        let oid = restore.oid.as_str();
+        validate_oid(oid)?;
+        for path in restore.affected() {
+            validate_path(path)?;
+        }
+        let status = self.status()?;
+        if let Some(kind) = status.operation.filter(|kind| kind.holds()) {
+            return Err(format!("{}.", kind.refusal()));
+        }
+        if !self.stashes()?.iter().any(|entry| entry.oid == oid) {
+            return Err("This stash is no longer in the stash list.".into());
+        }
+        let row = self
+            .stash_files(oid)?
+            .into_iter()
+            .find(|file| file.path == restore.path)
+            .ok_or_else(|| format!("The stash holds no change to {}.", restore.name()))?;
+        if row.from != restore.from || (row.status == DELETED) != restore.removed {
+            return Err("The stash's files are not the ones you saw. Look at the stash again.".into());
+        }
+        let now = restore.touching(
+            [(false, &status.unstaged), (true, &status.staged)]
+                .into_iter()
+                .flat_map(|(staged, rows)| rows.iter().map(move |row| (&row.path, row.from.as_ref(), staged, row.status))),
+        );
+        if status.head != restore.head || now != restore.rows {
+            return Err(format!(
+                "{} changed since you chose to restore it. Look at it again, then restore it.",
+                restore.name()
+            ));
+        }
+        let (writes, removals): (Vec<PathBuf>, Vec<PathBuf>) = if restore.removed {
+            (Vec::new(), vec![restore.path.clone()])
+        } else {
+            (vec![restore.path.clone()], restore.from.iter().cloned().collect())
+        };
+        let unlisted: Vec<PathBuf> = writes
+            .iter()
+            .filter(|path| self.root.join(path).symlink_metadata().is_ok())
+            .filter(|path| !now.iter().any(|(row, _, _)| row == *path))
+            .cloned()
+            .collect();
+        if let Some(ignored) = self.ignored_among(&unlisted)? {
+            return Err(format!(
+                "{} is in your files and Git ignores it, so it is not listed as a change. Move it aside, then restore it.",
+                ignored.display()
+            ));
+        }
+        for path in &removals {
+            if self.root.join(path).symlink_metadata().is_ok_and(|meta| meta.is_dir()) {
+                return Err(format!("{} is a folder in your files. Move it aside, then restore the file.", path.display()));
+            }
+        }
+        let untracked: BTreeSet<PathBuf> = self.stash_untracked(oid)?.into_iter().map(|file| file.path).collect();
+        let (from_untracked, from_tracked): (Vec<PathBuf>, Vec<PathBuf>) =
+            writes.into_iter().partition(|path| untracked.contains(path));
+        if !from_tracked.is_empty() {
+            self.with_paths(&["restore", "--worktree", &format!("--source={oid}")], &from_tracked)?;
+        }
+        if !from_untracked.is_empty() {
+            self.with_paths(&["restore", "--worktree", &format!("--source={oid}^3")], &from_untracked)?;
+        }
+        for path in &removals {
+            let at = self.root.join(path);
+            if at.symlink_metadata().is_ok() {
+                std::fs::remove_file(&at).map_err(|e| format!("Remove {}: {e}", path.display()))?;
+            }
+        }
+        let kept = "Other files are unchanged, and the stash stays in the list.";
+        Ok(match (&restore.from, restore.removed) {
+            (_, true) => Outcome::titled(format!("Removed {}, as in the stash", restore.name()), kept),
+            (Some(from), false) => Outcome::titled(
+                format!("Restored {} from the stash", restore.name()),
+                format!("{} was removed, as in the stash. {kept}", from.display()),
+            ),
+            (None, false) => Outcome::titled(format!("Restored {} from the stash", restore.name()), kept),
+        })
+    }
+
+    fn ignored_among(&self, paths: &[PathBuf]) -> Result<Option<PathBuf>, String> {
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(path.as_os_str().as_encoded_bytes());
+            input.push(0);
+        }
+        let mut check = self.command();
+        check.env_remove("GIT_LITERAL_PATHSPECS").args(["--no-optional-locks", "check-ignore", "--stdin", "-z"]);
+        let output =
+            crate::repository::run_with_input(&mut check, input).map_err(|e| format!("Run bundled Git: {e}"))?;
+        match output.status.code() {
+            Some(0) => Ok(output.stdout.split(|&b| b == 0).find(|name| !name.is_empty()).map(raw_path)),
+            Some(1) => Ok(None),
+            _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+        }
+    }
+
     pub(crate) fn stash_push(&self) -> std::process::Command {
         let mut push = self.command();
         for setting in [
@@ -476,7 +712,7 @@ impl Repository {
         push
     }
 
-    fn save_stash(&self, paths: &[PathBuf]) -> Result<(), String> {
+    fn save_stash(&self, paths: &[PathBuf], message: &str) -> Result<(), String> {
         let status = self.status()?;
         if let Some(kind) = status.operation.filter(|kind| kind.holds()) {
             return Err(format!("{}.", kind.refusal()));
@@ -486,6 +722,10 @@ impl Repository {
         }
         let mut push = self.stash_push();
         push.arg("--include-untracked");
+        let message = message.trim();
+        if !message.is_empty() {
+            push.arg(format!("--message={message}"));
+        }
         if paths.is_empty() {
             return push_changes(&mut push);
         }
@@ -500,11 +740,28 @@ impl Repository {
                 });
             }
         }
-        let origins = with_origins(&status.unstaged, &with_origins(&status.staged, paths)).split_off(paths.len());
+        let mut origins = with_origins(&status.unstaged, &with_origins(&status.staged, paths)).split_off(paths.len());
         let chosen: BTreeSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
-        let pathspecs = nul_separated(paths, b":(top,literal)")?;
+        let deleted: BTreeSet<&Path> = status
+            .staged
+            .iter()
+            .filter(|file| {
+                file.status == DELETED
+                    && chosen.contains(file.path.as_path())
+                    && self.root.join(&file.path).symlink_metadata().is_err()
+            })
+            .map(|file| file.path.as_path())
+            .collect();
+        let only_deletions = deleted.len() == chosen.len();
+        let named: Vec<PathBuf> = if only_deletions {
+            paths.to_vec()
+        } else {
+            paths.iter().filter(|path| !deleted.contains(path.as_path())).cloned().collect()
+        };
+        origins.extend(deleted.iter().map(|path| path.to_path_buf()));
+        let pathspecs = nul_separated(&named, b":(top,literal)")?;
         push.args(["--pathspec-from-file=-", "--pathspec-file-nul"]);
-        if status.staged.iter().all(|file| chosen.contains(file.path.as_path())) {
+        if !only_deletions && status.staged.iter().all(|file| chosen.contains(file.path.as_path())) {
             push_changes_from(&mut push, pathspecs)?;
             return match &status.head {
                 Some(head) => self.put_back(head, &origins),
@@ -521,6 +778,7 @@ impl Repository {
             .staged
             .iter()
             .filter(|file| chosen.contains(file.path.as_path()))
+            .filter(|file| !only_deletions || !deleted.contains(file.path.as_path()))
             .map(|file| file.path.clone())
             .collect();
         let staged = with_origins(&status.staged, &rows);
@@ -581,11 +839,19 @@ impl Repository {
     }
 
     fn push_stash(&self, push: &Push) -> Result<Outcome, Failure> {
+        let message = push.message.trim();
+        if let Some(paths) = &push.files {
+            if paths.is_empty() {
+                return Err(Failure::from("Select the files to stash.".to_owned()));
+            }
+            self.save_stash(paths, message)?;
+            let title = if message.is_empty() { format!("Stashed {}", files(paths.len())) } else { format!("Stashed {message}") };
+            return Ok(Outcome::titled(title, "Only the selected files. Other changes stay in your files."));
+        }
         let status = self.status()?;
         if let Some(kind) = status.operation.filter(|kind| kind.holds()) {
             return Err(Failure::from(format!("{}.", kind.refusal())));
         }
-        let message = push.message.trim();
         let mut command = self.stash_push();
         match &push.staged {
             None => {
@@ -801,7 +1067,9 @@ pub struct State {
     placements: Vec<Placement>,
     options_open: bool,
     staged_only: bool,
+    files_only: bool,
     message: Option<Entity<CommitInput>>,
+    path: Option<PathBuf>,
 }
 
 struct Placement {
@@ -833,6 +1101,28 @@ impl State {
 
     pub(crate) fn staged_only(&self) -> bool {
         self.staged_only
+    }
+
+    pub(crate) fn files_only(&self) -> bool {
+        self.files_only
+    }
+
+    pub(crate) fn open_path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    pub(crate) fn from(&self, oid: &str, path: &Path) -> Option<PathBuf> {
+        if self.detail_oid.as_deref() != Some(oid) {
+            return None;
+        }
+        self.files.iter().find(|file| file.path == path).and_then(|file| file.from.clone())
+    }
+
+    fn file(&self, oid: &str, path: &Path) -> Option<&ChangedFile> {
+        if self.detail_oid.as_deref() != Some(oid) || !self.entries.iter().any(|entry| entry.oid == oid) {
+            return None;
+        }
+        self.files.iter().find(|file| file.path == path)
     }
 
     pub(crate) fn message(&self) -> Option<&Entity<CommitInput>> {
@@ -904,7 +1194,11 @@ pub enum Action {
     ToggleOptions,
     Dismiss,
     ToggleStaged,
+    ToggleFiles,
     Submit,
+    OpenFile(PathBuf),
+    AllChanges,
+    AskRestoreFile { oid: String, path: PathBuf },
     Pop(String),
     Apply(String),
     Rename(String),
@@ -926,6 +1220,7 @@ pub(crate) enum Ask {
         title: String,
         position: usize,
     },
+    RestoreFile(Restore),
 }
 
 pub(crate) fn describe(ask: &Ask, _: &Ui) -> Spec {
@@ -956,6 +1251,29 @@ pub(crate) fn describe(ask: &Ask, _: &Ui) -> Spec {
             });
             spec
         }
+        Ask::RestoreFile(restore) => {
+            let name = restore.name();
+            let spec = if restore.removed {
+                Spec::new(format!("Remove {name}, as the stash does?"), "Remove file")
+                    .line(format!("The stash deletes {name}. Your copy has changes that are not committed, and they will be lost."))
+            } else {
+                let mut changed: Vec<String> = restore.rows.iter().map(|(path, _, _)| path.display().to_string()).collect();
+                changed.dedup();
+                let changed = match changed.as_slice() {
+                    [one] if *one == name => format!("Your copy of {name} has"),
+                    [one] => format!("{one} has"),
+                    many => format!("{} have", many.join(" and ")),
+                };
+                Spec::new(format!("Replace {name} with the stash's version?"), "Replace file").line(format!(
+                    "{changed} changes that are not committed. They will be lost."
+                ))
+            };
+            let spec = match &restore.from {
+                Some(from) if !restore.removed => spec.line(format!("{} is removed, as in the stash.", from.display())),
+                _ => spec,
+            };
+            spec.line("Staged changes and other files are not touched, and the stash stays in the list.").danger()
+        }
     }
 }
 
@@ -977,7 +1295,19 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<
             move |repo| repo.rename_stash(&oid, &answer.text),
             |_, _| {},
         ),
+        Ask::RestoreFile(restore) => restore_file(tab, restore, cx),
     }
+}
+
+fn restore_file(tab: &mut Tab, restore: Restore, cx: &mut Context<Tab>) {
+    tab.run_operation_then(
+        cx,
+        "Restoring the file from the stash…",
+        "File restored",
+        false,
+        move |repo| repo.restore_stashed_file(&restore),
+        |_, _| {},
+    );
 }
 
 pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
@@ -1016,6 +1346,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
 }
 
 pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
+    tab.ui.stash.path = None;
     if oid == tab.ui.stash.detail_oid.as_deref() {
         return;
     }
@@ -1071,20 +1402,47 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
         Action::ToggleStaged => {
             if tab.ui.stash.options_open {
                 tab.ui.stash.staged_only = !tab.ui.stash.staged_only;
+                tab.ui.stash.files_only &= !tab.ui.stash.staged_only;
+            }
+            cx.notify();
+            return;
+        }
+        Action::ToggleFiles => {
+            if tab.ui.stash.options_open {
+                tab.ui.stash.files_only = !tab.ui.stash.files_only;
+                tab.ui.stash.staged_only &= !tab.ui.stash.files_only;
             }
             cx.notify();
             return;
         }
         Action::Submit => {
-            if !tab.ui.stash.options_open || refusal(&tab.ui, tab.ui.stash.staged_only).is_some() {
+            if !tab.ui.stash.options_open || submit_refusal(&tab.ui).is_some() {
                 return;
             }
             let message = tab.ui.stash.message.as_ref().map(|m| m.read(cx).text().to_owned()).unwrap_or_default();
             let staged = tab.ui.stash.staged_only.then(|| staged_paths(&tab.ui));
+            let files = if tab.ui.stash.files_only { selected_files(&tab.ui) } else { None };
             tab.ui.stash.options_open = false;
             view::focus(&tab.ui, window);
-            push(tab, Push { message, staged }, cx);
+            push(tab, Push { message, staged, files }, cx);
             cx.notify();
+            return;
+        }
+        Action::OpenFile(path) => {
+            let Some(Selection::Stash(oid)) = tab.ui.selection.clone() else { return };
+            if tab.ui.stash.file(&oid, &path).is_none() {
+                return;
+            }
+            tab.ui.stash.path = Some(path.clone());
+            tab.ui.diff_open = true;
+            tab.load_selected_patch(Selection::Stash(oid), Some(path), cx);
+            return;
+        }
+        Action::AllChanges => {
+            let Some(Selection::Stash(oid)) = tab.ui.selection.clone() else { return };
+            tab.ui.stash.path = None;
+            tab.ui.diff_open = true;
+            tab.load_selected_patch(Selection::Stash(oid), None, cx);
             return;
         }
         _ => {}
@@ -1097,8 +1455,8 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             "Changes stashed",
             false,
             move |repo| match action {
-                Action::SaveFiles(paths) => repo.save_stash(&paths),
-                _ => repo.save_stash(&[]),
+                Action::SaveFiles(paths) => repo.save_stash(&paths, ""),
+                _ => repo.save_stash(&[], ""),
             },
             |_, _| {},
         ),
@@ -1145,7 +1503,26 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
         ),
         Action::Rename(oid) => ask_about(tab, oid, false, cx),
         Action::Drop(oid) => ask_about(tab, oid, true, cx),
-        Action::ToggleOptions | Action::Dismiss | Action::ToggleStaged | Action::Submit => {}
+        Action::AskRestoreFile { oid, path } => {
+            if tab.ui.busy() || tab.ui.dialog_open() || restore_refusal(&tab.ui).is_some() {
+                return;
+            }
+            let Some(file) = tab.ui.stash.file(&oid, &path) else { return };
+            let restore = Restore::of(&tab.ui, &oid, file);
+            tab.ui.menu = None;
+            if restore.rows.is_empty() {
+                restore_file(tab, restore, cx);
+            } else {
+                prompt::ask(&mut tab.ui, prompt::Kind::Stash(Ask::RestoreFile(restore)), cx);
+            }
+        }
+        Action::ToggleOptions
+        | Action::Dismiss
+        | Action::ToggleStaged
+        | Action::ToggleFiles
+        | Action::Submit
+        | Action::OpenFile(_)
+        | Action::AllChanges => {}
     }
     cx.notify();
 }
@@ -1194,6 +1571,7 @@ fn push(tab: &mut Tab, how: Push, cx: &mut Context<Tab>) {
         move |repo| repo.push_stash(&how),
         |tab, cx| {
             tab.ui.stash.staged_only = false;
+            tab.ui.stash.files_only = false;
             if let Some(field) = &tab.ui.stash.message {
                 field.update(cx, |field, cx| field.clear(cx));
             }
@@ -1249,9 +1627,17 @@ fn options<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     let ui = app.ui();
     let state = &ui.stash;
     let staged = staged_paths(ui);
+    let selected = selected_files(ui);
     let only = state.staged_only;
-    let reason = refusal(ui, only);
-    let label = if only {
+    let chosen = state.files_only;
+    let reason = submit_refusal(ui);
+    let label = if chosen {
+        match selected.as_ref().map_or(0, Vec::len) {
+            0 => "Stash selected files".to_owned(),
+            1 => "Stash 1 selected file".to_owned(),
+            n => format!("Stash {n} selected files"),
+        }
+    } else if only {
         match staged.len() {
             0 => "Stash staged changes".to_owned(),
             1 => "Stash 1 staged file".to_owned(),
@@ -1287,29 +1673,18 @@ fn options<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             Some(format!("Without one the stash is called {}.", unnamed(&ui.branch, ui.detached)).into()),
         ));
     }
-    let tick = div()
-        .id("stash-staged-only")
-        .flex()
-        .items_center()
-        .gap_2()
-        .rounded(px(RADIUS_CHIP))
-        .text_size(px(12.5))
-        .child(kit::checkbox(only))
-        .child("Staged changes only");
-    form = form.child(if staged.is_empty() && !only {
-        tick.text_color(rgb(TEXT_OFF)).child(kit::muted("Nothing is staged").text_size(px(11.5)))
-    } else {
-        kit::pressable(
-            tick.cursor_pointer()
-                .text_color(rgb(TEXT_2))
-                .focusable()
-                .focus(|s| s.text_color(rgb(TEXT))),
-            view::Action::Stash(Action::ToggleStaged),
-            cx,
-        )
-    });
+    let staged_off = (staged.is_empty() && !only).then_some("Nothing is staged");
+    form = form.child(tick("stash-staged-only", only, "Staged changes only", staged_off, Action::ToggleStaged, cx));
     if only {
         form = form.child(kit::muted("Unstaged edits and untracked files stay in your files.").text_size(px(11.5)));
+    }
+    if selected.is_some() || chosen {
+        form = form.child(tick("stash-selected-files", chosen, "Selected files only", None, Action::ToggleFiles, cx));
+    }
+    if chosen {
+        form = form.child(
+            kit::muted("Their staged and unstaged changes are stashed. Other files stay as they are.").text_size(px(11.5)),
+        );
     }
     let mut submit = kit::btn("stash-submit", label).primary().wide().enabled(reason.is_none());
     if let Some(reason) = reason {
@@ -1335,6 +1710,57 @@ fn options<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         );
     }
     form
+}
+
+fn tick<T: Desk>(
+    id: &'static str,
+    on: bool,
+    text: &'static str,
+    off: Option<&'static str>,
+    action: Action,
+    cx: &mut Context<T>,
+) -> gpui::AnyElement {
+    let tick = div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded(px(RADIUS_CHIP))
+        .text_size(px(12.5))
+        .child(kit::checkbox(on))
+        .child(text);
+    match off {
+        Some(reason) => tick.text_color(rgb(TEXT_OFF)).child(kit::muted(reason).text_size(px(11.5))).into_any_element(),
+        None => kit::pressable(
+            tick.cursor_pointer()
+                .text_color(rgb(TEXT_2))
+                .focusable()
+                .focus(|s| s.text_color(rgb(TEXT))),
+            view::Action::Stash(action),
+            cx,
+        )
+        .into_any_element(),
+    }
+}
+
+pub(crate) fn restore_button<T: Desk>(ui: &Ui, cx: &Context<T>) -> Option<impl IntoElement + use<T>> {
+    let (Some(Selection::Stash(oid)), Some(path)) = (&ui.selection, ui.stash.open_path()) else {
+        return None;
+    };
+    let target = crate::commands::Target::File {
+        path: path.to_path_buf(),
+        side: crate::commands::Side::Stash(oid.clone()),
+    };
+    let entry = crate::commands::entry(crate::commands::find("stash.restore-file")?, ui, &target, cx)?;
+    let ask = view::Action::Stash(Action::AskRestoreFile { oid: oid.clone(), path: path.to_path_buf() });
+    Some(
+        kit::btn("restore-stashed-file", "Restore file")
+            .small()
+            .icon("stash")
+            .enabled(entry.action.is_some())
+            .tip(entry.disabled.unwrap_or(entry.title))
+            .on(entry.action.unwrap_or(ask), cx),
+    )
 }
 
 pub fn file_button<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
@@ -1377,21 +1803,23 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             };
             range
                 .filter_map(|idx| {
-                    let file = app.ui().stash.files.get(idx)?;
+                    let ui = app.ui();
+                    let file = ui.stash.files.get(idx)?;
                     let target = crate::commands::Target::File {
                         path: file.path.clone(),
                         side: crate::commands::Side::Stash(stash.clone()),
                     };
+                    let path = file.path.clone();
+                    let open = ui.diff_open && ui.stash.open_path() == Some(file.path.as_path());
                     Some(
-                        div()
-                            .id(("stashed-file", idx))
+                        kit::row(("stashed-file", idx), open)
                             .h(px(FILE_ROW))
-                            .w_full()
-                            .pl_3()
-                            .pr_2()
-                            .flex()
-                            .items_center()
+                            .pl(px(10.))
+                            .pr_3()
                             .gap_2()
+                            .on_click(cx.listener(move |app, _, w, cx| {
+                                app.dispatch(view::Action::Stash(Action::OpenFile(path.clone())), w, cx)
+                            }))
                             .on_mouse_down(
                                 gpui::MouseButton::Right,
                                 cx.listener(move |app, event: &gpui::MouseDownEvent, w, cx| {
@@ -1463,7 +1891,7 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             kit::btn("stash-patch", "View changes")
                                 .small()
                                 .ghost()
-                                .on(view::Action::OpenDiff, cx),
+                                .on(view::Action::Stash(Action::AllChanges), cx),
                         )
                         .child(
                             kit::btn("rename-stash", "Rename…")
@@ -1519,7 +1947,7 @@ mod tests {
         let mut oids = Vec::new();
         for name in names {
             fs::write(f.dir.join(name), name).unwrap();
-            f.repo.push_stash(&Push { message: (*name).to_owned(), staged: None }).unwrap();
+            f.repo.push_stash(&Push { message: (*name).to_owned(), staged: None, files: None }).unwrap();
             oids.push(rev(&f, "refs/stash"));
         }
         (f, oids)
@@ -1575,7 +2003,7 @@ mod tests {
             }
             let status = f.repo.status().unwrap();
             fs::write(f.dir.join("notes"), "edit").unwrap();
-            f.repo.push_stash(&Push { message: String::new(), staged: None }).unwrap();
+            f.repo.push_stash(&Push { message: String::new(), staged: None, files: None }).unwrap();
             assert_eq!(f.repo.stashes().unwrap()[0].title, unnamed(&status.branch, status.detached));
         }
         assert_eq!(f.repo.stashes().unwrap()[0].title, "WIP on (no branch)");
@@ -1595,7 +2023,7 @@ mod tests {
         f.git(&["add", "."]);
         fs::write(&work, "note working\n").unwrap();
         fs::write(f.dir.join("other"), "other working\n").unwrap();
-        f.repo.save_stash(&[path.to_path_buf()]).unwrap();
+        f.repo.save_stash(&[path.to_path_buf()], "").unwrap();
         let stash = &f.repo.stashes().unwrap()[0].oid;
         assert_eq!(
             f.repo.stash_files(stash).unwrap(),
@@ -1633,7 +2061,7 @@ mod tests {
         fs::write(f.dir.join("left.txt"), "left working\n").unwrap();
         fs::write(f.dir.join("new é.txt"), "new\n").unwrap();
         let chosen = [PathBuf::from("a.txt"), PathBuf::from("b c.txt"), PathBuf::from("new é.txt")];
-        f.repo.save_stash(&chosen).unwrap();
+        f.repo.save_stash(&chosen, "").unwrap();
 
         let stash = f.repo.stashes().unwrap()[0].oid.clone();
         let mut files: Vec<_> = f.repo.stash_files(&stash).unwrap().into_iter().map(|file| file.path).collect();
@@ -1666,7 +2094,7 @@ mod tests {
         f.git(&["add", "."]);
         f.git(&["commit", "-qm", "base"]);
         fs::write(f.dir.join("a.txt"), "edited\n").unwrap();
-        let err = f.repo.save_stash(&[PathBuf::from("a.txt"), PathBuf::from("clean.txt")]).unwrap_err();
+        let err = f.repo.save_stash(&[PathBuf::from("a.txt"), PathBuf::from("clean.txt")], "").unwrap_err();
         assert_eq!(err, "clean.txt no longer has changes to stash.");
         assert!(f.repo.stashes().unwrap().is_empty());
         assert_eq!(fs::read(f.dir.join("a.txt")).unwrap(), b"edited\n");
@@ -1680,7 +2108,7 @@ mod tests {
         f.git(&["commit", "-qm", "base"]);
         fs::write(f.dir.join("notes"), "edited\n").unwrap();
         fs::write(f.dir.join("loose"), "new\n").unwrap();
-        let outcome = f.repo.push_stash(&Push { message: "  --Draft the gate  ".into(), staged: None }).unwrap();
+        let outcome = f.repo.push_stash(&Push { message: "  --Draft the gate  ".into(), staged: None, files: None }).unwrap();
         assert_eq!((outcome.title.as_str(), outcome.detail.as_str()), ("Stashed --Draft the gate", ""));
         let entries = f.repo.stashes().unwrap();
         assert_eq!(entries.len(), 1);
@@ -1689,10 +2117,10 @@ mod tests {
         assert_eq!(f.git(&["status", "--porcelain=v1"]), b"");
         assert_eq!(f.git(&["show", "stash^3:loose"]), b"new\n");
         fs::write(f.dir.join("notes"), "again\n").unwrap();
-        let outcome = f.repo.push_stash(&Push { message: " ".into(), staged: None }).unwrap();
+        let outcome = f.repo.push_stash(&Push { message: " ".into(), staged: None, files: None }).unwrap();
         assert_eq!(outcome.title, "Changes stashed");
         assert_eq!(f.repo.stashes().unwrap()[0].title, "WIP on main");
-        assert_eq!(f.repo.push_stash(&Push { message: "x".into(), staged: None }).unwrap_err().text, "No changes to stash.");
+        assert_eq!(f.repo.push_stash(&Push { message: "x".into(), staged: None, files: None }).unwrap_err().text, "No changes to stash.");
     }
 
     #[test]
@@ -1708,7 +2136,7 @@ mod tests {
         fs::write(f.dir.join("gate"), gate.replacen("1\n", "one\n", 1).replace("20\n", "twenty\n")).unwrap();
         fs::write(f.dir.join("other"), "keep\nedit\n").unwrap();
         fs::write(f.dir.join("loose"), "new\n").unwrap();
-        let push = Push { message: "Gate".into(), staged: Some(vec!["gate".into()]) };
+        let push = Push { message: "Gate".into(), staged: Some(vec!["gate".into()]), files: None };
         let outcome = f.repo.push_stash(&push).unwrap();
         assert_eq!(outcome.title, "Stashed Gate");
         assert_eq!(outcome.detail, "Only the staged changes. Unstaged edits and untracked files stay in your files.");
@@ -1734,14 +2162,14 @@ mod tests {
         f.git(&["add", "gate"]);
         let index = f.git(&["ls-files", "--stage"]);
         f.git(&["add", "ford"]);
-        let seen = Push { message: String::new(), staged: Some(vec!["gate".into()]) };
+        let seen = Push { message: String::new(), staged: Some(vec!["gate".into()]), files: None };
         let failure = f.repo.push_stash(&seen).unwrap_err();
         assert_eq!(failure.text, "The staged files changed. Review them and stash again.");
         assert_eq!(listed(&f), "");
         f.git(&["restore", "--staged", "ford"]);
         assert_eq!(f.git(&["ls-files", "--stage"]), index);
         f.git(&["restore", "--staged", "gate"]);
-        let failure = f.repo.push_stash(&Push { message: String::new(), staged: Some(Vec::new()) }).unwrap_err();
+        let failure = f.repo.push_stash(&Push { message: String::new(), staged: Some(Vec::new()), files: None }).unwrap_err();
         assert_eq!(failure.text, "Nothing is staged, so there is nothing to stash on its own.");
         assert_eq!(listed(&f), "");
         assert_eq!(f.git(&["status", "--porcelain=v1"]), b" M ford\n M gate\n");
@@ -1758,7 +2186,7 @@ mod tests {
         fs::write(f.dir.join("gate"), "working\n").unwrap();
         let index = f.git(&["ls-files", "--stage"]);
         let list = listed(&f);
-        let failure = f.repo.push_stash(&Push { message: "Gate".into(), staged: Some(vec!["gate".into()]) }).unwrap_err();
+        let failure = f.repo.push_stash(&Push { message: "Gate".into(), staged: Some(vec!["gate".into()]), files: None }).unwrap_err();
         assert_eq!(
             failure.text,
             "Stash Failed — The staged changes overlap unstaged edits in the same lines, so they cannot be stashed on their own. Nothing was stashed."
@@ -1769,7 +2197,7 @@ mod tests {
         assert_eq!(f.git(&["ls-files", "--stage"]), index);
         assert_eq!(fs::read(f.dir.join("gate")).unwrap(), b"working\n");
         f.git(&["stash", "drop", "-q"]);
-        let failure = f.repo.push_stash(&Push { message: String::new(), staged: Some(vec!["gate".into()]) }).unwrap_err();
+        let failure = f.repo.push_stash(&Push { message: String::new(), staged: Some(vec!["gate".into()]), files: None }).unwrap_err();
         assert!(failure.text.ends_with("Nothing was stashed."), "{}", failure.text);
         assert!(!exists(&f, "refs/stash"));
         assert_eq!(f.git(&["ls-files", "--stage"]), index);
@@ -1780,10 +2208,10 @@ mod tests {
         let f = Fixture::new();
         f.git(&["commit", "--allow-empty", "-qm", "base"]);
         fs::write(f.dir.join("first"), b"older").unwrap();
-        f.repo.save_stash(&[]).unwrap();
+        f.repo.save_stash(&[], "").unwrap();
         let old = f.repo.stashes().unwrap()[0].oid.clone();
         fs::write(f.dir.join("second"), b"newer").unwrap();
-        f.repo.save_stash(&[]).unwrap();
+        f.repo.save_stash(&[], "").unwrap();
         let list = f.repo.stashes().unwrap();
         assert_eq!(list.len(), 2);
         f.repo.apply_stash(&old).unwrap();
@@ -1805,7 +2233,7 @@ mod tests {
         f.git(&["commit", "--allow-empty", "-qm", "base"]);
         for name in ["first", "second"] {
             fs::write(f.dir.join(name), name).unwrap();
-            f.repo.save_stash(&[]).unwrap();
+            f.repo.save_stash(&[], "").unwrap();
         }
         let entries = f.repo.stashes().unwrap();
         assert_eq!(entries.len(), 2);
@@ -1933,7 +2361,7 @@ mod tests {
         f.git(&["commit", "-qm", "vendor"]);
         fs::write(f.dir.join("vendor/notes"), "dirty").unwrap();
         assert_eq!(f.repo.status().unwrap().changed_paths, 1);
-        assert!(f.repo.save_stash(&[]).unwrap_err().contains("No changes"));
+        assert!(f.repo.save_stash(&[], "").unwrap_err().contains("No changes"));
         assert!(f.repo.stashes().unwrap().is_empty());
         assert_eq!(fs::read(f.dir.join("vendor/notes")).unwrap(), b"dirty");
     }
@@ -1949,7 +2377,7 @@ mod tests {
         fs::write(f.dir.join("other.txt"), "other, stashed\n").unwrap();
         fs::create_dir(f.dir.join("camp")).unwrap();
         fs::write(f.dir.join("camp/loose.txt"), "loose\n").unwrap();
-        f.repo.push_stash(&Push { message: "Trail notes".into(), staged: None }).unwrap();
+        f.repo.push_stash(&Push { message: "Trail notes".into(), staged: None, files: None }).unwrap();
         let oid = rev(&f, "refs/stash");
         fs::write(f.dir.join("trail.txt"), "moved on\n").unwrap();
         f.git(&["commit", "-qam", "Move on"]);
@@ -2048,7 +2476,7 @@ mod tests {
         for name in names {
             fs::write(f.dir.join(name), format!("{name:?}\n")).unwrap();
         }
-        f.repo.push_stash(&Push { message: "Odd names".into(), staged: None }).unwrap();
+        f.repo.push_stash(&Push { message: "Odd names".into(), staged: None, files: None }).unwrap();
         let oid = rev(&f, "refs/stash");
         fs::write(f.dir.join("trail.txt"), "moved on\n").unwrap();
         f.git(&["commit", "-qam", "Move on"]);
@@ -2123,7 +2551,7 @@ mod tests {
         let f = Fixture::new();
         f.git(&["commit", "--allow-empty", "-qm", "base"]);
         fs::write(f.dir.join("notes"), "saved").unwrap();
-        f.repo.save_stash(&[]).unwrap();
+        f.repo.save_stash(&[], "").unwrap();
         let entries = f.repo.stashes().unwrap();
         fs::write(f.dir.join("notes"), "other").unwrap();
         assert!(f.repo.pop_stash(&entries[0].oid).is_err());
@@ -2142,7 +2570,7 @@ mod tests {
         fs::write(f.dir.join("new.txt"), "one\ntwo\nthree\nFOUR\n").unwrap();
         fs::write(f.dir.join("other.txt"), "other staged\n").unwrap();
         f.git(&["add", "."]);
-        f.repo.save_stash(&[PathBuf::from("new.txt")]).unwrap();
+        f.repo.save_stash(&[PathBuf::from("new.txt")], "").unwrap();
 
         let stash = f.repo.stashes().unwrap()[0].oid.clone();
         assert_eq!(
@@ -2160,7 +2588,7 @@ mod tests {
         f.git(&["reset", "-q", "--", "other.txt"]);
         f.git(&["checkout", "--", "other.txt"]);
         f.git(&["mv", "old.txt", "moved.txt"]);
-        f.repo.save_stash(&[PathBuf::from("moved.txt")]).unwrap();
+        f.repo.save_stash(&[PathBuf::from("moved.txt")], "").unwrap();
         assert_eq!(f.git(&["status", "--porcelain"]), b"");
         assert_eq!(fs::read(f.dir.join("old.txt")).unwrap(), b"one\ntwo\nthree\nfour\n");
         let stash = f.repo.stashes().unwrap()[0].oid.clone();
@@ -2168,5 +2596,238 @@ mod tests {
             f.repo.stash_files(&stash).unwrap(),
             [ChangedFile { path: "moved.txt".into(), status: "Renamed", from: Some("old.txt".into()) }]
         );
+    }
+
+    fn read(f: &Fixture, name: &str) -> Option<Vec<u8>> {
+        fs::read(f.dir.join(name)).ok()
+    }
+
+    fn seen(f: &Fixture, oid: &str, path: &str) -> Restore {
+        let file = f.repo.stash_files(oid).unwrap().into_iter().find(|file| file.path == Path::new(path)).unwrap();
+        let status = f.repo.status().unwrap();
+        let mut restore = Restore {
+            oid: oid.to_owned(),
+            path: file.path.clone(),
+            from: file.from.clone(),
+            removed: file.status == DELETED,
+            head: status.head.clone(),
+            rows: Vec::new(),
+        };
+        restore.rows = restore.touching(
+            [(false, &status.unstaged), (true, &status.staged)]
+                .into_iter()
+                .flat_map(|(staged, rows)| rows.iter().map(move |row| (&row.path, row.from.as_ref(), staged, row.status))),
+        );
+        restore
+    }
+
+    fn surveyed() -> (Fixture, String) {
+        let f = Fixture::new();
+        for name in ["map.txt", "log.txt", "gone.txt", "staged.txt"] {
+            fs::write(f.dir.join(name), format!("{name} base\n")).unwrap();
+        }
+        fs::write(f.dir.join("old.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        fs::write(f.dir.join("map.txt"), "map.txt stashed\n").unwrap();
+        fs::write(f.dir.join("log.txt"), "log.txt stashed\n").unwrap();
+        fs::remove_file(f.dir.join("gone.txt")).unwrap();
+        fs::write(f.dir.join("staged.txt"), "staged.txt stashed\n").unwrap();
+        f.git(&["add", "staged.txt"]);
+        fs::write(f.dir.join("new é.txt"), "untracked\n").unwrap();
+        fs::rename(f.dir.join("old.txt"), f.dir.join("moved.txt")).unwrap();
+        f.repo.push_stash(&Push { message: "Survey".into(), staged: None, files: None }).unwrap();
+        let stash = rev(&f, "refs/stash");
+        assert_eq!(f.git(&["status", "--porcelain"]), b"");
+        (f, stash)
+    }
+
+    #[test]
+    fn selected_files_stash_under_a_message_and_leave_every_other_change() {
+        let f = Fixture::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(f.dir.join(name), "base\n").unwrap();
+        }
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        let head = rev(&f, "HEAD");
+        fs::write(f.dir.join("a.txt"), "a working\n").unwrap();
+        fs::write(f.dir.join("b.txt"), "b staged\n").unwrap();
+        f.git(&["add", "b.txt"]);
+        fs::write(f.dir.join("c.txt"), "c working\n").unwrap();
+        fs::write(f.dir.join("new.txt"), "new\n").unwrap();
+        let push = Push {
+            message: " Trail fix ".into(),
+            staged: None,
+            files: Some(vec![PathBuf::from("a.txt"), PathBuf::from("new.txt")]),
+        };
+        let outcome = f.repo.push_stash(&push).unwrap();
+        assert_eq!(outcome.title, "Stashed Trail fix");
+        let entries = f.repo.stashes().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "Trail fix");
+        let mut stashed: Vec<_> = f.repo.stash_files(&entries[0].oid).unwrap().into_iter().map(|file| file.path).collect();
+        stashed.sort();
+        assert_eq!(stashed, [PathBuf::from("a.txt"), PathBuf::from("new.txt")]);
+        assert_eq!(read(&f, "a.txt").unwrap(), b"base\n");
+        assert!(read(&f, "new.txt").is_none());
+        assert_eq!(f.git(&["show", ":b.txt"]), b"b staged\n");
+        assert_eq!(read(&f, "c.txt").unwrap(), b"c working\n");
+        assert_eq!(rev(&f, "HEAD"), head);
+
+        let none = Push { message: String::new(), staged: None, files: Some(Vec::new()) };
+        assert_eq!(f.repo.push_stash(&none).unwrap_err().text, "Select the files to stash.");
+        let clean = Push { message: String::new(), staged: None, files: Some(vec![PathBuf::from("a.txt")]) };
+        assert_eq!(f.repo.push_stash(&clean).unwrap_err().text, "This file no longer has changes to stash.");
+        assert_eq!(f.repo.stashes().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_picked_staged_deletion_is_stashed_and_put_back_beside_other_staged_files() {
+        let f = Fixture::new();
+        for name in ["a.txt", "del.txt", "other.txt"] {
+            fs::write(f.dir.join(name), format!("{name} base\n")).unwrap();
+        }
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        let dirty = |f: &Fixture| {
+            fs::write(f.dir.join("a.txt"), "a working\n").unwrap();
+            f.git(&["rm", "-q", "del.txt"]);
+            fs::write(f.dir.join("other.txt"), "other staged\n").unwrap();
+            f.git(&["add", "other.txt"]);
+        };
+        let stashed = |f: &Fixture| -> Vec<(PathBuf, &'static str)> {
+            let oid = rev(f, "refs/stash");
+            let mut files: Vec<_> = f.repo.stash_files(&oid).unwrap().into_iter().map(|file| (file.path, file.status)).collect();
+            files.sort();
+            files
+        };
+        let untouched = |f: &Fixture| {
+            assert_eq!(read(f, "del.txt").unwrap(), b"del.txt base\n");
+            assert_eq!(f.git(&["show", ":del.txt"]), b"del.txt base\n");
+            assert_eq!(f.git(&["show", ":other.txt"]), b"other staged\n");
+            assert_eq!(f.git(&["diff", "--cached", "--name-only"]), b"other.txt\n");
+        };
+
+        dirty(&f);
+        f.repo.save_stash(&[PathBuf::from("a.txt"), PathBuf::from("del.txt")], "").unwrap();
+        assert_eq!(stashed(&f), [(PathBuf::from("a.txt"), "Modified"), (PathBuf::from("del.txt"), DELETED)]);
+        assert_eq!(f.git(&["show", "stash^2:other.txt"]), b"other.txt base\n");
+        assert!(!exists(&f, "stash^2:del.txt"));
+        assert_eq!(read(&f, "a.txt").unwrap(), b"a.txt base\n");
+        untouched(&f);
+        assert_eq!(f.git(&["diff", "--name-only"]), b"");
+
+        f.git(&["reset", "-q", "--hard"]);
+        f.git(&["stash", "clear"]);
+        dirty(&f);
+        f.repo.save_stash(&[PathBuf::from("del.txt")], "").unwrap();
+        assert_eq!(stashed(&f), [(PathBuf::from("del.txt"), DELETED)]);
+        assert_eq!(read(&f, "a.txt").unwrap(), b"a working\n");
+        untouched(&f);
+
+        f.git(&["reset", "-q", "--hard"]);
+        f.git(&["stash", "clear"]);
+        fs::write(f.dir.join("a.txt"), "a working\n").unwrap();
+        f.git(&["rm", "-q", "del.txt"]);
+        f.repo.save_stash(&[PathBuf::from("a.txt"), PathBuf::from("del.txt")], "").unwrap();
+        assert_eq!(stashed(&f), [(PathBuf::from("a.txt"), "Modified"), (PathBuf::from("del.txt"), DELETED)]);
+        assert_eq!(f.git(&["status", "--porcelain"]), b"");
+    }
+
+    #[test]
+    fn each_stashed_file_opens_as_its_own_diff() {
+        let (f, stash) = surveyed();
+        let diff = f.repo.stash_file_diff(&stash, Path::new("map.txt"), None).unwrap();
+        assert!(diff.text.contains("-map.txt base") && diff.text.contains("+map.txt stashed"));
+        assert!(!diff.text.contains("log.txt"));
+        let diff = f.repo.stash_file_diff(&stash, Path::new("staged.txt"), None).unwrap();
+        assert!(diff.text.contains("+staged.txt stashed"));
+        let diff = f.repo.stash_file_diff(&stash, Path::new("new é.txt"), None).unwrap();
+        assert!(diff.text.contains("new file mode") && diff.text.contains("+untracked"));
+        let diff = f.repo.stash_file_diff(&stash, Path::new("gone.txt"), None).unwrap();
+        assert!(diff.text.contains("deleted file mode") && diff.text.contains("-gone.txt base"));
+        let moved = f.repo.stash_files(&stash).unwrap().into_iter().find(|file| file.path == Path::new("moved.txt")).unwrap();
+        assert_eq!(moved.from.as_deref(), Some(Path::new("old.txt")));
+        let diff = f.repo.stash_file_diff(&stash, Path::new("moved.txt"), Some(Path::new("old.txt"))).unwrap();
+        assert!(diff.text.contains("rename from old.txt") && diff.text.contains("rename to moved.txt"));
+        assert!(!diff.text.contains("+one"));
+        assert_eq!(f.git(&["status", "--porcelain"]), b"");
+    }
+
+    #[test]
+    fn restoring_a_stashed_file_writes_only_that_file_and_keeps_the_stash() {
+        let (f, stash) = surveyed();
+        let head = rev(&f, "HEAD");
+        let index = f.git(&["ls-files", "--stage"]);
+        let list = listed(&f);
+        let outcome = f.repo.restore_stashed_file(&seen(&f, &stash, "map.txt")).unwrap();
+        assert_eq!(outcome.title, "Restored map.txt from the stash");
+        assert_eq!(read(&f, "map.txt").unwrap(), b"map.txt stashed\n");
+        assert_eq!(read(&f, "log.txt").unwrap(), b"log.txt base\n");
+        assert_eq!(read(&f, "staged.txt").unwrap(), b"staged.txt base\n");
+        assert!(read(&f, "new é.txt").is_none());
+        assert_eq!(f.git(&["status", "--porcelain"]), b" M map.txt\n");
+
+        f.repo.restore_stashed_file(&seen(&f, &stash, "staged.txt")).unwrap();
+        assert_eq!(read(&f, "staged.txt").unwrap(), b"staged.txt stashed\n");
+        f.repo.restore_stashed_file(&seen(&f, &stash, "new é.txt")).unwrap();
+        assert_eq!(read(&f, "new é.txt").unwrap(), b"untracked\n");
+        let outcome = f.repo.restore_stashed_file(&seen(&f, &stash, "gone.txt")).unwrap();
+        assert_eq!(outcome.title, "Removed gone.txt, as in the stash");
+        assert!(read(&f, "gone.txt").is_none());
+        let outcome = f.repo.restore_stashed_file(&seen(&f, &stash, "moved.txt")).unwrap();
+        assert!(outcome.detail.starts_with("old.txt was removed, as in the stash."));
+        assert_eq!(read(&f, "moved.txt").unwrap(), b"one\ntwo\nthree\nfour\n");
+        assert!(read(&f, "old.txt").is_none());
+
+        assert_eq!(f.git(&["ls-files", "--stage"]), index);
+        assert_eq!(rev(&f, "HEAD"), head);
+        assert_eq!(listed(&f), list);
+        assert_eq!(rev(&f, "refs/stash"), stash);
+    }
+
+    #[test]
+    fn restoring_a_stashed_file_refuses_a_repository_that_changed() {
+        let (f, stash) = surveyed();
+        let clean = seen(&f, &stash, "map.txt");
+        assert!(clean.rows.is_empty());
+        fs::write(f.dir.join("map.txt"), "map.txt edited later\n").unwrap();
+        let err = f.repo.restore_stashed_file(&clean).unwrap_err();
+        assert_eq!(err, "map.txt changed since you chose to restore it. Look at it again, then restore it.");
+        assert_eq!(read(&f, "map.txt").unwrap(), b"map.txt edited later\n");
+
+        let dirty = seen(&f, &stash, "map.txt");
+        assert_eq!(dirty.rows, [(PathBuf::from("map.txt"), false, "Modified")]);
+        f.repo.restore_stashed_file(&dirty).unwrap();
+        assert_eq!(read(&f, "map.txt").unwrap(), b"map.txt stashed\n");
+
+        let untracked = seen(&f, &stash, "new é.txt");
+        fs::write(f.dir.join("new é.txt"), "someone else's\n").unwrap();
+        assert!(f.repo.restore_stashed_file(&untracked).unwrap_err().contains("changed since you chose"));
+        assert_eq!(read(&f, "new é.txt").unwrap(), b"someone else's\n");
+        fs::remove_file(f.dir.join("new é.txt")).unwrap();
+
+        fs::create_dir_all(f.dir.join(".git/info")).unwrap();
+        fs::write(f.dir.join(".git/info/exclude"), "new*.txt\n").unwrap();
+        let ignored = seen(&f, &stash, "new é.txt");
+        fs::write(f.dir.join("new é.txt"), "ignored copy\n").unwrap();
+        assert!(f.repo.restore_stashed_file(&ignored).unwrap_err().contains("Git ignores it"));
+        assert_eq!(read(&f, "new é.txt").unwrap(), b"ignored copy\n");
+
+        let log = seen(&f, &stash, "log.txt");
+        f.git(&["commit", "--allow-empty", "-qm", "later"]);
+        assert!(f.repo.restore_stashed_file(&log).unwrap_err().contains("changed since you chose"));
+        let log = seen(&f, &stash, "log.txt");
+        f.git(&["stash", "drop", "-q"]);
+        assert_eq!(f.repo.restore_stashed_file(&log).unwrap_err(), "This stash is no longer in the stash list.");
+        assert_eq!(read(&f, "log.txt").unwrap(), b"log.txt base\n");
+        let other = Restore { path: "elsewhere.txt".into(), ..seen_gone(&stash) };
+        f.git(&["stash", "store", "-q", "-m", "Survey", &stash]);
+        assert_eq!(f.repo.restore_stashed_file(&other).unwrap_err(), "The stash holds no change to elsewhere.txt.");
+    }
+
+    fn seen_gone(oid: &str) -> Restore {
+        Restore { oid: oid.to_owned(), path: PathBuf::new(), from: None, removed: false, head: None, rows: Vec::new() }
     }
 }

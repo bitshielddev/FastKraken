@@ -824,7 +824,8 @@ impl Ui {
         match selection {
             Selection::File { path, staged } => renamed_row_origin(&self.files, path, *staged),
             Selection::Commit(oid) => self.inspection.from(oid, commit_path?),
-            Selection::Changes | Selection::Stash(_) => None,
+            Selection::Stash(oid) => self.stash.from(oid, commit_path?),
+            Selection::Changes => None,
         }
     }
 

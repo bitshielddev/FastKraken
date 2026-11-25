@@ -352,10 +352,14 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     let committed_file = matches!(ui.selection, Some(Selection::Commit(_)))
         .then(|| ui.inspection.path.clone())
         .flatten();
+    let stashed_file = matches!(ui.selection, Some(Selection::Stash(_)))
+        .then(|| ui.stash.open_path().map(std::path::Path::to_path_buf))
+        .flatten();
+    let open_file = committed_file.clone().or_else(|| stashed_file.clone());
     let from = ui
         .selection
         .as_ref()
-        .and_then(|selection| ui.renamed_from(selection, committed_file.as_deref()));
+        .and_then(|selection| ui.renamed_from(selection, open_file.as_deref()));
     let whole_rename = from.is_some() && side == Some(true);
     let heading = if ui.diff_title.is_empty() {
         "Changes".to_owned()
@@ -378,7 +382,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         .border_b_1()
         .border_color(rgb(LINE))
         .child(
-            kit::fit(match &committed_file {
+            kit::fit(match &open_file {
                 Some(path) => path.to_string_lossy().into_owned(),
                 None => heading,
             })
@@ -431,6 +435,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             _ => d,
         })
         .when_some(edit_button(ui, cx), |d, button| d.child(button))
+        .when_some(crate::stash::restore_button(ui, cx), |d, button| d.child(button))
         .when(committed_file.is_some(), |d| {
             d.child(crate::inspection::history_button(app, cx))
         })
@@ -449,7 +454,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             format!("patch-{staged}-{}", path.to_string_lossy())
         }
         Some(Selection::Commit(oid)) => format!("patch-{oid}-{committed_file:?}"),
-        Some(Selection::Stash(oid)) => format!("stash-patch-{oid}"),
+        Some(Selection::Stash(oid)) => format!("stash-patch-{oid}-{stashed_file:?}"),
         _ => "patch".to_owned(),
     };
     let split = mode == Mode::Split;

@@ -36,6 +36,13 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
                 staged: file.staged,
             })
         }),
+        "wpick" => tab.ui.files.get(index).map(|file| {
+            Action::Picked(crate::picked::Action::Click {
+                path: file.path.clone(),
+                staged: file.staged,
+                how: crate::picked::How::Toggle,
+            })
+        }),
         "stash" => tab
             .ui
             .stash
@@ -50,6 +57,13 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             None
         }
         "stashstaged" => Some(Action::Stash(crate::stash::Action::ToggleStaged)),
+        "stashfiles" => Some(Action::Stash(crate::stash::Action::ToggleFiles)),
+        "stashfile" => tab
+            .ui
+            .stash
+            .files
+            .get(index)
+            .map(|file| Action::Stash(crate::stash::Action::OpenFile(file.path.clone()))),
         "opendiff" => Some(Action::OpenDiff),
         "split" => Some(Action::DiffMode(crate::view::DiffMode::Split)),
         "unified" => Some(Action::DiffMode(crate::view::DiffMode::Unified)),

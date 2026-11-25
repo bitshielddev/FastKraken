@@ -571,7 +571,10 @@ impl Tab {
                         (Some(from), true) => repo.staged_rename_diff(from, path),
                         _ => repo.file_diff(path, *staged),
                     },
-                    Selection::Stash(oid) => repo.stash_diff(oid),
+                    Selection::Stash(oid) => match commit_path {
+                        Some(path) => repo.stash_file_diff(oid, &path, from.as_deref()),
+                        None => repo.stash_diff(oid),
+                    },
                     Selection::Changes => return Err("Select a file to see its changes.".into()),
                 }?;
                 const LINE_LIMIT: usize = 4096;

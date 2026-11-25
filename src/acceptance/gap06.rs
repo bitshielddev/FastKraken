@@ -7,6 +7,7 @@ use crate::{
     notice,
     picked::{self, How},
     prompt::{self, Stop},
+    stash,
     view::Tone,
 };
 use gpui::{ClipboardItem, Focusable, MouseButton, MouseDownEvent, Pixels};
@@ -76,7 +77,8 @@ impl Replay<'_> {
         self.failing_hook_output(dir).await?;
         self.skip_hooks(dir).await?;
         self.commit_and_push(dir).await?;
-        self.commit_template(dir).await
+        self.commit_template(dir).await?;
+        self.restore_from_a_stash(dir).await
     }
 
     async fn asked_about(&mut self, title: &str) -> Result<(Vec<String>, bool)> {
@@ -991,6 +993,152 @@ impl Replay<'_> {
             return Err("The template preference did not turn off".into());
         }
         self.action(Action::CommitOptions(Options::ToggleTemplate))?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn restore_from_a_stash(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0614");
+        let root = init(dir, "Cache-pool")?;
+        for name in ["chart.txt", "gauge.txt", "weir.txt"] {
+            fs::write(root.join(name), format!("{name} at rest\n"))?;
+        }
+        git(&root, &["add", "--", "."])?;
+        git(&root, &["commit", "-qm", "Fill the pool"])?;
+        let head = oid(&root, "HEAD")?;
+        let untracked = "flow é.txt";
+        fs::write(root.join("chart.txt"), "chart.txt redrawn\n")?;
+        fs::write(root.join("gauge.txt"), "gauge.txt reads high\n")?;
+        fs::write(root.join("weir.txt"), "weir.txt overflows\n")?;
+        fs::write(root.join(untracked), "flow é.txt rising\n")?;
+        self.open(&root)?;
+        self.until("Cache-pool open with four unstaged changes", |tab| {
+            tab.ui.repo == "Cache-pool" && files(tab, &[], &["chart.txt", "gauge.txt", "weir.txt", untracked])
+        })
+        .await?;
+        let others = || -> Result<()> {
+            for (name, text) in [("gauge.txt", "gauge.txt reads high\n"), ("weir.txt", "weir.txt overflows\n")] {
+                if fs::read_to_string(root.join(name))? != text {
+                    return Err(format!("{name} changed").into());
+                }
+            }
+            git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+            git_is(&root, &["diff", "--cached", "--name-only"], "")
+        };
+
+        self.action(Action::Select(file("chart.txt", false)))?;
+        self.until("chart.txt selected", |tab| tab.ui.selection == Some(file("chart.txt", false))).await?;
+        self.action(Action::Picked(picked::Action::Click { path: untracked.into(), staged: false, how: How::Toggle }))?;
+        let chosen = vec!["chart.txt".to_owned(), untracked.to_owned()];
+        self.until("two files picked", |tab| picked_paths(tab).as_ref() == Some(&chosen)).await?;
+        self.action(Action::Stash(stash::Action::ToggleOptions))?;
+        self.until("the stash form open", |tab| tab.ui.stash.options_open()).await?;
+        let offered = self.tab.read_with(self.cx, |tab, _| stash::selected_files(&tab.ui))?;
+        if offered != Some(vec![PathBuf::from("chart.txt"), PathBuf::from(untracked)]) {
+            return Err(format!("The stash form offers the selected files {offered:?}").into());
+        }
+        self.action(Action::Stash(stash::Action::ToggleStaged))?;
+        self.action(Action::Stash(stash::Action::ToggleFiles))?;
+        let ticks = self.tab.read_with(self.cx, |tab, _| (tab.ui.stash.files_only(), tab.ui.stash.staged_only()))?;
+        if ticks != (true, false) {
+            return Err(format!("Selected files only and Staged changes only read {ticks:?}").into());
+        }
+        self.type_keys("Survey notes")?;
+        self.key("enter")?;
+        self.until("the two selected files stashed under their message", |tab| {
+            !tab.ui.busy()
+                && !tab.ui.stash.options_open()
+                && tab.ui.stash.entries.len() == 1
+                && tab.ui.stash.entries[0].title == "Survey notes"
+                && files(tab, &[], &["gauge.txt", "weir.txt"])
+        })
+        .await?;
+        let said = self.said()?;
+        let detail = "Only the selected files. Other changes stay in your files.";
+        if said.as_ref().map(|said| (said.1.as_str(), said.2.as_str())) != Some(("Stashed Survey notes", detail)) {
+            return Err(format!("Stashing the selected files said {said:?}").into());
+        }
+        let cleared = self.tab.read_with(self.cx, |tab, _| tab.ui.stash.files_only())?;
+        if cleared {
+            return Err("Selected files only is still ticked after stashing".into());
+        }
+        let saved = oid(&root, "refs/stash")?;
+        git_is(&root, &["stash", "list", "--format=%H %gs"], &format!("{saved} On main: Survey notes\n"))?;
+        git_is(&root, &["show", &format!("{saved}:chart.txt")], "chart.txt redrawn\n")?;
+        git_is(&root, &["show", &format!("{saved}^3:{untracked}")], "flow é.txt rising\n")?;
+        git_is(&root, &["show", &format!("{saved}:gauge.txt")], "gauge.txt at rest\n")?;
+        if fs::read_to_string(root.join("chart.txt"))? != "chart.txt at rest\n" || root.join(untracked).exists() {
+            return Err("The stashed files are still changed in the working tree".into());
+        }
+        others()?;
+
+        self.action(Action::Select(Selection::Stash(saved.clone())))?;
+        self.until("the stash selected with its two files", |tab| {
+            matches!(&tab.ui.selection, Some(Selection::Stash(oid)) if *oid == saved) && tab.ui.stash.files.len() == 2
+        })
+        .await?;
+        self.action(Action::Stash(stash::Action::OpenFile("chart.txt".into())))?;
+        self.until("chart.txt's own diff over the graph", |tab| {
+            tab.ui.diff_open
+                && tab.ui.stash.open_path() == Some(Path::new("chart.txt"))
+                && patch(tab, "+chart.txt redrawn")
+                && changed_lines(tab) == ["-chart.txt at rest", "+chart.txt redrawn"]
+        })
+        .await?;
+        let target = Target::File { path: "chart.txt".into(), side: Side::Stash(saved.clone()) };
+        let current = self.tab.read_with(self.cx, |tab, _| Target::current(&tab.ui))?;
+        if current != target {
+            return Err(format!("With chart.txt open the commands act on {current:?}").into());
+        }
+        let rows = self.menu_rows(&target)?;
+        if !rows.iter().any(|row| row.0 == "stash.restore-file" && row.1 == "Restore this file from the stash" && row.2.is_none()) {
+            return Err(format!("The menu of the stashed chart.txt lists {rows:?}").into());
+        }
+        self.choose(&target, "stash.restore-file")?;
+        let (detail, _) = self.noticed("Restored chart.txt from the stash").await?;
+        if detail != "Other files are unchanged, and the stash stays in the list." {
+            return Err(format!("Restoring chart.txt said {detail:?}").into());
+        }
+        if fs::read_to_string(root.join("chart.txt"))? != "chart.txt redrawn\n" || root.join(untracked).exists() {
+            return Err("Restoring chart.txt did not write exactly the stash's chart.txt".into());
+        }
+        others()?;
+        git_is(&root, &["stash", "list", "--format=%H"], &format!("{saved}\n"))?;
+        self.until("chart.txt listed as changed again", |tab| files(tab, &[], &["chart.txt", "gauge.txt", "weir.txt"])).await?;
+
+        fs::write(root.join(untracked), "flow é.txt measured by hand\n")?;
+        self.action(Action::Refresh)?;
+        self.until("the hand-made flow é.txt listed", |tab| {
+            files(tab, &[], &["chart.txt", "gauge.txt", "weir.txt", untracked])
+        })
+        .await?;
+        self.action(Action::Stash(stash::Action::OpenFile(untracked.into())))?;
+        self.until("the stashed flow é.txt shown as an added file", |tab| {
+            tab.ui.stash.open_path() == Some(Path::new(untracked)) && changed_lines(tab) == ["+flow é.txt rising"]
+        })
+        .await?;
+        let flow = Target::File { path: untracked.into(), side: Side::Stash(saved.clone()) };
+        self.choose(&flow, "stash.restore-file")?;
+        let (lines, danger) = self.asked_about("Replace flow é.txt with the stash's version?").await?;
+        if !danger || lines.len() != 2 || !lines[1].contains("the stash stays in the list") {
+            return Err(format!("The replace prompt shows {lines:?}, danger {danger}").into());
+        }
+        if self.prompt_focus()? != Some(Stop::Cancel) {
+            return Err("The replace prompt did not open with Cancel focused".into());
+        }
+        if fs::read_to_string(root.join(untracked))? != "flow é.txt measured by hand\n" {
+            return Err("flow é.txt was replaced before the prompt was answered".into());
+        }
+        self.key(CMD_RETURN)?;
+        self.noticed("Restored flow é.txt from the stash").await?;
+        if fs::read_to_string(root.join(untracked))? != "flow é.txt rising\n" {
+            return Err("flow é.txt does not match the stash's version".into());
+        }
+        if fs::read_to_string(root.join("chart.txt"))? != "chart.txt redrawn\n" {
+            return Err("Restoring flow é.txt changed chart.txt".into());
+        }
+        others()?;
+        git_is(&root, &["stash", "list", "--format=%H"], &format!("{saved}\n"))?;
         self.pass();
         Ok(())
     }
