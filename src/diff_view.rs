@@ -1,6 +1,7 @@
 use super::{Action, Desk, Discard, Selection, Ui};
 use crate::{
     diff_doc::{self, Blank, DiffDoc, Kind, Line, PatchState, Run, runs},
+    diff_select::{self, Column},
     kit,
     theme::*,
 };
@@ -74,6 +75,48 @@ impl Layout {
             widest_code,
         }
     }
+}
+
+pub(crate) fn rows(ui: &Ui) -> usize {
+    match ui.diff_mode {
+        Mode::Unified => ui.diff.lines.len(),
+        Mode::Split => ui.diff_layout.split.len(),
+    }
+}
+
+pub(crate) fn doc_row(ui: &Ui, visual: usize, column: Column) -> Option<usize> {
+    match (ui.diff_mode, column) {
+        (Mode::Unified, _) => (visual < ui.diff.lines.len()).then_some(visual),
+        (Mode::Split, column) => match ui.diff_layout.split.get(visual)? {
+            SplitRow::Shared(row) => Some(*row),
+            SplitRow::Sides { old, new } if column == Column::Old => old.or(*new),
+            SplitRow::Sides { old, new } => new.or(*old),
+        },
+    }
+}
+
+pub(crate) fn layered(layers: &[(&[Range<usize>], HighlightStyle)]) -> Vec<(Range<usize>, HighlightStyle)> {
+    let mut cuts: Vec<usize> = layers
+        .iter()
+        .flat_map(|(spans, _)| spans.iter().flat_map(|span| [span.start, span.end]))
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut merged: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    for pair in cuts.windows(2) {
+        let (from, to) = (pair[0], pair[1]);
+        let style = layers
+            .iter()
+            .rev()
+            .filter(|(spans, _)| spans.iter().any(|span| span.start <= from && to <= span.end))
+            .fold(None, |style: Option<HighlightStyle>, (_, layer)| Some(style.unwrap_or_default().highlight(*layer)));
+        let Some(style) = style else { continue };
+        match merged.last_mut() {
+            Some((range, last)) if range.end == from && *last == style => range.end = to,
+            _ => merged.push((from..to, style)),
+        }
+    }
+    merged
 }
 
 fn mini<T: Desk>(
@@ -274,7 +317,6 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                                         .child(split_cell(ui, index, *old, true, code_width, cx))
                                         .child(split_divider())
                                         .child(split_cell(ui, index, *new, false, code_width, cx)),
-                                    ui,
                                     at,
                                     [*old, *new],
                                     cx,
@@ -311,8 +353,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                                         .child(marker(row.kind)),
                                     cx,
                                 ))
-                                .child(code(doc, row)),
-                            ui,
+                                .child(diff_select::cell(ui, index, Column::Unified, code(ui, index, row, Column::Unified), cx)),
                             row.at,
                             [Some(index), None],
                             cx,
@@ -484,25 +525,22 @@ fn mode_control<T: Desk>(mode: Mode, cx: &Context<T>) -> Div {
         .child(segment("diff-split", "Split", Mode::Split))
 }
 
-fn line_menu<T: Desk>(row: Div, ui: &Ui, at: u32, rows: [Option<usize>; 2], cx: &Context<T>) -> Div {
-    let picked = rows.into_iter().flatten().any(|row| crate::lines::picked(ui, row));
-    let target = picked.then(|| crate::lines::target(ui)).flatten();
-    let Some(target) = target.or_else(|| line_target(&ui.selection, &ui.files, at)) else { return row };
+fn line_menu<T: Desk>(row: Div, at: u32, rows: [Option<usize>; 2], cx: &Context<T>) -> Div {
     row.on_mouse_down(
         MouseButton::Right,
         cx.listener(move |app, event: &MouseDownEvent, window, cx| {
-            let menu = super::Menu::Object { target: target.clone(), at: event.position };
+            let ui = app.ui();
+            let picked = rows.into_iter().flatten().any(|row| crate::lines::picked(ui, row));
+            let target = picked.then(|| crate::lines::target(ui)).flatten();
+            let Some(target) = target.or_else(|| rows.into_iter().flatten().find_map(|row| diff_select::code_target(ui, row, at)))
+            else {
+                return;
+            };
+            diff_select::keep_focus(app.ui_mut());
+            let menu = super::Menu::Object { target, at: event.position };
             app.dispatch(Action::Menu(Some(menu)), window, cx);
         }),
     )
-}
-
-fn line_target(selection: &Option<Selection>, files: &[super::FileRow], at: u32) -> Option<crate::commands::Target> {
-    let Some(Selection::File { path, staged }) = selection else { return None };
-    if at == 0 || (*staged && files.iter().any(|file| !file.staged && file.path == *path)) {
-        return None;
-    }
-    Some(crate::commands::Target::Line { path: path.clone(), line: at })
 }
 
 fn base_row() -> Div {
@@ -545,13 +583,15 @@ fn split_cell<T: Desk>(ui: &Ui, index: usize, side: Option<usize>, old: bool, wi
     if row.kind == Kind::NoNewline {
         return cell.pl_3().child(note(doc.text(row)));
     }
+    let column = Column::split(old);
     let mut text = div()
         .id((if old { "split-old" } else { "split-new" }, index))
         .flex_1()
         .min_w_0()
+        .h_full()
         .overflow_x_scroll()
         .track_scroll(&ui.split_pan)
-        .child(code(doc, row).when_some(width, |d, width| d.min_w(width)));
+        .child(diff_select::cell(ui, at, column, code(ui, at, row, column).when_some(width, |d, width| d.min_w(width)), cx));
     text.style().restrict_scroll_to_axis = Some(true);
     cell.when_some(line_background(row.kind), |d, bg| d.bg(rgb(bg)))
         .child(crate::lines::gutter(
@@ -601,22 +641,34 @@ fn marker(kind: Kind) -> Div {
         .child(sign)
 }
 
-fn code(doc: &DiffDoc, row: &Line) -> Div {
-    let text = doc.code(row).to_owned();
+fn code(ui: &Ui, index: usize, row: &Line, column: Column) -> Div {
+    let text = ui.diff.code(row).to_owned();
     let color = if row.kind == Kind::Added { ADDED_HI } else { DELETED_HI };
-    let highlight = HighlightStyle {
+    let changed = HighlightStyle {
         background_color: Some(rgb(color).into()),
         ..Default::default()
     };
+    let selected = HighlightStyle {
+        background_color: Some(rgb(TEXT_SELECTION).into()),
+        ..Default::default()
+    };
+    let chosen: Vec<Range<usize>> = diff_select::span(ui, index, column).into_iter().collect();
+    let highlights = if chosen.is_empty() {
+        row.words.iter().cloned().map(|span| (span, changed)).collect()
+    } else {
+        layered(&[(&chosen, selected), (&row.words, changed)])
+    };
     div()
         .flex_shrink_0()
+        .flex_grow()
+        .h_full()
+        .flex()
+        .items_center()
         .font_family(MONO)
         .whitespace_nowrap()
         .text_size(px(TEXT_SMALL))
         .text_color(rgb(TEXT))
-        .child(StyledText::new(text).with_highlights(
-            row.words.iter().cloned().map(|span| (span, highlight)),
-        ))
+        .child(StyledText::new(text).with_highlights(highlights))
 }
 
 fn note(text: &str) -> impl IntoElement {
@@ -696,17 +748,17 @@ mod tests {
     use crate::diff_doc::tests::doc;
 
     #[test]
-    fn a_staged_line_is_offered_only_while_the_working_tree_has_the_same_lines() {
-        use crate::commands::Target;
-        let row = |staged| super::super::FileRow { path: "trail.txt".into(), staged, status: "M", from: None };
-        let selected = |staged| Some(Selection::File { path: "trail.txt".into(), staged });
-        let line = Some(Target::Line { path: "trail.txt".into(), line: 2 });
-        assert_eq!(line_target(&selected(false), &[row(false)], 2), line);
-        assert_eq!(line_target(&selected(true), &[row(true)], 2), line);
-        assert_eq!(line_target(&selected(true), &[row(true), row(false)], 2), None);
-        assert_eq!(line_target(&selected(false), &[row(true), row(false)], 2), line);
-        assert_eq!(line_target(&selected(false), &[row(false)], 0), None);
-        assert_eq!(line_target(&Some(Selection::Commit("abc".into())), &[], 2), None);
+    fn layered_highlights_split_into_runs_that_do_not_overlap_and_the_first_layer_wins() {
+        let paint = |color: u32| HighlightStyle { background_color: Some(rgb(color).into()), ..Default::default() };
+        let (top, under) = (paint(TEXT_SELECTION), paint(ADDED_HI));
+        let runs = layered(&[(&[2..6], top), (&[0..3, 5..9], under)]);
+        assert_eq!(runs, [(0..2, under), (2..6, top), (6..9, under)]);
+        assert_eq!(layered(&[(&[], top), (&[1..4], under)]), [(1..4, under)]);
+        assert_eq!(layered(&[(&[0..2, 2..5], top)]), [(0..5, top)]);
+        let ink = HighlightStyle { color: Some(rgb(TEXT_2).into()), ..Default::default() };
+        let runs = layered(&[(&[0..4], top), (&[2..8], ink)]);
+        assert_eq!(runs, [(0..2, top), (2..4, ink.highlight(top)), (4..8, ink)]);
+        assert!(layered(&[]).is_empty());
     }
 
     #[test]

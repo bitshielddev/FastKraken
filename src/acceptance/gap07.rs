@@ -1,11 +1,13 @@
 use super::*;
 use crate::{
-    commands::{Side, Target},
+    commands::{self, Side, Target},
     diff_doc::{Blob, PatchState},
+    diff_select::{self, Column, Spot},
     lines::{self, How},
     prompt,
-    view::diff_placeholder,
+    view::{DiffMode, diff_placeholder},
 };
+use gpui::{Bounds, ClipboardItem, Entity, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, point};
 use std::os::unix::fs::PermissionsExt;
 
 fn shown(tab: &Tab, path: &str, message: &str) -> bool {
@@ -69,6 +71,19 @@ fn added(root: &Path, args: &[&str]) -> Result<Vec<String>> {
         .collect())
 }
 
+fn body_lines(patch: &str) -> Vec<String> {
+    patch
+        .lines()
+        .skip_while(|line| !line.starts_with("@@ "))
+        .filter(|line| !line.starts_with("@@ ") && !line.starts_with('\\'))
+        .map(|line| line.get(1..).unwrap_or_default().to_owned())
+        .collect()
+}
+
+fn command_action(tab: &Tab, id: &str, target: &Target, cx: &App) -> Option<Action> {
+    commands::menu(&tab.ui, target, cx).into_iter().find(|entry| entry.id == id)?.action
+}
+
 fn bytes(seed: u8, length: usize) -> Vec<u8> {
     (0..length).map(|i| if i % 64 == 0 { 0 } else { seed.wrapping_add(i as u8) }).collect()
 }
@@ -80,7 +95,291 @@ impl Replay<'_> {
         self.discard_one_line(dir).await?;
         self.line_at_the_end(dir).await?;
         self.binary_sizes(dir).await?;
-        self.mode_only(dir).await
+        self.mode_only(dir).await?;
+        let saved = self.cx.update(|cx| cx.read_from_clipboard())?;
+        let copied = self.copy_from_a_diff(dir).await;
+        let copied = match copied {
+            Ok(()) => self.copy_part_of_a_message(dir).await,
+            failed => failed,
+        };
+        self.cx.update(|cx| cx.write_to_clipboard(saved.unwrap_or_else(|| ClipboardItem::new_string(String::new()))))?;
+        copied
+    }
+
+    fn clipboard(&mut self) -> Result<Option<String>> {
+        Ok(self.cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))?)
+    }
+
+    async fn clipboard_is(&mut self, after: &str, expected: &str) -> Result<()> {
+        self.until(&format!("the clipboard filled after {after}"), |_| true).await?;
+        let copied = self.clipboard()?;
+        if copied.as_deref() != Some(expected) {
+            return Err(format!("After {after} the clipboard holds {copied:?}, not {expected:?}").into());
+        }
+        Ok(())
+    }
+
+    fn select_text(&mut self, column: Column, from: Spot, to: Spot) -> Result<()> {
+        self.action(Action::Text(diff_select::Action::Press { column, spot: from, clicks: 1, extend: false }))?;
+        self.action(Action::Text(diff_select::Action::DragTo { spot: to, edge: diff_select::Edge::Inside }))?;
+        self.action(Action::Text(diff_select::Action::Release))
+    }
+
+    async fn copy_from_a_diff(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0707");
+        let root = init(dir, "Copy-cove")?;
+        record(&root, "cove.txt", "anchor\nrope\nsail\n", "Moor in the cove")?;
+        let head = oid(&root, "HEAD")?;
+        let edited = "anchor\ntide rope\nsail\nmast pole\n";
+        fs::write(root.join("cove.txt"), edited)?;
+        self.open(&root)?;
+        self.until("Copy-cove with the cove edited", |tab| tab.ui.repo == "Copy-cove" && files(tab, &[], &["cove.txt"])).await?;
+        self.action(Action::DiffMode(DiffMode::Unified))?;
+        self.open_patch("cove.txt", false, "+mast pole").await?;
+        let rows = self.tab.read_with(self.cx, |tab, _| {
+            [" anchor", "-rope", "+tide rope", " sail", "+mast pole"].map(|line| row(tab, line))
+        })?;
+        let [Some(anchor), Some(rope), Some(tide), Some(sail), Some(mast)] = rows else {
+            return Err(format!("The cove's diff rows are {rows:?}").into());
+        };
+        let reach = self.tab.update(self.cx, |tab, window, _| {
+            let left = diff_select::origin(&tab.ui, Column::Unified);
+            let hit = |x: Pixels, unit| diff_select::hit(&tab.ui, window, tide, Column::Unified, x, unit);
+            (hit(left - px(30.), diff_select::Unit::Character), hit(left + px(4000.), diff_select::Unit::Character))
+        })?;
+        if reach != (0, "tide rope".len()) {
+            return Err(format!("Pointing before and after the text of +tide rope reaches offsets {reach:?}").into());
+        }
+        self.focus_desk()?;
+        self.select_text(Column::Unified, Spot { row: anchor, at: 2 }, Spot { row: tide, at: 4 })?;
+        self.key("cmd-c")?;
+        self.until("the copy confirmed", |tab| tab.ui.notices.newest().is_some_and(|n| n.text() == "Copied text")).await?;
+        let head_lines: Vec<String> = git(&root, &["show", "HEAD:cove.txt"])?.lines().map(str::to_owned).collect();
+        let disk_lines: Vec<String> = fs::read_to_string(root.join("cove.txt"))?.lines().map(str::to_owned).collect();
+        let expected = format!("{}\n{}\n{}", &head_lines[0][2..], head_lines[1], &disk_lines[1][..4]);
+        self.clipboard_is("dragging from \"anchor\" into \"+tide rope\" and pressing Cmd-C", &expected).await?;
+        if expected != "chor\nrope\ntide" {
+            return Err(format!("The expected copy was {expected:?}").into());
+        }
+
+        self.action(Action::Text(diff_select::Action::Press { column: Column::Unified, spot: Spot { row: tide, at: 6 }, clicks: 2, extend: false }))?;
+        self.action(Action::Text(diff_select::Action::Release))?;
+        self.key("cmd-c")?;
+        self.clipboard_is("double-clicking \"rope\"", "rope").await?;
+        self.action(Action::Text(diff_select::Action::Press { column: Column::Unified, spot: Spot { row: mast, at: 1 }, clicks: 3, extend: false }))?;
+        self.action(Action::Text(diff_select::Action::Release))?;
+        self.key("cmd-c")?;
+        self.clipboard_is("triple-clicking \"+mast pole\"", "mast pole").await?;
+        self.action(Action::Text(diff_select::Action::Press { column: Column::Unified, spot: Spot { row: anchor, at: 3 }, clicks: 1, extend: false }))?;
+        self.action(Action::Text(diff_select::Action::Press { column: Column::Unified, spot: Spot { row: rope, at: 2 }, clicks: 1, extend: true }))?;
+        self.action(Action::Text(diff_select::Action::Release))?;
+        self.key("cmd-c")?;
+        self.clipboard_is("Shift-pressing in \"-rope\"", "hor\nro").await?;
+
+        self.key("cmd-a")?;
+        self.key("cmd-c")?;
+        let whole = body_lines(&git(&root, &["diff", "--", "cove.txt"])?).join("\n");
+        self.clipboard_is("Cmd-A then Cmd-C", &whole).await?;
+        if whole != "anchor\nrope\ntide rope\nsail\nmast pole" {
+            return Err(format!("Git's diff body reads {whole:?}").into());
+        }
+        let picked = self.tab.read_with(self.cx, |tab, _| tab.ui.picked.is_some() || lines::current(&tab.ui).is_some())?;
+        if picked {
+            return Err("Cmd-A in the diff picked files or lines instead of selecting text".into());
+        }
+
+        self.action(Action::DiffMode(DiffMode::Split))?;
+        self.until("the cove's diff side by side", |tab| tab.ui.diff_mode == DiffMode::Split && diff_select::current(&tab.ui).is_none()).await?;
+        self.focus_desk()?;
+        self.select_text(Column::Old, Spot { row: anchor, at: 0 }, Spot { row: mast, at: 4 })?;
+        self.key("cmd-c")?;
+        let before = git(&root, &["show", "HEAD:cove.txt"])?;
+        self.clipboard_is("dragging down the Before side", before.trim_end_matches('\n')).await?;
+        self.select_text(Column::New, Spot { row: tide, at: 0 }, Spot { row: mast, at: 99 })?;
+        self.key("cmd-c")?;
+        self.clipboard_is("dragging down the After side", "tide rope\nsail\nmast pole").await?;
+        if !edited.ends_with("tide rope\nsail\nmast pole\n") {
+            return Err("The After side does not match the file".into());
+        }
+        self.action(Action::DiffMode(DiffMode::Unified))?;
+
+        let target = self.tab.read_with(self.cx, |tab, _| diff_select::code_target(&tab.ui, tide, 2))?;
+        let target = target.ok_or("The +tide rope row has no menu")?;
+        let titles = self.titles(target.clone())?;
+        for title in ["Copy", "Copy line", "Copy hunk as patch", "Copy path", "Select all"] {
+            if !titles.iter().any(|shown| shown == title) {
+                return Err(format!("The menu of a code row reads {titles:?}, without {title:?}").into());
+            }
+        }
+        let edit = self.tab.read_with(self.cx, |tab, cx| command_action(tab, "file.edit", &target, cx))?;
+        if !matches!(&edit, Some(Action::Handoff(crate::handoff::Action::Edit { path, line: Some(2) })) if path == Path::new("cove.txt")) {
+            return Err(format!("The menu of a code row opens the editor with {edit:?}, not at line 2 of cove.txt").into());
+        }
+        for (id, notice, expected) in [("text.copy-line", "Copied line", "tide rope"), ("file.copy-path", "Copied path", "cove.txt")] {
+            let run = self.tab.read_with(self.cx, |tab, cx| command_action(tab, id, &target, cx))?;
+            let copied = self.copied(run.ok_or(format!("{id} is not offered"))?, notice).await?;
+            if copied.as_deref() != Some(expected) {
+                return Err(format!("{id} copied {copied:?}, not {expected:?}").into());
+            }
+        }
+        let run = self.tab.read_with(self.cx, |tab, cx| command_action(tab, "text.copy-hunk", &target, cx))?;
+        let patch = self.copied(run.ok_or("Copy hunk as patch is not offered")?, "Copied hunk").await?.unwrap_or_default();
+        if !patch.starts_with("diff --git a/cove.txt b/cove.txt\n") || !patch.contains("\n+tide rope\n") || !patch.ends_with("+mast pole\n") {
+            return Err(format!("The hunk was copied as {patch:?}").into());
+        }
+        let file = dir.join("cove-hunk.patch");
+        fs::write(&file, &patch)?;
+        git(&root, &["apply", "--check", "--cached", &file.to_string_lossy()])?;
+        fs::remove_file(&file)?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "")?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        if fs::read_to_string(root.join("cove.txt"))? != edited {
+            return Err("Copying changed cove.txt on disk".into());
+        }
+
+        self.select_text(Column::Unified, Spot { row: sail, at: 0 }, Spot { row: sail, at: 2 })?;
+        self.key("escape")?;
+        self.until("Esc clearing the text selection and keeping the diff open", |tab| {
+            diff_select::current(&tab.ui).is_none() && tab.ui.diff_open
+        })
+        .await?;
+
+        let tides: String = (1..=300).map(|n| format!("tide {n}\n")).collect();
+        fs::write(root.join("tides.txt"), &tides)?;
+        self.until("tides.txt listed", |tab| files(tab, &[], &["cove.txt", "tides.txt"])).await?;
+        self.open_patch("tides.txt", false, "+tide 300").await?;
+        self.focus_desk()?;
+        let first = self.tab.read_with(self.cx, |tab, _| row(tab, "+tide 1"))?.ok_or("No first tide row")?;
+        self.action(Action::Text(diff_select::Action::Press { column: Column::Unified, spot: Spot { row: first, at: 0 }, clicks: 1, extend: false }))?;
+        self.action(Action::Text(diff_select::Action::DragTo { spot: Spot { row: first + 3, at: 2 }, edge: diff_select::Edge::Below }))?;
+        let scrolled = |tab: &Tab| f32::from(tab.ui.diff_scroll.0.borrow().base_handle.offset().y);
+        self.until("dragging below the diff scrolling it down", |tab| {
+            scrolled(tab) <= -200. && diff_select::current(&tab.ui).is_some_and(|chosen| chosen.head.row > first + 20)
+        })
+        .await?;
+        self.action(Action::Text(diff_select::Action::Release))?;
+        let stopped = self.tab.read_with(self.cx, |tab, _| (scrolled(tab), diff_select::current(&tab.ui).map(|chosen| chosen.head)))?;
+        self.cx.background_executor().timer(Duration::from_millis(200)).await;
+        let later = self.tab.read_with(self.cx, |tab, _| (scrolled(tab), diff_select::current(&tab.ui).map(|chosen| chosen.head)))?;
+        if stopped != later {
+            return Err(format!("The diff kept scrolling after the release: {stopped:?} then {later:?}").into());
+        }
+        let reached = stopped.1.ok_or("The scrolled selection was lost")?.row - first + 1;
+        self.key("cmd-c")?;
+        let expected: Vec<&str> = tides.lines().take(reached).collect();
+        self.clipboard_is("dragging past the bottom of the diff", &expected.join("\n")).await?;
+        self.pass();
+        Ok(())
+    }
+
+    fn range_bounds(&mut self, field: &Entity<crate::view::CommitInput>, range: std::ops::Range<usize>) -> Result<Bounds<Pixels>> {
+        self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
+        let bounds = self.tab.update(self.cx, |_, window, cx| {
+            field.update(cx, |field, cx| field.bounds_for_range(range, Bounds::default(), window, cx))
+        })?;
+        Ok(bounds.ok_or("The message was not laid out")?)
+    }
+
+    fn click(&mut self, field: &Entity<crate::view::CommitInput>, at: Point<Pixels>, clicks: usize) -> Result<()> {
+        let press = MouseDownEvent { button: MouseButton::Left, position: at, modifiers: gpui::Modifiers::default(), click_count: clicks, first_mouse: false };
+        let release = MouseUpEvent { button: MouseButton::Left, position: at, modifiers: gpui::Modifiers::default(), click_count: clicks };
+        self.tab.update(self.cx, |_, window, cx| {
+            field.update(cx, |field, cx| {
+                field.press(&press, window, cx);
+                field.release(&release, window, cx);
+            })
+        })?;
+        Ok(())
+    }
+
+    fn reads(&mut self, field: &Entity<crate::view::CommitInput>) -> Result<(String, std::ops::Range<usize>)> {
+        Ok(self.tab.read_with(self.cx, |_, cx| {
+            let field = field.read(cx);
+            (field.text().to_owned(), field.selected_range())
+        })?)
+    }
+
+    async fn copy_part_of_a_message(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0708");
+        let root = init(dir, "Ford-notes")?;
+        let body = "The river rose at dawn.\n\nSee https://example.invalid/ford for the map.";
+        fs::write(root.join("ford.txt"), "stones\n")?;
+        git(&root, &["add", "--", "ford.txt"])?;
+        git(&root, &["commit", "-qm", "Mark the ford", "-m", body])?;
+        let head = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Ford-notes open", |tab| tab.ui.repo == "Ford-notes" && tab.ui.history.iter().any(|row| row.oid == head)).await?;
+        self.action(Action::Select(Selection::Commit(head.clone())))?;
+        self.until("the commit's message in the details panel", |tab| {
+            tab.ui.inspection.body == body && !tab.ui.panel_hidden
+        })
+        .await?;
+        let (subject, message) = self.tab.read_with(self.cx, |tab, _| (tab.ui.message.subject.clone(), tab.ui.message.body.clone()))?;
+        self.until("the message readers filled", |_| true).await?;
+        let shown = (self.reads(&subject)?.0, self.reads(&message)?.0);
+        if shown != ("Mark the ford".to_owned(), body.to_owned()) {
+            return Err(format!("The details panel shows {shown:?}").into());
+        }
+        let found = self.tab.read_with(self.cx, |_, cx| message.read(cx).links().into_iter().map(str::to_owned).collect::<Vec<_>>())?;
+        if found != ["https://example.invalid/ford"] {
+            return Err(format!("The message's links are {found:?}").into());
+        }
+        let river = body.find("river").ok_or("no river")?;
+        let letter = self.range_bounds(&message, river + 1..river + 2)?;
+        self.click(&message, letter.center(), 2)?;
+        if self.reads(&message)?.1 != (river..river + "river".len()) {
+            return Err(format!("Double-clicking \"river\" selected {:?}", self.reads(&message)?.1).into());
+        }
+        self.key("alt-shift-right")?;
+        self.key("cmd-c")?;
+        self.clipboard_is("selecting \"river rose\" in the message", "river rose").await?;
+        let offered: Vec<(&str, bool)> = self.tab.read_with(self.cx, |_, cx| {
+            message.read(cx).menu_items(true).into_iter().map(|item| (item.label, item.enabled)).collect()
+        })?;
+        if offered != [("Copy", true), ("Select All", true)] {
+            return Err(format!("The message's menu offers {offered:?}").into());
+        }
+        self.type_keys("x")?;
+        self.key("backspace")?;
+        self.key("enter")?;
+        self.key("cmd-v")?;
+        self.key("cmd-x")?;
+        if self.reads(&message)?.0 != body {
+            return Err(format!("Typing changed the message to {:?}", self.reads(&message)?.0).into());
+        }
+        self.key("cmd-a")?;
+        self.key("cmd-c")?;
+        self.clipboard_is("Cmd-A and Cmd-C in the message", body).await?;
+
+        let title = self.range_bounds(&subject, 0..1)?;
+        self.click(&subject, title.center(), 1)?;
+        self.key("cmd-a")?;
+        self.key("cmd-c")?;
+        self.clipboard_is("Cmd-A and Cmd-C in the subject", "Mark the ford").await?;
+
+        let link = body.find("https://").ok_or("no link")?;
+        let opened = crate::handoff::opened().len();
+        let letter = self.range_bounds(&message, link + 10..link + 11)?;
+        self.click(&message, letter.center(), 1)?;
+        self.until("the link opened through the handoff", |_| {
+            crate::handoff::opened().get(opened..) == Some(&["https://example.invalid/ford".to_owned()][..])
+        })
+        .await?;
+        let plain = self.range_bounds(&message, river..river + 1)?;
+        self.click(&message, point(plain.left() + px(1.), plain.center().y), 1)?;
+        if crate::handoff::opened().len() != opened + 1 {
+            return Err("Clicking plain words opened a link".into());
+        }
+
+        let message_text = git(&root, &["log", "-1", "--format=%B", &head])?;
+        if !message_text.contains("river rose") || !message_text.starts_with("Mark the ford\n") {
+            return Err(format!("Git reads the message as {message_text:?}").into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1"], "")?;
+        self.key("escape")?;
+        self.pass();
+        Ok(())
     }
 
     async fn pick(&mut self, patch_line: &str, how: How, expected: &[&str]) -> Result<()> {

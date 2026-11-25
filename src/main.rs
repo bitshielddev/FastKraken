@@ -15,6 +15,7 @@ mod conflict;
 mod connect;
 mod credentials;
 mod diff_doc;
+mod diff_select;
 mod discard;
 mod environment;
 mod explain;
@@ -650,6 +651,7 @@ impl Tab {
                         tab.diff = Some(diff);
                         tab.ui.replace_diff(doc, layout);
                         lines::reloaded(&mut tab.ui);
+                        diff_select::reloaded(&mut tab.ui);
                     }
                     Err(err) => {
                         tab.ui.diff.state = diff_doc::PatchState::Unreadable(err.clone());
@@ -1498,6 +1500,7 @@ impl Tab {
             Action::Pick(action) => pick::dispatch(self, action, window, cx),
             Action::Picked(action) => picked::dispatch(self, action, window, cx),
             Action::Lines(action) => lines::dispatch(self, action, window, cx),
+            Action::Text(action) => diff_select::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
@@ -1526,6 +1529,9 @@ impl Tab {
             Action::More => self.load_history(false, cx),
             Action::Select(selection) => {
                 self.ui.picked = None;
+                if self.ui.selection.as_ref() != Some(&selection) {
+                    self.ui.text.unfocus();
+                }
                 self.ui.navigate.chose(&selection);
                 self.follow = Follow::Nothing;
                 self.ui.diff_open = matches!(selection, Selection::File { .. });

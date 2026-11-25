@@ -13,7 +13,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
     use view::{Action as Run, Ui};
     fn file(target: &Target) -> Option<&PathBuf> {
         match target {
-            Target::File { path, .. } | Target::Conflict(path) | Target::Line { path, .. } => Some(path),
+            Target::File { path, .. } | Target::Conflict(path) | Target::Code { path: Some(path), .. } => Some(path),
             _ => None,
         }
     }
@@ -24,15 +24,17 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         Command::new(
             "file.edit",
             Group::Open,
-            |ui, target| crate::tools::file_title(ui, if let Target::Line { line, .. } = target { Some(*line) } else { None }),
+            |ui, target| crate::tools::file_title(ui, if let Target::Code { line, .. } = target { *line } else { None }),
             |ui, target, _| match target {
                 Target::File { path, side: Side::Unstaged | Side::Staged }
                 | Target::Conflict(path)
-                | Target::Line { path, .. } => Availability::unless(missing(ui, path)),
+                | Target::Code { path: Some(path), line: Some(_), .. } => Availability::unless(missing(ui, path)),
                 _ => Availability::Hidden,
             },
             |_, target| match target {
-                Target::Line { path, line } => Some(Run::Handoff(Action::Edit { path: path.clone(), line: Some(*line) })),
+                Target::Code { path: Some(path), line: Some(line), .. } => {
+                    Some(Run::Handoff(Action::Edit { path: path.clone(), line: Some(*line) }))
+                }
                 target => file(target).map(|path| Run::Handoff(Action::Edit { path: path.clone(), line: None })),
             },
         )
@@ -167,10 +169,16 @@ pub(crate) enum Action {
 static OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 pub(crate) fn openable(url: &str) -> bool {
-    url.strip_prefix("https://").is_some_and(|rest| {
-        let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-        !host.is_empty() && !host.contains('@') && !url.chars().any(|c| c.is_whitespace() || c.is_control())
-    })
+    url.strip_prefix("https://").is_some_and(|rest| hosted(url, rest))
+}
+
+pub(crate) fn linkable(url: &str) -> bool {
+    url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).is_some_and(|rest| hosted(url, rest))
+}
+
+fn hosted(url: &str, rest: &str) -> bool {
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    !host.is_empty() && !host.contains('@') && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 pub(crate) fn open_url(cx: &mut gpui::App, url: &str) {
@@ -332,6 +340,10 @@ mod tests {
         }
         for url in ["http://example.invalid/", "file:///etc/hosts", "https://", "https://user:pw@example.invalid/", "https://example.invalid/a b", "javascript:alert(1)"] {
             assert!(!openable(url), "{url}");
+        }
+        assert!(linkable("http://example.invalid/ford") && linkable("https://example.invalid/"));
+        for url in ["http://", "ftp://example.invalid/", "http://user@example.invalid/", "http://example.invalid/a\tb"] {
+            assert!(!linkable(url), "{url}");
         }
     }
 }

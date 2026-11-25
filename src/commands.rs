@@ -27,7 +27,7 @@ pub(crate) enum Target {
     File { path: PathBuf, side: Side },
     Files { paths: Vec<PathBuf>, side: Side },
     Conflict(PathBuf),
-    Line { path: PathBuf, line: u32 },
+    Code { path: Option<PathBuf>, line: Option<u32>, row: usize, hunk: Option<usize> },
     Lines { path: PathBuf, side: Side, count: usize },
 }
 
@@ -158,6 +158,7 @@ pub(crate) struct Command {
     pub icon: Option<&'static str>,
     pub group: Group,
     pub shortcut: Option<&'static str>,
+    pub scope: Option<&'static str>,
     pub danger: bool,
     pub bar: Option<Bar>,
     pub words: &'static [&'static str],
@@ -181,6 +182,7 @@ impl Command {
             icon: None,
             group,
             shortcut: None,
+            scope: None,
             danger: false,
             bar: None,
             words: &[],
@@ -208,6 +210,11 @@ impl Command {
 
     pub(crate) const fn keys(mut self, shortcut: &'static str) -> Self {
         self.shortcut = Some(shortcut);
+        self
+    }
+
+    pub(crate) const fn scope(mut self, scope: &'static str) -> Self {
+        self.scope = Some(scope);
         self
     }
 
@@ -256,7 +263,9 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::conflict::COMMANDS,
         crate::reverse::COMMANDS,
         crate::inspection::COMMANDS,
+        crate::diff_select::COMMANDS,
         crate::handoff::COMMANDS,
+        crate::diff_select::SELECT_COMMANDS,
         crate::palette::COMMANDS,
         crate::help::COMMANDS,
         crate::preferences::COMMANDS,
@@ -804,10 +813,17 @@ pub(crate) fn context_for(shortcut: &str) -> &'static str {
 }
 
 pub(crate) fn bindings() -> Vec<KeyBinding> {
-    all()
+    let unscoped = all().filter(|command| command.scope.is_none());
+    let scoped = all().filter(|command| command.scope.is_some());
+    unscoped
+        .chain(scoped)
         .filter_map(|command| {
             let shortcut = command.shortcut?;
-            Some(KeyBinding::new(shortcut, Run { id: command.id }, Some(context_for(shortcut))))
+            let context = match command.scope {
+                Some(scope) => format!("Desk && {scope}"),
+                None => context_for(shortcut).to_owned(),
+            };
+            Some(KeyBinding::new(shortcut, Run { id: command.id }, Some(context.as_str())))
         })
         .collect()
 }
@@ -922,7 +938,7 @@ mod tests {
         for command in all() {
             assert!(ids.insert(command.id), "two commands are called {}", command.id);
             if let Some(shortcut) = command.shortcut {
-                assert!(shortcuts.insert(shortcut), "two commands use {shortcut}");
+                assert!(shortcuts.insert((shortcut, command.scope)), "two commands use {shortcut}");
             }
         }
         assert!(ids.len() >= 30, "only {} commands are registered", ids.len());

@@ -3,9 +3,9 @@ mod editing;
 
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler, EntityId, EntityInputHandler,
-    FocusHandle, Focusable, Global, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point, ShapedLine,
-    ScrollWheelEvent, TextRun, UTF16Selection, WeakEntity, Window, actions, anchored, canvas, deferred, div, fill,
-    point, prelude::*, px, rgb, size,
+    FocusHandle, Focusable, FontWeight, Global, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
+    Point, ShapedLine, ScrollWheelEvent, TextRun, UTF16Selection, UnderlineStyle, WeakEntity, Window, actions, anchored,
+    canvas, deferred, div, fill, point, prelude::*, px, rgb, size,
 };
 use crate::theme::*;
 use editing::{Edit, Editor, Unit};
@@ -87,6 +87,52 @@ fn menu_items(selected: bool, masked: bool, has_text: bool, paste: bool) -> Vec<
     .collect()
 }
 
+fn reader_items(selected: bool, has_text: bool) -> Vec<MenuItem> {
+    menu_items(selected, false, has_text, false)
+        .into_iter()
+        .filter(|item| matches!(item.command, FieldCommand::Copy | FieldCommand::SelectAll))
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Look {
+    pub(crate) size: f32,
+    pub(crate) line: f32,
+    pub(crate) weight: FontWeight,
+    pub(crate) color: u32,
+}
+
+pub(crate) fn links(text: &str) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = text[from..].find("http") {
+        let start = from + offset;
+        let rest = &text[start..];
+        let scheme = ["https://", "http://"].into_iter().find(|scheme| rest.starts_with(scheme)).map_or(0, str::len);
+        let joined = text[..start].chars().next_back().is_some_and(|c| c.is_alphanumeric());
+        if scheme == 0 || joined {
+            from = start + 4;
+            continue;
+        }
+        let mut end = start + rest.find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`')).unwrap_or(rest.len());
+        loop {
+            let link = &text[start..end];
+            let Some(last) = link.chars().next_back() else { break };
+            let unbalanced = |open: char, close: char| last == close && link.matches(close).count() > link.matches(open).count();
+            if matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'') || unbalanced('(', ')') || unbalanced('[', ']') {
+                end -= last.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if end > start + scheme {
+            found.push(start..end);
+        }
+        from = end.max(start + scheme);
+    }
+    found
+}
+
 struct OpenMenu {
     field: WeakEntity<CommitInput>,
     at: Point<Pixels>,
@@ -164,6 +210,7 @@ struct InputLayout {
     lines: Vec<InputLine>,
     bounds: Bounds<Pixels>,
     origin: Point<Pixels>,
+    line: Pixels,
 }
 
 impl InputLayout {
@@ -174,17 +221,17 @@ impl InputLayout {
     fn point(&self, index: usize) -> Point<Pixels> {
         let row = self.row(index);
         let line = &self.lines[row];
-        self.origin + point(line.shape.x_for_index(index - line.range.start), px(LINE_HEIGHT * row as f32))
+        self.origin + point(line.shape.x_for_index(index - line.range.start), self.line * row as f32)
     }
 
     fn hit(&self, position: Point<Pixels>) -> usize {
-        let row = (((position.y - self.origin.y) / px(LINE_HEIGHT)) as usize).min(self.lines.len() - 1);
+        let row = (((position.y - self.origin.y) / self.line).max(0.) as usize).min(self.lines.len() - 1);
         let line = &self.lines[row];
         line.range.start + line.shape.closest_index_for_x(position.x - self.origin.x).min(line.range.len())
     }
 
     fn under(&self, position: Point<Pixels>) -> usize {
-        let row = (((position.y - self.origin.y) / px(LINE_HEIGHT)) as usize).min(self.lines.len() - 1);
+        let row = (((position.y - self.origin.y) / self.line).max(0.) as usize).min(self.lines.len() - 1);
         let line = &self.lines[row];
         let glyph = line.shape.index_for_x(position.x - self.origin.x).unwrap_or(line.range.len());
         line.range.start + glyph.min(line.range.len())
@@ -201,6 +248,11 @@ pub struct CommitInput {
     scroll_top: Pixels,
     reveal_caret: bool,
     drag: Option<(Range<usize>, Unit)>,
+    reading: Option<Look>,
+    rows: usize,
+    links: Vec<Range<usize>>,
+    pressed_link: Option<usize>,
+    over_link: bool,
 }
 
 impl CommitInput {
@@ -231,7 +283,40 @@ impl CommitInput {
             count: false,
             scroll_top: px(0.),
             reveal_caret: true,
+            reading: None,
+            rows: 1,
+            links: Vec::new(),
+            pressed_link: None,
+            over_link: false,
         }
+    }
+
+    pub(crate) fn reader(cx: &mut Context<Self>, name: &'static str, look: Look) -> Self {
+        let mut input = Self::with_placeholder(cx, name);
+        input.focus = cx.focus_handle();
+        input.editor.multiline = true;
+        input.reading = Some(look);
+        input.reveal_caret = false;
+        input
+    }
+
+    pub(crate) fn show(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.editor.value != self.editor.normalized(text) {
+            self.editor.reset(text);
+            self.editor.select(0, 0);
+            self.links = links(&self.editor.value);
+            self.pressed_link = None;
+            self.changed(cx);
+            self.reveal_caret = self.reading.is_none();
+        }
+    }
+
+    fn editable(&self) -> bool {
+        self.reading.is_none()
+    }
+
+    pub(crate) fn links(&self) -> Vec<&str> {
+        self.links.iter().map(|link| &self.editor.value[link.clone()]).collect()
     }
 
     pub fn secret(cx: &mut Context<Self>, placeholder: &'static str) -> Self {
@@ -336,13 +421,16 @@ impl CommitInput {
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
+        if !self.editable() {
+            return;
+        }
         if let Some(text) = cx.read_from_clipboard().and_then(|v| v.text()) {
             self.replace(self.selection(), &text, Edit::Other, cx);
         }
     }
 
     fn cut(&mut self, cx: &mut Context<Self>) {
-        if !self.editor.masked {
+        if !self.editor.masked && self.editable() {
             self.copy(cx);
             self.replace(self.selection(), "", Edit::Other, cx);
         }
@@ -355,18 +443,21 @@ impl CommitInput {
     }
 
     fn undo(&mut self, cx: &mut Context<Self>) {
-        if self.marked.is_none() && self.editor.undo() {
+        if self.marked.is_none() && self.editable() && self.editor.undo() {
             self.changed(cx);
         }
     }
 
     fn redo(&mut self, cx: &mut Context<Self>) {
-        if self.marked.is_none() && self.editor.redo() {
+        if self.marked.is_none() && self.editable() && self.editor.redo() {
             self.changed(cx);
         }
     }
 
     pub(crate) fn menu_items(&self, paste: bool) -> Vec<MenuItem> {
+        if !self.editable() {
+            return reader_items(!self.selection().is_empty(), !self.editor.value.is_empty());
+        }
         menu_items(!self.selection().is_empty(), self.editor.masked, !self.editor.value.is_empty(), paste)
     }
 
@@ -382,7 +473,7 @@ impl CommitInput {
             FieldCommand::Copy => self.copy(cx),
             FieldCommand::Paste => self.paste(cx),
             FieldCommand::Delete => {
-                if self.editor.delete_selection(Instant::now()) {
+                if self.editable() && self.editor.delete_selection(Instant::now()) {
                     self.changed(cx);
                 }
             }
@@ -406,6 +497,7 @@ impl CommitInput {
         }
         let plain = !k.modifiers.platform && !k.modifiers.control && !k.modifiers.alt;
         match k.key.as_str() {
+            "enter" if !self.editable() => return,
             "enter" if self.editor.multiline && plain => {
                 self.replace(self.selection(), "\n", Edit::Typing, cx);
             }
@@ -415,7 +507,7 @@ impl CommitInput {
                 let row = layout.row(caret);
                 let target = if k.key == "up" { row.checked_sub(1) } else { Some(row + 1) };
                 let to = match target.and_then(|i| layout.lines.get(i).map(|_| i)) {
-                    Some(i) => layout.hit(point(layout.point(caret).x, layout.origin.y + px(LINE_HEIGHT * (i as f32 + 0.5)))),
+                    Some(i) => layout.hit(point(layout.point(caret).x, layout.origin.y + layout.line * (i as f32 + 0.5))),
                     None if k.key == "up" => 0,
                     None => self.editor.value.len(),
                 };
@@ -424,6 +516,9 @@ impl CommitInput {
             }
             _ => {
                 let Some(command) = editing::command(k) else { return };
+                if !self.editable() && !matches!(command, editing::Command::Move(_) | editing::Command::Extend(_)) {
+                    return;
+                }
                 let length = self.editor.value.len();
                 let rows = self.rows();
                 self.editor.apply(command, rows.as_deref(), Instant::now());
@@ -442,6 +537,9 @@ impl CommitInput {
         close_menu(cx);
         let unit = Unit::of_clicks(event.click_count);
         let at = self.hit_for(event.position, unit);
+        self.pressed_link = self
+            .link_under(event.position)
+            .filter(|_| unit == Unit::Character && !event.modifiers.shift);
         let origin = if event.modifiers.shift && unit == Unit::Character {
             let anchor = self.editor.anchor;
             self.editor.select(anchor, at);
@@ -454,6 +552,35 @@ impl CommitInput {
         self.drag = Some((origin, unit));
         self.reveal_caret = true;
         cx.notify();
+    }
+
+    fn link_under(&self, position: Point<Pixels>) -> Option<usize> {
+        let layout = self.layout.as_ref().filter(|layout| layout.bounds.contains(&position))?;
+        let index = layout.under(position);
+        let row = &layout.lines[layout.row(index)];
+        if position.x - layout.origin.x > row.shape.width {
+            return None;
+        }
+        self.links.iter().position(|link| link.start <= index && index < link.end)
+    }
+
+    pub(crate) fn release(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.drag = None;
+        let Some(pressed) = self.pressed_link.take() else { return };
+        if self.selection().is_empty() && self.link_under(event.position) == Some(pressed) {
+            let url = self.editor.value[self.links[pressed].clone()].to_owned();
+            if crate::handoff::linkable(&url) {
+                crate::handoff::open_url(cx, &url);
+            }
+        }
+    }
+
+    fn hover(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let over = self.link_under(position).is_some();
+        if over != self.over_link {
+            self.over_link = over;
+            cx.notify();
+        }
     }
 
     fn press_right(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -533,6 +660,9 @@ impl EntityInputHandler for CommitInput {
         cx: &mut Context<Self>,
     ) {
         close_menu(cx);
+        if !self.editable() {
+            return;
+        }
         let r = range
             .map(|v| Self::to_bytes(&self.editor.value, v))
             .or(self.marked.clone())
@@ -547,6 +677,9 @@ impl EntityInputHandler for CommitInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.editable() {
+            return;
+        }
         self.replace_text_in_range(range, text, window, cx);
         let end = self.editor.caret;
         let start = end - self.editor.normalized(text).len();
@@ -569,7 +702,7 @@ impl EntityInputHandler for CommitInput {
         let start = layout.point(self.to_display(range.start));
         let end = layout.point(self.to_display(range.end));
         let right = if start.y == end.y { end.x } else { layout.bounds.right() };
-        Some(Bounds::from_corners(start, point(right.max(start.x), start.y + px(LINE_HEIGHT))))
+        Some(Bounds::from_corners(start, point(right.max(start.x), start.y + layout.line)))
     }
 
     fn character_index_for_point(
@@ -586,10 +719,15 @@ impl EntityInputHandler for CommitInput {
 
 impl CommitInput {
     fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) -> InputLayout {
-        let font = window.text_style().font();
+        let look = self.reading;
+        let mut font = window.text_style().font();
+        if let Some(look) = look {
+            font.weight = look.weight;
+        }
         let text_system = window.text_system();
-        let font_size = px(12.5);
-        let line_height = px(LINE_HEIGHT);
+        let font_size = px(look.map_or(12.5, |look| look.size));
+        let line_height = px(look.map_or(LINE_HEIGHT, |look| look.line));
+        let ink = look.map_or(TEXT, |look| look.color);
         let run = |len, color| TextRun {
             len,
             font: font.clone(),
@@ -601,6 +739,28 @@ impl CommitInput {
         let shape = |text: &str, color| {
             text_system.shape_line(text.to_owned().into(), font_size, &[run(text.len(), color)], None)
         };
+        let links = if self.editor.masked { &[][..] } else { &self.links[..] };
+        let shape_at = |at: usize, text: &str| {
+            let mut runs = Vec::new();
+            let mut cursor = 0;
+            for link in links {
+                let from = link.start.clamp(at, at + text.len()) - at;
+                let to = link.end.clamp(at, at + text.len()) - at;
+                if from >= to {
+                    continue;
+                }
+                if from > cursor {
+                    runs.push(run(from - cursor, ink));
+                }
+                let underline = UnderlineStyle { thickness: px(1.), color: Some(rgb(ACCENT).into()), wavy: false };
+                runs.push(TextRun { underline: Some(underline), ..run(to - from, ACCENT) });
+                cursor = to;
+            }
+            if cursor < text.len() || runs.is_empty() {
+                runs.push(run(text.len() - cursor, ink));
+            }
+            text_system.shape_line(text.to_owned().into(), font_size, &runs, None)
+        };
         let mut lines = Vec::new();
         let mut offset = 0;
         let display = self.display();
@@ -610,7 +770,7 @@ impl CommitInput {
                 text_system.shape_text(
                     text.to_owned().into(),
                     font_size,
-                    &[run(text.len(), TEXT)],
+                    &[run(text.len(), ink)],
                     Some(bounds.size.width.max(px(1.))),
                     None,
                 )
@@ -621,16 +781,16 @@ impl CommitInput {
                 for boundary in line.wrap_boundaries() {
                     let end = line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index;
                     if end > start && text.is_char_boundary(end) {
-                        lines.push(InputLine { range: offset + start..offset + end, shape: shape(&text[start..end], TEXT) });
+                        lines.push(InputLine { range: offset + start..offset + end, shape: shape_at(offset + start, &text[start..end]) });
                         start = end;
                     }
                 }
             }
-            lines.push(InputLine { range: offset + start..offset + text.len(), shape: shape(&text[start..], TEXT) });
+            lines.push(InputLine { range: offset + start..offset + text.len(), shape: shape_at(offset + start, &text[start..]) });
             offset += text.len() + 1;
         }
-        let placeholder = self.editor.value.is_empty().then(|| shape(self.placeholder, TEXT_3));
-        let mut layout = InputLayout { lines, bounds, origin: bounds.origin };
+        let placeholder = (self.editor.value.is_empty() && look.is_none()).then(|| shape(self.placeholder, TEXT_3));
+        let mut layout = InputLayout { lines, bounds, origin: bounds.origin, line: line_height };
         let caret = layout.point(self.to_display(self.editor.caret));
         if self.editor.multiline {
             let max_scroll = (line_height * layout.lines.len() - bounds.size.height).max(px(0.));
@@ -651,7 +811,7 @@ impl CommitInput {
         let marked_range = self.marked.as_ref().map(|marked| self.to_display(marked.start)..self.to_display(marked.end));
         let focused = self.focus.is_focused(window);
         for (i, line) in layout.lines.iter().enumerate() {
-            let y = layout.origin.y + px(i as f32 * LINE_HEIGHT);
+            let y = layout.origin.y + line_height * i as f32;
             if y + line_height <= bounds.top() || y >= bounds.bottom() {
                 continue;
             }
@@ -693,7 +853,7 @@ impl CommitInput {
         if let Some(placeholder) = placeholder {
             let _ = placeholder.paint(bounds.origin, line_height, window, cx);
         }
-        if focused && selection.is_empty() {
+        if focused && selection.is_empty() && look.is_none() {
             let caret = layout.point(self.to_display(self.editor.caret));
             window.paint_quad(fill(
                 Bounds::new(caret + point(px(0.), px(2.)), size(px(1.), line_height - px(4.))),
@@ -708,28 +868,71 @@ impl Render for CommitInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let multiline = self.editor.multiline;
+        let reading = self.reading;
+        let height = match reading {
+            Some(look) => look.line * self.rows.max(1) as f32,
+            None => LINE_HEIGHT * if multiline { DESCRIPTION_ROWS as f32 } else { 1. },
+        };
         let input = canvas(
             |_, _, _| (),
             move |b, _, window, cx| {
                 let focus = entity.update(cx, |input, cx| {
-                    input.layout = Some(window.with_content_mask(Some(ContentMask { bounds: b }), |window| {
-                        input.paint(b, window, cx)
-                    }));
+                    let layout = window.with_content_mask(Some(ContentMask { bounds: b }), |window| input.paint(b, window, cx));
+                    if input.reading.is_some() && layout.lines.len() != input.rows {
+                        input.rows = layout.lines.len();
+                        cx.notify();
+                    }
+                    input.layout = Some(layout);
                     input.focus.clone()
                 });
-                window.handle_input(&focus, ElementInputHandler::new(b, entity.clone()), cx);
+                if reading.is_none() {
+                    window.handle_input(&focus, ElementInputHandler::new(b, entity.clone()), cx);
+                }
             },
         )
         .flex_1()
         .min_w_0()
-        .h(px(LINE_HEIGHT * if multiline { DESCRIPTION_ROWS as f32 } else { 1. }));
-        div()
+        .h(px(height));
+        let field = div()
             .id(self.placeholder)
             .key_context("CommitField")
             .track_focus(&self.focus)
-            .h(px(if multiline { LINE_HEIGHT * DESCRIPTION_ROWS as f32 + 8. } else { 30. }))
             .flex()
             .items_center()
+            .on_key_down(cx.listener(Self::key))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::press_right))
+            .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| {
+                if this.reading.is_some() {
+                    this.hover(ev.position, cx);
+                }
+                if let Some((origin, unit)) = &this.drag {
+                    let (anchor, caret) = this.editor.dragged(origin, *unit, this.hit_for(ev.position, *unit));
+                    this.editor.select(anchor, caret);
+                    this.reveal_caret = this.reading.is_none();
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::release))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| {
+                    this.drag = None;
+                    this.pressed_link = None;
+                }),
+            )
+            .on_action(cx.listener(|this, _: &PasteSummary, _, cx| this.paste(cx)))
+            .on_action(cx.listener(|this, _: &SelectSummary, _, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &CopySummary, _, cx| this.copy(cx)))
+            .on_action(cx.listener(|this, _: &CutSummary, _, cx| this.cut(cx)))
+            .on_action(cx.listener(|this, _: &UndoText, _, cx| this.undo(cx)))
+            .on_action(cx.listener(|this, _: &RedoText, _, cx| this.redo(cx)));
+        if reading.is_some() {
+            let pointer = if self.over_link { CursorStyle::PointingHand } else { CursorStyle::IBeam };
+            return field.w_full().h(px(height)).cursor(pointer).child(input);
+        }
+        field
+            .h(px(if multiline { LINE_HEIGHT * DESCRIPTION_ROWS as f32 + 8. } else { 30. }))
             .px(px(9.))
             .bg(rgb(CANVAS))
             .border_1()
@@ -739,7 +942,6 @@ impl Render for CommitInput {
             .focus(|s| s.border_color(rgb(ACCENT)))
             .cursor(CursorStyle::IBeam)
             .overflow_hidden()
-            .on_key_down(cx.listener(Self::key))
             .when(multiline, |d| {
                 d.on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
                     let Some(layout) = &this.layout else { return };
@@ -752,30 +954,6 @@ impl Render for CommitInput {
                     }
                 }))
             })
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
-            .on_mouse_down(MouseButton::Right, cx.listener(Self::press_right))
-            .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| {
-                if let Some((origin, unit)) = &this.drag {
-                    let (anchor, caret) = this.editor.dragged(origin, *unit, this.hit_for(ev.position, *unit));
-                    this.editor.select(anchor, caret);
-                    this.reveal_caret = true;
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.drag = None),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.drag = None),
-            )
-            .on_action(cx.listener(|this, _: &PasteSummary, _, cx| this.paste(cx)))
-            .on_action(cx.listener(|this, _: &SelectSummary, _, cx| this.select_all(cx)))
-            .on_action(cx.listener(|this, _: &CopySummary, _, cx| this.copy(cx)))
-            .on_action(cx.listener(|this, _: &CutSummary, _, cx| this.cut(cx)))
-            .on_action(cx.listener(|this, _: &UndoText, _, cx| this.undo(cx)))
-            .on_action(cx.listener(|this, _: &RedoText, _, cx| this.redo(cx)))
             .child(input)
             .when(self.count && !self.editor.value.is_empty(), |d| {
                 d.gap(px(6.)).child(crate::kit::label(self.editor.value.graphemes(true).count().to_string()))
@@ -812,6 +990,27 @@ mod tests {
         );
         let keys: Vec<_> = menu_items(true, false, true, true).into_iter().map(|item| item.keys).collect();
         assert_eq!(keys, [Some("cmd-x"), Some("cmd-c"), Some("cmd-v"), None, Some("cmd-a")]);
+    }
+
+    #[test]
+    fn a_read_only_message_offers_only_copy_and_select_all() {
+        assert_eq!(enabled(reader_items(true, true)), [("Copy", true), ("Select All", true)]);
+        assert_eq!(enabled(reader_items(false, true)), [("Copy", false), ("Select All", true)]);
+        assert_eq!(enabled(reader_items(false, false)), [("Copy", false), ("Select All", false)]);
+    }
+
+    #[test]
+    fn links_are_found_at_word_starts_and_lose_trailing_punctuation() {
+        let shown = |text: &str| links(text).into_iter().map(|link| text[link].to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            shown("See https://example.invalid/ford, then http://example.invalid/a?b=c#d."),
+            ["https://example.invalid/ford", "http://example.invalid/a?b=c#d"]
+        );
+        assert_eq!(shown("(docs at https://example.invalid/wiki/Ford_(river))"), ["https://example.invalid/wiki/Ford_(river)"]);
+        assert_eq!(shown("[https://example.invalid/x]"), ["https://example.invalid/x"]);
+        assert_eq!(shown("<https://example.invalid/é>"), ["https://example.invalid/é"]);
+        assert!(shown("nohttps://example.invalid ftp://example.invalid http:// https").is_empty());
+        assert_eq!(shown("café https://example.invalid/'quoted'"), ["https://example.invalid/'quoted"]);
     }
 
     #[test]

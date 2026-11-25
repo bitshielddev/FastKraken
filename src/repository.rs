@@ -192,6 +192,21 @@ impl Diff {
     pub(crate) fn hunks_stageable(&self) -> bool {
         self.stageable() && !self.hunks.is_empty()
     }
+
+    pub(crate) fn hunk_patch(&self, index: usize) -> Option<String> {
+        let hunk = self.hunks.get(index)?;
+        let bytes = self.bytes.get(..hunk.bytes.end)?;
+        let file = (0..hunk.bytes.start)
+            .rev()
+            .find(|&at| bytes[at..].starts_with(b"diff --git ") && (at == 0 || bytes[at - 1] == b'\n'))?;
+        let header = self.hunks.iter().map(|hunk| hunk.bytes.start).find(|&start| start >= file)?;
+        let mut patch = bytes[file..header].to_vec();
+        patch.extend_from_slice(&bytes[hunk.bytes.clone()]);
+        if !patch.ends_with(b"\n") {
+            patch.push(b'\n');
+        }
+        Some(String::from_utf8_lossy(&patch).into_owned())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -2208,6 +2223,41 @@ pub(crate) mod tests {
         assert!(f.repo.object_sizes(&[]).unwrap().is_empty());
         assert!(f.repo.object_sizes(&["--batch".into()]).is_err());
         assert_eq!(f.git(&["status", "--porcelain=v1"]), b"A  chart.bin\n");
+    }
+
+    #[test]
+    fn a_hunk_copied_as_a_patch_carries_its_own_file_header_and_applies_in_reverse() {
+        let f = Fixture::new();
+        let lines = |edit: &dyn Fn(usize) -> String| (1..=20).map(edit).collect::<String>();
+        fs::write(f.dir.join("log.txt"), lines(&|i| format!("line {i}\n"))).unwrap();
+        fs::write(f.dir.join("map.txt"), "north\nsouth\n").unwrap();
+        f.git(&["add", "log.txt", "map.txt"]);
+        f.git(&["commit", "-qm", "Start the log"]);
+        fs::write(f.dir.join("log.txt"), lines(&|i| if i == 2 || i == 19 { format!("LINE {i}\n") } else { format!("line {i}\n") })).unwrap();
+        fs::write(f.dir.join("map.txt"), "north\nwest\nsouth\n").unwrap();
+        f.git(&["commit", "-qam", "Edit the log and the map"]);
+        let head = f.git(&["rev-parse", "HEAD"]);
+        let diff = f.repo.commit_diff(String::from_utf8_lossy(&head).trim()).unwrap();
+        assert_eq!(diff.hunks.len(), 3);
+        let second = diff.hunk_patch(1).unwrap();
+        assert!(second.starts_with("diff --git a/log.txt b/log.txt\n"), "{second}");
+        assert!(second.contains("+LINE 19\n") && !second.contains("LINE 2\n") && !second.contains("map.txt"), "{second}");
+        let map = diff.hunk_patch(2).unwrap();
+        assert!(map.starts_with("diff --git a/map.txt b/map.txt\n") && map.ends_with("+west\n south\n"), "{map}");
+        assert_eq!(map.matches("@@ ").count(), 1);
+        assert!(diff.hunk_patch(3).is_none());
+        let index = f.git(&["ls-files", "--stage"]);
+        for (name, patch) in [("second.patch", &second), ("map.patch", &map)] {
+            let file = f.dir.join(name);
+            fs::write(&file, patch).unwrap();
+            f.git(&["apply", "--check", "--reverse", file.to_str().unwrap()]);
+            fs::remove_file(file).unwrap();
+        }
+        assert_eq!(f.git(&["ls-files", "--stage"]), index);
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(f.git(&["status", "--porcelain=v1"]), b"");
+        let file = f.repo.file_diff(Path::new("log.txt"), false).unwrap();
+        assert!(file.hunk_patch(0).is_none());
     }
 
     #[test]

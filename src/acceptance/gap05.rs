@@ -1152,14 +1152,6 @@ impl Replay<'_> {
         crate::tools::launched().into_iter().skip(mark).collect()
     }
 
-    fn enabled_rows(&mut self, target: &Target) -> Result<Vec<(String, String)>> {
-        let rows = self.menu_rows(target)?;
-        if let Some(row) = rows.iter().find(|row| row.2.is_some()) {
-            return Err(format!("{} is disabled: {:?}", row.0, row.2).into());
-        }
-        Ok(rows.into_iter().map(|row| (row.0.to_owned(), row.1)).collect())
-    }
-
     async fn forget_tools(&mut self, dir: &Path) -> Result<()> {
         let _ = fs::remove_file(dir.join("bin/code"));
         let _ = fs::remove_dir_all(dir.join("Applications/Zed.app"));
@@ -1240,8 +1232,17 @@ impl Replay<'_> {
 
         self.action(Action::Select(file("trail.txt", false)))?;
         self.until("trail.txt's diff", |tab| patch(tab, "+Juniper: the stepping stones.")).await?;
-        let line = Target::Line { path: "trail.txt".into(), line: 2 };
-        let rows = self.enabled_rows(&line)?;
+        let line = self.tab.read_with(self.cx, |tab, _| {
+            let row = tab.ui.diff.lines.iter().position(|row| row.kind.is_code() && row.new == Some(2))?;
+            crate::diff_select::code_target(&tab.ui, row, 2)
+        })?;
+        let line = line.ok_or("The diff has no row for line 2")?;
+        let rows: Vec<(String, String)> = self
+            .menu_rows(&line)?
+            .into_iter()
+            .filter(|row| row.0.starts_with("file."))
+            .map(|row| (row.0.to_owned(), row.1))
+            .collect();
         let expected = [
             ("file.edit", "Open in VS Code at line 2"),
             ("file.reveal", "Reveal in Finder"),

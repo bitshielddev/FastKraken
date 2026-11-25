@@ -1158,6 +1158,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
     let allowed = match action {
         A::Open | A::Refresh | A::Operation(_) | A::Merge(_) | A::Conflict(_) | A::Prompt(_) => true,
         A::Select(_) | A::Inspect(_) | A::Search(_) | A::More | A::OpenDiff | A::CloseDiff | A::DiffMode(_) => true,
+        A::Text(_) => true,
         A::Dismiss
         | A::Notice(_)
         | A::CopyText { .. }

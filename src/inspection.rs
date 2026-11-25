@@ -7,7 +7,8 @@ use crate::{
     theme::*,
     view::{self, Desk, Menu, Selection},
 };
-use gpui::{Context, Div, FontWeight, SharedString, Window, div, prelude::*, px, rgb, uniform_list};
+use crate::view::commit_input::{CommitInput, Look};
+use gpui::{Context, Div, Focusable, FontWeight, SharedString, Window, div, prelude::*, px, rgb, uniform_list};
 use std::{
     collections::HashMap,
     ops::Range,
@@ -15,6 +16,32 @@ use std::{
 };
 
 const HISTORY_PAGE: usize = 64;
+
+pub(crate) struct Message {
+    pub(crate) subject: gpui::Entity<CommitInput>,
+    pub(crate) body: gpui::Entity<CommitInput>,
+}
+
+impl Message {
+    pub(crate) fn new(cx: &mut Context<Tab>) -> Self {
+        let subject = Look { size: 14., line: 20., weight: FontWeight::SEMIBOLD, color: TEXT };
+        let body = Look { size: TEXT_SMALL, line: 18., weight: FontWeight::NORMAL, color: TEXT_2 };
+        Self {
+            subject: cx.new(|cx| CommitInput::reader(cx, "Commit subject", subject)),
+            body: cx.new(|cx| CommitInput::reader(cx, "Commit message", body)),
+        }
+    }
+
+    pub(crate) fn focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.subject.focus_handle(cx).is_focused(window) || self.body.focus_handle(cx).is_focused(window)
+    }
+}
+
+fn show_message(tab: &mut Tab, subject: &str, body: &str, cx: &mut Context<Tab>) {
+    let message = &tab.ui.message;
+    message.subject.update(cx, |field, cx| field.show(subject, cx));
+    message.body.update(cx, |field, cx| field.show(body, cx));
+}
 
 pub(crate) const COMMANDS: &[crate::commands::Command] = {
     use crate::commands::{Availability, Command, Group, Side, Target, busy, commit, operating};
@@ -302,10 +329,12 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
     state.stats.clear();
     state.oid = oid.map(str::to_owned);
     state.loading_details = false;
+    let listed = oid.and_then(|oid| tab.ui.history.iter().find(|row| row.oid == oid)).map(|row| row.subject.clone());
+    show_message(tab, listed.as_deref().unwrap_or_default(), "", cx);
     let (Some(oid), Some(repo)) = (oid.map(str::to_owned), tab.repo.clone()) else {
         return;
     };
-    state.loading_details = true;
+    tab.ui.inspection.loading_details = true;
     let epoch = tab.epoch;
     let selected_oid = oid.clone();
     Tab::work(
@@ -327,7 +356,9 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
                     state.stats = details.stats;
                     state.files = details.files;
                     tab.ui.diff_title = details.subject.clone();
-                    state.subject = Some(details.subject);
+                    state.subject = Some(details.subject.clone());
+                    let body = tab.ui.inspection.body.clone();
+                    show_message(tab, &details.subject, &body, cx);
                     open_waiting(tab, cx);
                 }
                 Err(error) => tab.error(error, cx),
@@ -466,12 +497,6 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     let Some(Selection::Commit(oid)) = &ui.selection else {
         return div();
     };
-    let subject = state.subject.clone().unwrap_or_else(|| {
-        ui.history
-            .iter()
-            .find(|row| &row.oid == oid)
-            .map_or_else(String::new, |row| row.subject.clone())
-    });
     let more_open = matches!(ui.menu, Some(Menu::CommitActions));
     let (added, deleted) = state
         .stats
@@ -491,14 +516,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .flex()
                 .items_start()
                 .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(px(14.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(subject),
-                )
+                .child(div().flex_1().min_w_0().child(ui.message.subject.clone()))
                 .child(
                     div()
                         .relative()
@@ -526,9 +544,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             .max_h(px(136.))
                             .overflow_y_scroll()
                             .track_scroll(&state.body_scroll)
-                            .text_size(px(TEXT_SMALL))
-                            .text_color(rgb(TEXT_2))
-                            .child(state.body.clone()),
+                            .child(ui.message.body.clone()),
                     )
                     .child(kit::scrollbar("commit-body-scrollbar", &state.body_scroll)),
             )

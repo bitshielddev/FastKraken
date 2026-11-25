@@ -59,7 +59,7 @@ impl Replay<'_> {
         Ok((root, main, ferry))
     }
 
-    fn focus_desk(&mut self) -> Result<()> {
+    pub(super) fn focus_desk(&mut self) -> Result<()> {
         self.tab.update(self.cx, |tab, window, _| crate::view::focus(&tab.ui, window))?;
         Ok(())
     }

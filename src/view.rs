@@ -7,7 +7,9 @@ mod graph;
 
 use crate::{kit, navigate::Action as Move, stash::HistoryItem, theme::*};
 pub use commit_input::CommitInput;
-pub(crate) use diff_view::{Layout as DiffLayout, Mode as DiffMode, placeholder_text as diff_placeholder};
+pub(crate) use diff_view::{
+    Layout as DiffLayout, Mode as DiffMode, doc_row as diff_doc_row, placeholder_text as diff_placeholder, rows as diff_rows,
+};
 use crate::diff_doc::{DiffDoc, PatchState};
 use gpui::{
     App, ClipboardItem, Context, CursorStyle, Div, DragMoveEvent, Entity, FocusHandle, Focusable,
@@ -549,6 +551,7 @@ pub enum Action {
     Pick(crate::pick::Action),
     Picked(crate::picked::Action),
     Lines(crate::lines::Action),
+    Text(crate::diff_select::Action),
     Discard(crate::discard::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
@@ -650,6 +653,8 @@ pub struct Ui {
     pub selection: Option<Selection>,
     pub(crate) picked: Option<crate::picked::Picked<PathBuf>>,
     pub(crate) lines: crate::lines::State,
+    pub(crate) text: crate::diff_select::State,
+    pub(crate) message: crate::inspection::Message,
     pub files: Vec<FileRow>,
     pub changed_paths: usize,
     pub operation: crate::operation::State,
@@ -734,6 +739,8 @@ impl Ui {
             selection: None,
             picked: None,
             lines: Default::default(),
+            text: Default::default(),
+            message: crate::inspection::Message::new(cx),
             files: vec![],
             changed_paths: 0,
             operation: Default::default(),
@@ -1231,6 +1238,7 @@ fn select<T: Desk>(app: &mut T, selected: Selection, w: &mut Window, cx: &mut Co
 
 pub(crate) fn press_started(ui: &mut Ui) {
     ui.closed_by_press = None;
+    ui.text.unfocus();
 }
 
 pub(crate) fn pressed_outside<T: Desk>(app: &mut T, w: &mut Window, cx: &mut Context<T>) {
@@ -2315,7 +2323,9 @@ pub fn render<T: Desk>(
             || (!crate::start::filter_shown(ui, cx) && ui.start.filter.focus_handle(cx).is_focused(window))
             || crate::preferences::field_focused(ui, window, cx)
             || crate::identity::panel_field_focused(ui, window, cx)
-            || crate::commit_options::field_focused(ui, window, cx);
+            || crate::commit_options::field_focused(ui, window, cx)
+            || (ui.message.focused(window, cx)
+                && (ui.panel_hidden || !matches!(ui.selection, Some(Selection::Commit(_))) || crate::operation::owns_panel(ui)));
         if gone {
             focus(ui, window);
         }
@@ -2325,7 +2335,7 @@ pub fn render<T: Desk>(
     let root = div()
         .id("desk")
         .track_focus(&ui.focus)
-        .key_context("Desk")
+        .key_context(if crate::diff_select::focused(ui) { "Desk DiffText" } else { "Desk" })
         .size_full()
         .relative()
         .flex()
@@ -2344,8 +2354,17 @@ pub fn render<T: Desk>(
             app.dispatch(Action::Run(run.id), w, cx)
         }))
         .on_action(cx.listener(|app, _: &commit_input::SelectSummary, w, cx| {
-            app.dispatch(Action::Run("file.pick-all"), w, cx)
+            let id = if crate::diff_select::focused(app.ui()) { "text.select-all" } else { "file.pick-all" };
+            app.dispatch(Action::Run(id), w, cx)
         }))
+        .on_action(cx.listener(|app, _: &commit_input::CopySummary, w, cx| {
+            if crate::diff_select::focused(app.ui()) {
+                app.dispatch(Action::Run("text.copy"), w, cx)
+            }
+        }))
+        .on_mouse_move(cx.listener(crate::diff_select::moved))
+        .on_mouse_up(MouseButton::Left, cx.listener(|app, _, w, cx| crate::diff_select::released(app, w, cx)))
+        .on_mouse_up_out(MouseButton::Left, cx.listener(|app, _, w, cx| crate::diff_select::released(app, w, cx)))
         .on_action(cx.listener(|app, open: &crate::start::OpenRecent, w, cx| {
             if app.ui().dialog_open() {
                 app.ui_mut().notices.show(crate::notice::Notice::new(Tone::Info, "Close the open dialog first", ""));
@@ -2428,6 +2447,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Activity(crate::activity::Action::Close), w, cx);
             } else if centre(ui) == Centre::Diff && crate::lines::current(ui).is_some() {
                 app.dispatch(Action::Lines(crate::lines::Action::Clear), w, cx);
+            } else if centre(ui) == Centre::Diff && crate::diff_select::current(ui).is_some() {
+                app.dispatch(Action::Text(crate::diff_select::Action::Clear), w, cx);
             } else if centre(ui) == Centre::Diff {
                 app.dispatch(Action::CloseDiff, w, cx);
             } else if ui.merge.editing().is_some() {
@@ -2443,6 +2464,7 @@ pub fn render<T: Desk>(
             } else if ui.input.focus_handle(cx).is_focused(w)
                 || ui.description.focus_handle(cx).is_focused(w)
                 || ui.refs.filter.focus_handle(cx).is_focused(w)
+                || ui.message.focused(w, cx)
             {
                 focus(ui, w);
             } else if let Some(id) = ui.notices.dismissable() {

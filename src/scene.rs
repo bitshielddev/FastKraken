@@ -67,6 +67,16 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
         "opendiff" => Some(Action::OpenDiff),
         "linepick" => Some(Action::Lines(crate::lines::Action::Press { row: index, how: crate::lines::How::One })),
         "linerange" => Some(Action::Lines(crate::lines::Action::Press { row: index, how: crate::lines::How::Range })),
+        "textpick" => Some(Action::Text(crate::diff_select::Action::Press {
+            column: crate::diff_select::Column::Unified,
+            spot: crate::diff_select::Spot { row: index, at: 0 },
+            clicks: 1,
+            extend: false,
+        })),
+        "textto" => Some(Action::Text(crate::diff_select::Action::DragTo {
+            spot: crate::diff_select::Spot { row: index, at: 6 },
+            edge: crate::diff_select::Edge::Inside,
+        })),
         "split" => Some(Action::DiffMode(crate::view::DiffMode::Split)),
         "unified" => Some(Action::DiffMode(crate::view::DiffMode::Unified)),
         "branches" => Some(Action::Refs(refs::Action::ToggleList)),
