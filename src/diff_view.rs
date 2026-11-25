@@ -582,7 +582,15 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             })))
         })
         .when(!listing_history && !empty, |d| {
-            d.when(split, |d| d.child(split_headings())).child(lines)
+            let sideways = if split {
+                kit::scrollbar("diff-pan", &ui.split_pan).within(&ui.diff_scroll)
+            } else {
+                kit::scrollbar("diff-pan", &ui.diff_scroll)
+            };
+            d.when(split, |d| d.child(split_headings()))
+                .child(lines)
+                .child(kit::scrollbar("diff-scrollbar", &ui.diff_scroll))
+                .child(sideways.horizontal())
         })
 }
 

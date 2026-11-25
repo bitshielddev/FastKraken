@@ -338,10 +338,11 @@ pub(crate) fn shortcut_list<T: Desk>(
                     .collect::<Vec<_>>()
             }),
         )
-        .track_scroll(scroll)
+        .track_scroll(scroll.clone())
         .flex_1()
         .min_h_0(),
     )
+    .child(kit::scrollbar(gpui::SharedString::from(format!("{id}-scrollbar")), &scroll))
 }
 
 #[cfg(test)]

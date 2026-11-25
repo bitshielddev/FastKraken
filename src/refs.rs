@@ -1647,14 +1647,17 @@ pub(crate) fn switcher<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .when(count == 0, |d| {
             d.child(div().px_3().pb_2().child(kit::muted("No branch matches.")))
         })
-        .when(count > 0, |d| d.child(list))
+        .when(count > 0, |d| d.child(list).child(kit::scrollbar("branch-switcher-scrollbar", &ui.refs.switcher_scroll)))
         .children(create_row)
         .when(any_remote, |d| {
             d.child(div().px_3().pt_2().pb_1().child(kit::label("Remote")))
                 .when(remote_count == 0, |d| {
                     d.child(div().px_3().pb_2().child(kit::muted("No remote branch matches.")))
                 })
-                .when(remote_count > 0, |d| d.child(remote_list))
+                .when(remote_count > 0, |d| {
+                    d.child(remote_list)
+                        .child(kit::scrollbar("branch-switcher-remote-scrollbar", &ui.refs.remote_scroll))
+                })
         })
         .child(
             div()

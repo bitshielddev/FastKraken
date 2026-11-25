@@ -282,6 +282,7 @@ pub fn results<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .flex_1()
             .min_h_0(),
         )
+        .child(kit::scrollbar("history-search-scrollbar", &state.scroll))
     })
 }
 

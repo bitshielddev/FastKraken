@@ -42,6 +42,7 @@ pub(crate) struct Notice {
     pub log: Option<u64>,
     pub count: usize,
     pub expanded: bool,
+    output_scroll: gpui::ScrollHandle,
     lasts: Option<Duration>,
     expires: Option<Instant>,
     changed: u64,
@@ -61,6 +62,7 @@ impl Notice {
             log: None,
             count: 1,
             expanded: false,
+            output_scroll: gpui::ScrollHandle::new(),
             lasts: matches!(tone, Tone::Success | Tone::Info).then_some(FADE),
             expires: None,
             changed: 0,
@@ -586,19 +588,24 @@ fn card<T: Desk>(notice: &Notice, busy: bool, cx: &mut Context<T>) -> impl IntoE
                 .when_some(output.clone().filter(|_| notice.expanded), |d, raw| {
                     d.child(
                         div()
-                            .id("notice-output")
                             .mt_1()
-                            .max_h(px(160.))
-                            .overflow_y_scroll()
-                            .p_2()
-                            .rounded(px(RADIUS))
-                            .border_1()
-                            .border_color(rgb(LINE))
-                            .bg(rgb(CANVAS))
-                            .font_family(MONO)
-                            .text_size(px(TEXT_TINY))
-                            .text_color(rgb(TEXT_2))
-                            .children(raw.lines().map(|line| div().child(line.to_owned()))),
+                            .child(
+                                div()
+                                    .id("notice-output")
+                                    .max_h(px(160.))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&notice.output_scroll)
+                                    .p_2()
+                                    .rounded(px(RADIUS))
+                                    .border_1()
+                                    .border_color(rgb(LINE))
+                                    .bg(rgb(CANVAS))
+                                    .font_family(MONO)
+                                    .text_size(px(TEXT_TINY))
+                                    .text_color(rgb(TEXT_2))
+                                    .children(raw.lines().map(|line| div().child(line.to_owned()))),
+                            )
+                            .child(kit::scrollbar(("notice-output-scrollbar", notice.id as usize), &notice.output_scroll)),
                     )
                 })
                 .when(buttons, |d| {

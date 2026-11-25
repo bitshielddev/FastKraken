@@ -310,6 +310,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
             .flex_1()
             .min_h_0(),
         )
+        .child(kit::scrollbar("palette-scrollbar", &ui.palette.scroll))
     };
     let reason = at.and_then(|at| shown.into_iter().nth(at)).and_then(|entry| entry.disabled);
     let footer = div()

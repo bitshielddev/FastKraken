@@ -249,6 +249,8 @@ pub struct State {
     loading_history: bool,
     more_history: bool,
     pub(crate) scroll: gpui::UniformListScrollHandle,
+    history_scroll: gpui::UniformListScrollHandle,
+    body_scroll: gpui::ScrollHandle,
 }
 
 impl State {
@@ -264,6 +266,7 @@ impl State {
         self.history = None;
         self.loading_history = false;
         self.more_history = false;
+        self.history_scroll = gpui::UniformListScrollHandle::new();
     }
 }
 
@@ -517,12 +520,17 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .when(!state.body.is_empty(), |d| {
             d.child(
                 div()
-                    .id("commit-body")
-                    .max_h(px(136.))
-                    .overflow_y_scroll()
-                    .text_size(px(TEXT_SMALL))
-                    .text_color(rgb(TEXT_2))
-                    .child(state.body.clone()),
+                    .child(
+                        div()
+                            .id("commit-body")
+                            .max_h(px(136.))
+                            .overflow_y_scroll()
+                            .track_scroll(&state.body_scroll)
+                            .text_size(px(TEXT_SMALL))
+                            .text_color(rgb(TEXT_2))
+                            .child(state.body.clone()),
+                    )
+                    .child(kit::scrollbar("commit-body-scrollbar", &state.body_scroll)),
             )
         })
         .when(!state.author.is_empty(), |d| {
@@ -761,6 +769,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .child(summary)
         .child(heading)
         .child(files)
+        .child(kit::scrollbar("committed-files-scrollbar", &state.scroll))
 }
 
 pub(crate) fn history_button<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement + use<T> {
@@ -834,18 +843,21 @@ pub(crate) fn file_history<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .collect::<Vec<_>>()
         }),
     )
+    .track_scroll(state.history_scroll.clone())
     .flex_1()
     .min_h_0();
-    body.child(list).when(state.more_history, |d| {
-        d.child(
-            div().p_2().flex().justify_end().child(
-                kit::btn("older-file-history", "Load older")
-                    .small()
-                    .enabled(!state.loading_history)
-                    .on(view::Action::Inspect(Action::MoreHistory), cx),
-            ),
-        )
-    })
+    body.child(list)
+        .child(kit::scrollbar("file-revisions-scrollbar", &state.history_scroll))
+        .when(state.more_history, |d| {
+            d.child(
+                div().p_2().flex().justify_end().child(
+                    kit::btn("older-file-history", "Load older")
+                        .small()
+                        .enabled(!state.loading_history)
+                        .on(view::Action::Inspect(Action::MoreHistory), cx),
+                ),
+            )
+        })
 }
 
 #[cfg(test)]

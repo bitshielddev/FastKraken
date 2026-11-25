@@ -1727,7 +1727,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     )
                     .on_click(cx.listener(|app, _, w, cx| select(app, Selection::Changes, w, cx)))
         })
-        .when(!unborn(ui), |d| d.child(list))
+        .when(!unborn(ui), |d| d.child(list).child(kit::scrollbar("history-scrollbar", &ui.history_scroll)))
         .when(unborn(ui), |d| {
             d.child(
                 div()
@@ -1976,6 +1976,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .child(crate::discard::header(app, cx))
         .when_some(detached_warning(ui), |d, warning| d.child(detached_note(app, warning, cx)))
         .child(files)
+        .child(kit::scrollbar("worktree-scrollbar", &ui.file_scroll))
         .child(
             div()
                 .p_3()
@@ -2446,7 +2447,8 @@ pub fn render<T: Desk>(
             .overflow_hidden()
             .bg(rgb(PANEL))
             .child(div().p_2().child(ui.refs.filter.clone()))
-            .child(crate::refs::sidebar(app, cx));
+            .child(crate::refs::sidebar(app, cx))
+            .child(kit::scrollbar("sidebar-scrollbar", &ui.refs.scroll));
         let centre = match centre(ui) {
             Centre::Activity => crate::activity::render(app, cx),
             Centre::Resolver => crate::merge::resolver(app, cx),

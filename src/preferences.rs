@@ -74,6 +74,7 @@ pub(crate) struct State {
     pub(crate) branch: Entity<CommitInput>,
     pub(crate) filter: Entity<CommitInput>,
     scroll: UniformListScrollHandle,
+    page_scroll: gpui::ScrollHandle,
     saved: Option<Result<Vec<Entry>, String>>,
     saved_ticket: u64,
     git: Option<Result<String, String>>,
@@ -91,6 +92,7 @@ impl State {
             branch,
             filter,
             scroll: UniformListScrollHandle::new(),
+            page_scroll: gpui::ScrollHandle::new(),
             saved: None,
             saved_ticket: 0,
             git: None,
@@ -343,16 +345,24 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 Section::Tools => crate::tools::preferences(ui, cx),
                 _ => repository(ui, cx),
             };
-            div().flex_1().min_w_0().min_h_0().flex().flex_col().child(
-                div()
-                    .id("preferences-page")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px(px(28.))
-                    .py(px(22.))
-                    .child(div().max_w(px(620.)).flex().flex_col().gap_1().child(heading(section.title(ui))).child(body)),
-            )
+            div()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .id("preferences-page")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&ui.preferences.page_scroll)
+                        .px(px(28.))
+                        .py(px(22.))
+                        .child(div().max_w(px(620.)).flex().flex_col().gap_1().child(heading(section.title(ui))).child(body)),
+                )
+                .child(kit::scrollbar("preferences-page-scrollbar", &ui.preferences.page_scroll))
         }
     };
     div()

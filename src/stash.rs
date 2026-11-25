@@ -1081,6 +1081,7 @@ pub struct State {
     files_only: bool,
     message: Option<Entity<CommitInput>>,
     path: Option<PathBuf>,
+    files_scroll: gpui::UniformListScrollHandle,
 }
 
 struct Placement {
@@ -1853,6 +1854,7 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .collect::<Vec<_>>()
         }),
     )
+    .track_scroll(ui.stash.files_scroll.clone())
     .flex_1()
     .min_h_0();
     div()
@@ -1932,6 +1934,7 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .child(kit::label(self::files(n))),
         )
         .child(files)
+        .child(kit::scrollbar("stashed-files-scrollbar", &ui.stash.files_scroll))
 }
 
 #[cfg(test)]

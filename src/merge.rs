@@ -898,6 +898,8 @@ pub(crate) fn resolver<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .child(header)
         .child(headings)
         .child(source_rows(state, editor, cx))
+        .child(kit::scrollbar("merge-source-scrollbar", &state.source_scroll))
+        .child(kit::scrollbar("merge-source-pan", &state.source_pan).horizontal().within(&state.source_scroll))
         .child(
             div()
                 .h(px(30.))
@@ -928,6 +930,8 @@ pub(crate) fn resolver<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 ),
         )
         .child(result_rows(state, editor, cx))
+        .child(kit::scrollbar("merge-result-scrollbar", &state.result_scroll))
+        .child(kit::scrollbar("merge-result-pan", &state.result_pan).horizontal().within(&state.result_scroll))
 }
 
 #[cfg(test)]

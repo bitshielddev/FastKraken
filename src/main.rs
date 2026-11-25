@@ -46,6 +46,7 @@ mod remotes;
 mod repository;
 mod reverse;
 mod scene;
+mod scrollbar;
 mod search;
 mod settings;
 mod start;

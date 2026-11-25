@@ -290,6 +290,7 @@ fn remotes_page<T: Desk>(state: &State, ready: bool, cx: &Context<T>) -> Div {
             .flex()
             .flex_col()
             .overflow_y_scroll()
+            .track_scroll(&state.remote_scroll)
             .rounded(px(RADIUS))
             .border_1()
             .border_color(rgb(LINE))
@@ -338,7 +339,9 @@ fn remotes_page<T: Desk>(state: &State, ready: bool, cx: &Context<T>) -> Div {
             );
         }
         if !state.remotes.is_empty() {
-            body = body.child(list);
+            body = body
+                .child(list)
+                .child(kit::scrollbar("remote-list-scrollbar", &state.remote_scroll));
         }
     }
     body.child(footer([

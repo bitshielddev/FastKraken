@@ -447,6 +447,7 @@ fn recents<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .flex_1()
             .min_h_0(),
         )
+        .child(kit::scrollbar("recent-scrollbar", &ui.start.scroll))
     };
     div()
         .flex()

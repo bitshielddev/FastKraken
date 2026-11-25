@@ -637,6 +637,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .flex_1()
             .min_h_0(),
         )
+        .child(kit::scrollbar("activity-scrollbar", &state.scroll))
     };
     div()
         .flex_1()
@@ -732,6 +733,7 @@ fn detail<T: Desk>(app: &T, entry: &Entry, cx: &mut Context<T>) -> Div {
                 .flex_1()
                 .min_h_0(),
             )
+            .child(kit::scrollbar("activity-output-scrollbar", &state.output_scroll))
         })
 }
 

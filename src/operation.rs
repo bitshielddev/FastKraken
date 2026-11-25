@@ -862,6 +862,7 @@ pub(crate) struct State {
     pub(crate) stash: Option<Stashing>,
     pub(crate) picking: Option<Picking>,
     message_for: Option<Id>,
+    files_scroll: gpui::ScrollHandle,
 }
 
 impl State {
@@ -1578,6 +1579,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
+        .track_scroll(&state.files_scroll)
         .flex()
         .flex_col()
         .pt_1()
@@ -1721,6 +1723,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
         .overflow_hidden()
         .bg(rgb(PANEL))
         .child(list)
+        .child(kit::scrollbar("merge-files-scrollbar", &state.files_scroll))
         .child(footer)
 }
 

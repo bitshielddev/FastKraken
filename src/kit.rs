@@ -10,6 +10,8 @@ use gpui::{
 };
 use std::time::Duration;
 
+pub use crate::scrollbar::scrollbar;
+
 pub fn clear() -> gpui::Rgba {
     rgba(0x00000000)
 }
