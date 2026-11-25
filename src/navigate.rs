@@ -153,6 +153,10 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         crate::palette::key(tab, action, window, cx);
         return;
     }
+    if tab.ui.commit_options.picking() {
+        crate::commit_options::key(tab, action, window, cx);
+        return;
+    }
     let ui = &tab.ui;
     if ui.dialog_open() || ui.help.open() {
         return;
@@ -478,6 +482,7 @@ mod tests {
             parents: parents.iter().map(|parent| parent.repeat(40)).collect(),
             subject: String::new(),
             author: String::new(),
+            email: String::new(),
             date: String::new(),
             time: 0,
             refs: String::new(),

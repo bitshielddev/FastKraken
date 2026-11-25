@@ -28,6 +28,7 @@ pub(crate) enum Section {
     General,
     Accounts,
     Git,
+    Commit,
     Tools,
     Shortcuts,
     Repository,
@@ -39,6 +40,7 @@ impl Section {
             Section::General => "General".into(),
             Section::Accounts => "Accounts".into(),
             Section::Git => "Git".into(),
+            Section::Commit => "Commit".into(),
             Section::Tools => "External tools".into(),
             Section::Shortcuts => "Shortcuts".into(),
             Section::Repository => ui.repo.clone(),
@@ -47,7 +49,7 @@ impl Section {
 }
 
 pub(crate) fn sections(repository: bool) -> Vec<Section> {
-    let mut listed = vec![Section::General, Section::Accounts, Section::Git, Section::Tools, Section::Shortcuts];
+    let mut listed = vec![Section::General, Section::Accounts, Section::Git, Section::Commit, Section::Tools, Section::Shortcuts];
     if repository {
         listed.push(Section::Repository);
     }
@@ -337,6 +339,7 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 Section::General => general(ui, cx),
                 Section::Accounts => accounts(app, cx),
                 Section::Git => git(ui, cx),
+                Section::Commit => crate::commit_options::preferences(cx),
                 Section::Tools => crate::tools::preferences(ui, cx),
                 _ => repository(ui, cx),
             };
@@ -395,7 +398,7 @@ pub(crate) fn setting(title: impl Into<SharedString>, help: Option<SharedString>
         .child(div().flex_shrink_0().child(control))
 }
 
-fn tick<T: Desk>(
+pub(crate) fn tick<T: Desk>(
     id: &'static str,
     on: bool,
     title: &'static str,
@@ -696,9 +699,12 @@ mod tests {
 
     #[test]
     fn the_repositorys_section_is_listed_last_and_only_with_one_open() {
-        assert_eq!(sections(false), [Section::General, Section::Accounts, Section::Git, Section::Tools, Section::Shortcuts]);
+        assert_eq!(
+            sections(false),
+            [Section::General, Section::Accounts, Section::Git, Section::Commit, Section::Tools, Section::Shortcuts]
+        );
         assert_eq!(sections(true).last(), Some(&Section::Repository));
-        assert_eq!(sections(true).len(), 6);
+        assert_eq!(sections(true).len(), 7);
     }
 
     #[test]
@@ -708,6 +714,7 @@ mod tests {
         assert_eq!(moved(&listed, Section::Accounts, N::Step(-1)), Some(Section::General));
         assert_eq!(moved(&listed, Section::General, N::Step(-1)), None);
         assert_eq!(moved(&listed, Section::Repository, N::Step(1)), None);
+        assert_eq!(moved(&listed, Section::Git, N::Step(1)), Some(Section::Commit));
         assert_eq!(moved(&listed, Section::Git, N::Home), Some(Section::General));
         assert_eq!(moved(&listed, Section::Git, N::End), Some(Section::Repository));
         assert_eq!(moved(&listed, Section::Git, N::Page(9)), Some(Section::Repository));

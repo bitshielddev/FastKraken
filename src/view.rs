@@ -158,6 +158,7 @@ pub(crate) enum Surface {
     PullOptions,
     PushBranch,
     StashOptions,
+    Coauthors,
 }
 
 impl Surface {
@@ -173,7 +174,8 @@ impl Surface {
             (Self::Branches, Action::Refs(crate::refs::Action::ToggleList))
             | (Self::PullOptions, Action::Sync(crate::sync::Action::ToggleOptions))
             | (Self::PushBranch, Action::Publish(crate::publish::Action::PushBranch))
-            | (Self::StashOptions, Action::Stash(crate::stash::Action::ToggleOptions)) => true,
+            | (Self::StashOptions, Action::Stash(crate::stash::Action::ToggleOptions))
+            | (Self::Coauthors, Action::CommitOptions(crate::commit_options::Action::OpenCoauthors)) => true,
             _ => false,
         }
     }
@@ -570,6 +572,7 @@ pub enum Action {
     Tabs(crate::tabs::Action),
     Tools(crate::tools::Action),
     Cli(crate::cli::Action),
+    CommitOptions(crate::commit_options::Action),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -654,6 +657,7 @@ pub struct Ui {
     pub(crate) identity: crate::identity::State,
     pub(crate) autofetch: crate::autofetch::State,
     pub(crate) tools: crate::tools::State,
+    pub(crate) commit_options: crate::commit_options::State,
     pub has_more: bool,
     pub input: Entity<CommitInput>,
     pub description: Entity<CommitInput>,
@@ -737,6 +741,7 @@ impl Ui {
             identity: crate::identity::State::new(cx),
             autofetch: Default::default(),
             tools: crate::tools::State::new(cx),
+            commit_options: crate::commit_options::State::new(cx),
             has_more: false,
             input,
             description,
@@ -914,6 +919,8 @@ impl Ui {
             Some(Surface::PushBranch)
         } else if self.stash.options_open() {
             Some(Surface::StashOptions)
+        } else if self.commit_options.picking() {
+            Some(Surface::Coauthors)
         } else {
             None
         }
@@ -925,6 +932,7 @@ impl Ui {
             || self.sync.options_open()
             || self.publish.branch_open()
             || self.stash.options_open()
+            || self.commit_options.picking()
     }
 
     pub(crate) fn file_ranges(&self) -> (Range<usize>, Range<usize>) {
@@ -1041,6 +1049,9 @@ pub fn bindings(cx: &mut App) {
         KeyBinding::new("up", MoveUp, Some("BranchSwitcher > CommitField")),
         KeyBinding::new("down", MoveDown, Some("BranchSwitcher > CommitField")),
         KeyBinding::new("enter", ChooseRow, Some("BranchSwitcher > CommitField")),
+        KeyBinding::new("up", MoveUp, Some("CoauthorPicker > CommitField")),
+        KeyBinding::new("down", MoveDown, Some("CoauthorPicker > CommitField")),
+        KeyBinding::new("enter", ChooseRow, Some("CoauthorPicker > CommitField")),
         KeyBinding::new("up", MoveUp, Some("CommandPalette > CommitField")),
         KeyBinding::new("down", MoveDown, Some("CommandPalette > CommitField")),
         KeyBinding::new("pageup", MovePageUp, Some("CommandPalette > CommitField")),
@@ -1925,21 +1936,27 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         }
         .map(str::to_owned)
     });
-    let label = if amending {
-        match staged_count {
-            0 => "Amend last commit".to_owned(),
-            1 => "Amend with 1 staged file".to_owned(),
-            n => format!("Amend with {n} staged files"),
-        }
-    } else {
-        match (staged_count, ui.checked_out_branch()) {
-            (0, _) => "Commit".to_owned(),
-            (1, Some(branch)) => format!("Commit 1 file to {branch}"),
-            (n, Some(branch)) => format!("Commit {n} files to {branch}"),
-            (1, None) => "Commit 1 file".to_owned(),
-            (n, None) => format!("Commit {n} files"),
-        }
-    };
+    let label = crate::commit_options::commit_label(ui, cx);
+    let amend_row = div()
+        .id("amend-last-commit")
+        .h(px(22.))
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_size(px(TEXT_SMALL))
+        .text_color(rgb(TEXT_2))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(kit::clear())
+        .child(kit::checkbox(amending))
+        .child("Amend last commit")
+        .tooltip(kit::tip("Replace the last commit with this message and any staged changes."))
+        .when(ui.can_edit_index() && ui.head.is_some(), |d| {
+            let d = d.cursor_pointer().focusable().focus(|s| s.border_color(rgb(ACCENT)));
+            kit::pressable(d, Action::ToggleAmend, cx)
+        })
+        .when(!ui.can_edit_index() || ui.head.is_none(), |d| d.opacity(0.42));
+    let full = label.clone();
     let mut commit = kit::btn("commit-index", label)
         .primary()
         .wide()
@@ -1949,9 +1966,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         } else {
             "Ctrl ↵"
         });
-    if let Some(reason) = reason {
-        commit = commit.tip(reason);
-    }
+    commit = commit.tip(reason.unwrap_or(full));
     div()
         .flex_1()
         .min_h_0()
@@ -1976,28 +1991,20 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         "Working…"
                     })))
                 })
-                .when(!loading && !amend_busy, |d| d.child(ui.input.clone()).child(ui.description.clone()))
+                .when(!loading && !amend_busy, |d| {
+                    d.child(ui.input.clone())
+                        .child(ui.description.clone())
+                        .child(crate::commit_options::coauthor_row(app, cx))
+                })
                 .child(
                     div()
-                        .id("amend-last-commit")
-                        .h(px(22.))
                         .flex()
                         .items_center()
                         .gap_2()
-                        .text_size(px(TEXT_SMALL))
-                        .text_color(rgb(TEXT_2))
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(kit::clear())
-                        .child(kit::checkbox(amending))
-                        .child("Amend last commit")
-                        .tooltip(kit::tip("Replace the last commit with this message and any staged changes."))
-                        .when(ui.can_edit_index() && ui.head.is_some(), |d| {
-                            let d = d.cursor_pointer().focusable().focus(|s| s.border_color(rgb(ACCENT)));
-                            kit::pressable(d, Action::ToggleAmend, cx)
-                        })
-                        .when(!ui.can_edit_index() || ui.head.is_none(), |d| d.opacity(0.42)),
+                        .child(div().flex_1().min_w_0().flex().child(amend_row))
+                        .child(crate::commit_options::disclosure(app, cx)),
                 )
+                .children(crate::commit_options::options(app, cx))
                 .when_some(amend_warning(ui), |d, warning| {
                     d.child(
                         div()
@@ -2262,7 +2269,8 @@ pub fn render<T: Desk>(
                     || ui.init.branch.focus_handle(cx).is_focused(window)))
             || (!crate::start::filter_shown(ui, cx) && ui.start.filter.focus_handle(cx).is_focused(window))
             || crate::preferences::field_focused(ui, window, cx)
-            || crate::identity::panel_field_focused(ui, window, cx);
+            || crate::identity::panel_field_focused(ui, window, cx)
+            || crate::commit_options::field_focused(ui, window, cx);
         if gone {
             focus(ui, window);
         }
@@ -2361,6 +2369,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::MenuKey(crate::commands::Key::Left), w, cx);
             } else if ui.menu.is_some() {
                 app.dispatch(Action::Dismiss, w, cx);
+            } else if ui.commit_options.picking() {
+                app.dispatch(Action::CommitOptions(crate::commit_options::Action::CloseCoauthors), w, cx);
             } else if ui.sync.options_open() && ui.refs.draft.is_none() {
                 app.dispatch(Action::Sync(crate::sync::Action::Dismiss), w, cx);
             } else if ui.stash.options_open() && ui.refs.draft.is_none() {

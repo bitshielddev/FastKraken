@@ -239,6 +239,7 @@ pub struct State {
     pub written: String,
     pub parents: Vec<String>,
     pub body: String,
+    pub(crate) coauthors: Vec<crate::commit_options::Author>,
     pub files: Vec<ChangedFile>,
     stats: HashMap<PathBuf, (u32, u32)>,
     pub path: Option<PathBuf>,
@@ -293,6 +294,7 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
     state.written.clear();
     state.parents.clear();
     state.body.clear();
+    state.coauthors.clear();
     state.files.clear();
     state.stats.clear();
     state.oid = oid.map(str::to_owned);
@@ -317,6 +319,7 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
                     state.author = details.author;
                     state.written = details.written;
                     state.parents = details.parents;
+                    state.coauthors = crate::commit_options::coauthors(&details.body);
                     state.body = details.body;
                     state.stats = details.stats;
                     state.files = details.files;
@@ -538,6 +541,17 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     ),
             )
         })
+        .children(state.coauthors.iter().enumerate().map(|(index, coauthor)| {
+            div()
+                .id(("commit-coauthor", index))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(kit::avatar(&coauthor.name))
+                .child(kit::fit(coauthor.name.clone()).size(TEXT_SMALL))
+                .child(kit::fit("co-author").size(TEXT_SMALL).color(TEXT_3).grow())
+                .tooltip(kit::tip(coauthor.email.clone()))
+        }))
         .child(
             div()
                 .flex()

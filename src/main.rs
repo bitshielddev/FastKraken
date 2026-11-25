@@ -10,6 +10,7 @@ mod branch;
 mod cli;
 mod clone;
 mod commands;
+mod commit_options;
 mod conflict;
 mod connect;
 mod credentials;
@@ -238,6 +239,8 @@ impl Tab {
                 autofetch::arm(tab, cx);
                 sync::restore(tab, configured, cx);
                 merge::restore(tab, cx);
+                commit_options::restore(tab, cx);
+                commit_options::load_template(tab, cx);
                 refs::refresh(tab, cx);
                 stash::refresh(tab, cx);
                 operation::refresh(tab, cx);
@@ -752,6 +755,10 @@ impl Tab {
         let kept = autostash::Kept::default();
         let left = kept.clone();
         let shown = self.ui.identity.effective().cloned();
+        let hooks = self.ui.commit_options.hooks();
+        let push = commit_options::push_after(&self.ui, cx);
+        let landed = Arc::new(std::sync::Mutex::new(None));
+        let head = landed.clone();
         self.run_operation_or(
             cx,
             progress,
@@ -764,10 +771,11 @@ impl Tab {
                 let pending = autostash::pending(&repo);
                 let committed = match amend {
                     Some((head, reference, unchanged)) => {
-                        repo.amend(&head, reference.as_deref(), (!unchanged).then_some(message.as_str()))?
+                        repo.amend_with(&head, reference.as_deref(), (!unchanged).then_some(message.as_str()), hooks)?
                     }
-                    None => repo.commit(&message)?,
+                    None => repo.commit_with(&message, hooks)?,
                 };
+                *landed.lock().unwrap_or_else(|e| e.into_inner()) = committed.head.clone();
                 let outcome = hooks::told(notice::Outcome::titled(notice, summary), &committed);
                 autostash::settled(&repo, pending, &kept, outcome)
             },
@@ -778,6 +786,8 @@ impl Tab {
                     tab.ui.input.update(cx, |input, cx| input.clear(cx));
                     tab.ui.description.update(cx, |input, cx| input.clear(cx));
                 }
+                let head = head.lock().unwrap_or_else(|e| e.into_inner()).take();
+                commit_options::committed(tab, head, push, cx);
             },
             move |tab, _| left.remember(&mut tab.ui),
         );
@@ -795,6 +805,10 @@ impl Tab {
         let kept = autostash::Kept::default();
         let left = kept.clone();
         let shown = self.ui.identity.effective().cloned();
+        let hooks = self.ui.commit_options.hooks();
+        let push = commit_options::push_after(&self.ui, cx);
+        let landed = Arc::new(std::sync::Mutex::new(None));
+        let tip = landed.clone();
         self.run_operation_or(
             cx,
             "Staging everything and committing…",
@@ -805,7 +819,8 @@ impl Tab {
                     identity::still(&repo, shown)?;
                 }
                 let pending = autostash::pending(&repo);
-                let committed = repo.commit_all(head.as_deref(), reference.as_deref(), &message)?;
+                let committed = repo.commit_all_with(head.as_deref(), reference.as_deref(), &message, hooks)?;
+                *landed.lock().unwrap_or_else(|e| e.into_inner()) = committed.head.clone();
                 let outcome = hooks::told(notice::Outcome::titled("Changes committed", summary), &committed);
                 autostash::settled(&repo, pending, &kept, outcome)
             },
@@ -814,6 +829,8 @@ impl Tab {
                     tab.ui.input.update(cx, |input, cx| input.clear(cx));
                     tab.ui.description.update(cx, |input, cx| input.clear(cx));
                 }
+                let head = tip.lock().unwrap_or_else(|e| e.into_inner()).take();
+                commit_options::committed(tab, head, push, cx);
             },
             move |tab, _| left.remember(&mut tab.ui),
         );
@@ -1504,6 +1521,9 @@ impl Tab {
                 if self.ui.stash.options_open() {
                     stash::dispatch(self, stash::Action::Dismiss, window, cx);
                 }
+                if self.ui.commit_options.picking() {
+                    commit_options::dispatch(self, commit_options::Action::CloseCoauthors, window, cx);
+                }
                 view::focus(&self.ui, window);
                 cx.notify();
             }
@@ -1515,6 +1535,7 @@ impl Tab {
             }
             Action::Handoff(action) => handoff::dispatch(self, action, window, cx),
             Action::Jobs(action) => jobs::dispatch(self, action, window, cx),
+            Action::CommitOptions(action) => commit_options::dispatch(self, action, window, cx),
             Action::Credentials(action) => credentials::dispatch(self, action, cx),
             Action::Clone(action) => clone::dispatch(self, action, window, cx),
             Action::Init(action) => init::dispatch(self, action, window, cx),

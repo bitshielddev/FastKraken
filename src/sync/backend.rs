@@ -688,6 +688,29 @@ mod tests {
     }
 
     #[test]
+    fn a_commit_that_skipped_its_hooks_is_pushed_by_the_tip_it_returned_and_only_while_that_is_the_tip() {
+        let n = Network::new();
+        let f = &n.local;
+        let base = n.head();
+        n.install_hook("pre-commit", "#!/bin/sh\nexit 1\n");
+        fs::write(f.dir.join("notes.txt"), "pushed after committing\n").unwrap();
+        f.git(&["add", "notes.txt"]);
+        assert!(f.repo.commit_with("Blocked", crate::repository::Hooks::Run).is_err());
+        assert_eq!(n.head(), base);
+        let committed = f.repo.commit_with("Push after committing", crate::repository::Hooks::Skip).unwrap();
+        let tip = committed.head.clone().unwrap();
+        assert_eq!(tip, n.head());
+        assert_eq!(push(&f.repo, "main", &tip).unwrap().0, "1 commit to review/published.");
+        assert_eq!(n.at(&n.bare, &["rev-parse", "refs/heads/published"]), tip);
+        assert_eq!(n.at(&n.bare, &["show", "published:notes.txt"]), "pushed after committing");
+        fs::write(f.dir.join("notes.txt"), "moved on\n").unwrap();
+        f.git(&["add", "notes.txt"]);
+        f.repo.commit_with("Moved on", crate::repository::Hooks::Skip).unwrap();
+        assert!(push(&f.repo, "main", &tip).is_err());
+        assert_eq!(n.at(&n.bare, &["rev-parse", "refs/heads/published"]), tip);
+    }
+
+    #[test]
     fn pre_push_hook_can_reject_the_checked_out_branch_by_name() {
         let n = Network::new();
         let base = n.head();

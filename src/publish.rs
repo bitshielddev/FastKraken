@@ -488,6 +488,12 @@ fn pushed(tab: &mut Tab, notice: String, said: remotes::Said) {
     tab.ui.notices.show(outcome.notice().logged(tab.trail.entry(false)));
 }
 
+pub(crate) fn offer_branch(tab: &mut Tab, cx: &mut Context<Tab>) {
+    if tab.repo.is_some() && !tab.ui.busy() && !tab.ui.publish.open() {
+        enter(tab, Page::Branch, cx);
+    }
+}
+
 fn enter(tab: &mut Tab, page: Page, cx: &mut Context<Tab>) {
     let state = &mut tab.ui.publish;
     state.stop_reads();

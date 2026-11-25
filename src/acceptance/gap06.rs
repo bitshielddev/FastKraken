@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     commands::{self, Side, Target},
+    commit_options::{self, Action as Options},
     jobs,
     view::commit_input,
     notice,
@@ -53,6 +54,10 @@ fn alive(pid: libc::pid_t) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
+fn path(path: &Path) -> Result<&str> {
+    path.to_str().ok_or_else(|| "The sandbox path is not UTF-8".into())
+}
+
 fn picked_paths(tab: &Tab) -> Option<Vec<String>> {
     picked::files(&tab.ui).map(|(paths, _)| paths.iter().map(|path| path.to_string_lossy().into_owned()).collect())
 }
@@ -68,7 +73,10 @@ impl Replay<'_> {
         self.history_across_a_rename(dir).await?;
         self.editing_the_summary(dir).await?;
         self.cancel_a_slow_hook(dir).await?;
-        self.failing_hook_output(dir).await
+        self.failing_hook_output(dir).await?;
+        self.skip_hooks(dir).await?;
+        self.commit_and_push(dir).await?;
+        self.commit_template(dir).await
     }
 
     async fn asked_about(&mut self, title: &str) -> Result<(Vec<String>, bool)> {
@@ -789,6 +797,187 @@ impl Replay<'_> {
             return Err(format!("The commit's notice reads {told:?}").into());
         }
         git_is(&root, &["log", "-1", "--format=%s"], "Change the brew\n")?;
+        self.pass();
+        Ok(())
+    }
+
+    fn commit_label(&mut self) -> Result<String> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| commit_options::commit_label(&tab.ui, cx))?)
+    }
+
+    fn draft_is(&mut self, summary: &str, description: &str) -> Result<()> {
+        let shown = self.tab.read_with(self.cx, |tab, cx| {
+            (tab.ui.input.read(cx).text().to_owned(), tab.ui.description.read(cx).text().to_owned())
+        })?;
+        if shown != (summary.to_owned(), description.to_owned()) {
+            return Err(format!("The commit box reads {shown:?}, not {:?}", (summary, description)).into());
+        }
+        Ok(())
+    }
+
+    async fn skip_hooks(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0611");
+        let root = init(dir, "Sluice")?;
+        record(&root, "gate.txt", "Gate: shut\n", "Build the sluice")?;
+        let head = oid(&root, "HEAD")?;
+        let hooks = hooked(dir, &root, "Sluice")?;
+        let ran = dir.join("sluice-pre-commit-ran");
+        gap04::script(
+            &hooks.join("pre-commit"),
+            &format!(": > '{}'\necho 'sluice: lint failed'\nexit 1\n", ran.display()),
+        )?;
+        self.staged_for_commit(&root, "Sluice", "gate.txt", "Gate: open\n").await?;
+        let label = self.commit_label()?;
+        if label != "Commit 1 file to main" {
+            return Err(format!("Before the options the button reads {label:?}").into());
+        }
+        self.action(Action::CommitOptions(Options::ToggleOpen))?;
+        self.action(Action::CommitOptions(Options::ToggleSkipHooks))?;
+        let (open, skipping) = self.tab.read_with(self.cx, |tab, _| (tab.ui.commit_options.open, tab.ui.commit_options.skip_hooks))?;
+        if !open || !skipping {
+            return Err(format!("After ticking Skip hooks the options are open {open} and skipping {skipping}").into());
+        }
+        let label = self.commit_label()?;
+        if label != "Commit 1 file, skipping hooks" {
+            return Err(format!("With Skip hooks the button reads {label:?}").into());
+        }
+        self.type_commit("Open the sluice")?;
+        self.until("the commit made past the failing hook", |tab| {
+            tab.ui.notices.newest().is_some_and(|notice| notice.tone == Tone::Success && notice.title == "Changes committed")
+                && tab.ui.files.is_empty()
+        })
+        .await?;
+        if ran.exists() {
+            return Err("pre-commit ran although Skip hooks was ticked".into());
+        }
+        git_is(&root, &["log", "-1", "--format=%s"], "Open the sluice\n")?;
+        git_is(&root, &["rev-parse", "HEAD^"], &format!("{head}\n"))?;
+        git_is(&root, &["show", "HEAD:gate.txt"], "Gate: open\n")?;
+        let (skipping, open) = self.tab.read_with(self.cx, |tab, _| (tab.ui.commit_options.skip_hooks, tab.ui.commit_options.open))?;
+        if skipping || !open {
+            return Err(format!("After the commit Skip hooks is ticked {skipping} and the options open {open}").into());
+        }
+
+        let landed = oid(&root, "HEAD")?;
+        fs::write(root.join("gate.txt"), "Gate: half open\n")?;
+        self.action(Action::Refresh)?;
+        self.until("gate.txt edited again", |tab| files(tab, &[], &["gate.txt"])).await?;
+        self.action(Action::StageAll)?;
+        self.until("gate.txt staged again", |tab| files(tab, &["gate.txt"], &[])).await?;
+        let label = self.commit_label()?;
+        if label != "Commit 1 file to main" {
+            return Err(format!("After the cleared tick the button reads {label:?}").into());
+        }
+        self.type_commit("Half open")?;
+        self.until("the hook stopping the next commit", |tab| {
+            tab.ui.notices.newest().is_some_and(|notice| notice.tone == Tone::Error && notice.title == "pre-commit stopped the commit")
+        })
+        .await?;
+        if !ran.exists() {
+            return Err("pre-commit did not run on the next commit".into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{landed}\n"))?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "gate.txt\n")?;
+        self.action(Action::CommitOptions(Options::ToggleOpen))?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn commit_and_push(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0612");
+        let (root, bare, _) = gap04::published(dir, "Weir")?;
+        let before = oid(&bare, "refs/heads/main")?;
+        self.staged_for_commit(&root, "Weir", "trail.txt", "FastKraken: git for the impatient\nWeir: raised\n").await?;
+        self.until("origin/main tracked", |tab| tab.ui.upstream.as_deref() == Some("origin/main") && !tab.ui.refs.remotes.is_empty())
+            .await?;
+        self.action(Action::CommitOptions(Options::ToggleOpen))?;
+        self.action(Action::CommitOptions(Options::TogglePush))?;
+        let label = self.commit_label()?;
+        if label != "Commit and push to origin/main" {
+            return Err(format!("With Push after committing the button reads {label:?}").into());
+        }
+        let remembered = self.tab.read_with(self.cx, |tab, cx| {
+            let common = tab.repo.as_ref()?.common_dir().to_owned();
+            settings::memory(cx).and_then(|memory| memory.repo(&common)).and_then(|view| view.push_after)
+        })?;
+        if remembered != Some(true) {
+            return Err(format!("Push after committing is remembered as {remembered:?}").into());
+        }
+        self.type_commit("Raise the weir")?;
+        self.until("the commit pushed", |tab| {
+            tab.ui.notices.newest().is_some_and(|notice| notice.tone == Tone::Success && notice.title == "Pushed Successfully")
+                && tab.ui.files.is_empty()
+        })
+        .await?;
+        let made = oid(&root, "HEAD")?;
+        git_is(&root, &["log", "-1", "--format=%s"], "Raise the weir\n")?;
+        git_is(&bare, &["rev-parse", "refs/heads/main"], &format!("{made}\n"))?;
+        git_is(&bare, &["rev-parse", "refs/heads/main^"], &format!("{before}\n"))?;
+
+        git(&root, &["switch", "-q", "-c", "spillway"])?;
+        fs::write(root.join("spill.txt"), "Spillway: open\n")?;
+        self.action(Action::Refresh)?;
+        self.until("spillway checked out with spill.txt", |tab| {
+            tab.ui.branch == "spillway" && tab.ui.upstream.is_none() && files(tab, &[], &["spill.txt"])
+        })
+        .await?;
+        self.action(Action::StageAll)?;
+        self.until("spill.txt staged", |tab| files(tab, &["spill.txt"], &[])).await?;
+        let label = self.commit_label()?;
+        if label != "Commit and publish spillway" {
+            return Err(format!("On a branch with no upstream the button reads {label:?}").into());
+        }
+        self.type_commit("Open the spillway")?;
+        self.until("Publish branch offered after the commit", |tab| tab.ui.publish.branch_open() && tab.ui.files.is_empty()).await?;
+        git_is(&root, &["log", "-1", "--format=%s"], "Open the spillway\n")?;
+        if !git(&bare, &["branch", "--list", "spillway"])?.is_empty() {
+            return Err("spillway reached the remote before it was published".into());
+        }
+        self.action(Action::Publish(crate::publish::Action::Escape))?;
+        self.until("the Publish branch form closed", |tab| !tab.ui.publish.branch_open()).await?;
+        self.action(Action::CommitOptions(Options::TogglePush))?;
+        self.action(Action::CommitOptions(Options::ToggleOpen))?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn commit_template(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0613");
+        let root = init(dir, "Ledger")?;
+        record(&root, "accounts.txt", "March: open\n", "Open the ledger")?;
+        let template = dir.join("ledger-template.txt");
+        fs::write(
+            &template,
+            "Ledger: \n# One line saying what changed\n\nWhy:\n# Explain why it changed\nChecked by: \n",
+        )?;
+        git(&root, &["config", "--local", "commit.template", path(&template)?])?;
+        fs::write(root.join("accounts.txt"), "March: closed\n")?;
+        self.open(&root)?;
+        self.until("Ledger open with the template in the commit box", |tab| {
+            tab.ui.repo == "Ledger" && tab.ui.commit_options.template.is_some() && files(tab, &[], &["accounts.txt"])
+        })
+        .await?;
+        self.draft_is("Ledger:", "Why:\nChecked by:")?;
+        let filling = self.tab.read_with(self.cx, |_, cx| settings::settings(cx).fill_from_template)?;
+        if !filling {
+            return Err("Filling from the template is off by default".into());
+        }
+        self.action(Action::StageAll)?;
+        self.until("accounts.txt staged", |tab| files(tab, &["accounts.txt"], &[])).await?;
+        self.type_commit(" close March")?;
+        self.until("the commit from the template", |tab| {
+            tab.ui.notices.newest().is_some_and(|notice| notice.tone == Tone::Success && notice.title == "Changes committed")
+                && tab.ui.files.is_empty()
+        })
+        .await?;
+        git_is(&root, &["log", "-1", "--format=%B"], "Ledger: close March\n\nWhy:\nChecked by:\n\n")?;
+        self.draft_is("Ledger:", "Why:\nChecked by:")?;
+        self.action(Action::CommitOptions(Options::ToggleTemplate))?;
+        let filling = self.tab.read_with(self.cx, |_, cx| settings::settings(cx).fill_from_template)?;
+        if filling {
+            return Err("The template preference did not turn off".into());
+        }
+        self.action(Action::CommitOptions(Options::ToggleTemplate))?;
         self.pass();
         Ok(())
     }

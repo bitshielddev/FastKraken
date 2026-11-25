@@ -890,6 +890,10 @@ fn push_current(tab: &mut Tab, cx: &mut Context<Tab>) {
         return;
     };
     let branch = tab.ui.branch.clone();
+    push_tip(tab, branch, head, cx);
+}
+
+pub(crate) fn push_tip(tab: &mut Tab, branch: String, head: String, cx: &mut Context<Tab>) {
     let behind = tab.ui.refs.current(&branch).and_then(|item| {
         let upstream = item.upstream.clone().filter(|_| !item.gone && item.behind > 0)?;
         Some((upstream, item.ahead, item.behind))

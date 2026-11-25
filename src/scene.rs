@@ -195,6 +195,10 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
         "initin" => Some(Action::Init(crate::init::Action::SetParent(argument.into()))),
         "inithere" => Some(Action::Init(crate::init::Action::Here(argument.into()))),
         "amend" => Some(Action::ToggleAmend),
+        "commitoptions" => Some(Action::CommitOptions(crate::commit_options::Action::ToggleOpen)),
+        "skiphooks" => Some(Action::CommitOptions(crate::commit_options::Action::ToggleSkipHooks)),
+        "pushafter" => Some(Action::CommitOptions(crate::commit_options::Action::TogglePush)),
+        "coauthors" => Some(Action::CommitOptions(crate::commit_options::Action::OpenCoauthors)),
         "submit" => Some(Action::Commit),
         "description" => {
             tab.ui.description.update(cx, |input, cx| input.set_text(&argument.replace("\\n", "\n"), cx));

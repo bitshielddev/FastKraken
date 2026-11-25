@@ -48,6 +48,8 @@ pub(crate) struct Settings {
     pub(crate) editor_command: String,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) terminal: Option<String>,
+    pub(crate) push_after_commit: bool,
+    pub(crate) fill_from_template: bool,
 }
 
 impl Settings {
@@ -85,6 +87,8 @@ impl Default for Settings {
             editor: None,
             editor_command: String::new(),
             terminal: None,
+            push_after_commit: false,
+            fill_from_template: true,
         }
     }
 }
@@ -132,6 +136,8 @@ pub(crate) struct RepoView {
     pub(crate) pull: Option<PullDefault>,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) merge: Option<crate::merge::Mode>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) push_after: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -227,7 +233,12 @@ impl Memory {
             },
         };
         change(&mut view);
-        if !view.closed.is_empty() || !view.folded.is_empty() || view.pull.is_some() || view.merge.is_some() {
+        if !view.closed.is_empty()
+            || !view.folded.is_empty()
+            || view.pull.is_some()
+            || view.merge.is_some()
+            || view.push_after.is_some()
+        {
             self.repositories.push(view);
         }
         let excess = self.repositories.len().saturating_sub(REPOSITORIES);
@@ -551,6 +562,7 @@ mod tests {
             view.pull = Some(PullDefault { fetch: false, strategy: crate::sync::Strategy::Rebase });
         });
         memory.change_repo(Path::new("/tmp/Elm/.git"), |view| view.merge = Some(crate::merge::Mode::Squash));
+        memory.change_repo(Path::new("/tmp/Ash/.git"), |view| view.push_after = Some(false));
         memory
     }
 
@@ -573,6 +585,8 @@ mod tests {
             editor: Some("custom".to_owned()),
             editor_command: "nvim +{line} {file}".to_owned(),
             terminal: Some("iterm".to_owned()),
+            push_after_commit: true,
+            fill_from_template: false,
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();
@@ -589,6 +603,7 @@ mod tests {
             [Section::Tags, Section::Stashes]
         );
         assert_eq!(loaded_memory.repo(Path::new("/tmp/Elm/.git")).unwrap().merge, Some(crate::merge::Mode::Squash));
+        assert_eq!(loaded_memory.repo(Path::new("/tmp/Ash/.git")).unwrap().push_after, Some(false));
         assert_eq!(loaded_memory.repo(Path::new("/tmp/Oak/.git")).unwrap().merge, None);
     }
 

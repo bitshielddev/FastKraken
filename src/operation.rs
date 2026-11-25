@@ -1176,6 +1176,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::Tools(_)
         | A::Tabs(_)
         | A::Cli(_)
+        | A::CommitOptions(_)
         | A::Help(_)
         | A::Palette(_)
         | A::ToggleSidebar

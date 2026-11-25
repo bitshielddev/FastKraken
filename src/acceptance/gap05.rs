@@ -817,7 +817,16 @@ impl Replay<'_> {
             )
         })?;
         if branch != "main"
-            || listed != [Section::General, Section::Accounts, Section::Git, Section::Tools, Section::Shortcuts, Section::Repository]
+            || listed
+                != [
+                    Section::General,
+                    Section::Accounts,
+                    Section::Git,
+                    Section::Commit,
+                    Section::Tools,
+                    Section::Shortcuts,
+                    Section::Repository,
+                ]
             || shown != "sketches"
             || preferences::interval(5) != "Every 5 minutes"
         {

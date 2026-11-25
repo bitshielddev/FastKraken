@@ -359,7 +359,15 @@ impl Btn {
             let size = if self.small { 12. } else { 14. };
             base = base.child(icon(name).size(px(size)).text_color(rgb(icon_color)));
         }
-        if !self.label.is_empty() {
+        if !self.label.is_empty() && self.wide {
+            let weight = if matches!(self.tone, Tone::Primary | Tone::Destructive) {
+                FontWeight::SEMIBOLD
+            } else {
+                FontWeight::MEDIUM
+            };
+            let size = if self.small { TEXT_SMALL } else { 12.5 };
+            base = base.child(fit(self.label).size(size).color(fg).weight(weight));
+        } else if !self.label.is_empty() {
             base = base.child(self.label);
         }
         if let Some(count) = self.count {
@@ -382,6 +390,7 @@ impl Btn {
             };
             base = base.child(
                 div()
+                    .flex_shrink_0()
                     .ml_1()
                     .px_1()
                     .rounded(px(4.))

@@ -50,6 +50,7 @@ pub struct Commit {
     pub parents: Vec<String>,
     pub subject: String,
     pub author: String,
+    pub email: String,
     pub date: String,
     pub time: i64,
     pub refs: String,
@@ -481,7 +482,7 @@ impl Repository {
             "--no-show-signature",
             "--no-patch",
             "-z",
-            "--format=%H%x00%P%x00%an%x00%as%x00%at%x00%D%x00%s",
+            "--format=%H%x00%P%x00%an%x00%ae%x00%as%x00%at%x00%D%x00%s",
         ]);
         cmd
     }
@@ -505,6 +506,7 @@ impl Repository {
                 oid: String::from_utf8_lossy(id).into_owned(),
                 parents: field()?.split_whitespace().map(String::from).collect(),
                 author: field()?,
+                email: field()?,
                 date: field()?,
                 time: field()?.parse().unwrap_or(0),
                 refs: field()?,
@@ -861,21 +863,28 @@ impl Repository {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn commit(&self, message: &str) -> std::result::Result<Committed, Failure> {
+        self.commit_with(message, Hooks::Run)
+    }
+
+    pub(crate) fn commit_with(&self, message: &str, hooks: Hooks) -> std::result::Result<Committed, Failure> {
         self.ensure_index_writable()?;
         if message.trim().is_empty() {
             return Err("Enter a commit message.".to_owned().into());
         }
-        self.committing(
-            self.command().args(["-c", "user.useConfigOnly=true", "commit", "-m", message]),
-            crate::hooks::COMMIT,
-            false,
-        )
+        let mut command = self.command();
+        command.args(["-c", "user.useConfigOnly=true", "commit"]).args(hooks.flag()).args(["-m", message]);
+        self.committing(&mut command, &hooks.events(crate::hooks::COMMIT), false)
     }
 
     fn tip(&self) -> Option<Vec<u8>> {
         let output = self.read_command().args(["rev-parse", "--quiet", "--verify", "HEAD^{commit}"]).run().ok()?;
         output.status.success().then(|| without_final_newline(&output.stdout).to_vec())
+    }
+
+    fn tip_oid(&self) -> Option<String> {
+        self.tip().map(|tip| String::from_utf8_lossy(&tip).into_owned())
     }
 
     fn committing(&self, command: &mut Command, events: &[&str], staged: bool) -> std::result::Result<Committed, Failure> {
@@ -898,7 +907,7 @@ impl Repository {
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                 let stopped = ran.as_deref().and_then(|ran| ran.iter().rev().find(|ran| ran.code.is_none())).map(|ran| ran.hook.clone());
                 let hooks = crate::hooks::hooks_that_ran(ran.as_deref(), &present);
-                return Ok(Committed { stopped: stopped.or_else(|| hooks.last().cloned()), hooks, ..Committed::default() });
+                return Ok(Committed { stopped: stopped.or_else(|| hooks.last().cloned()), hooks, head: self.tip_oid(), ..Committed::default() });
             }
             Err(error) => return Err(format!("Run bundled Git: {error}").into()),
             Ok(output) => output,
@@ -918,7 +927,7 @@ impl Repository {
         }
         let hooks = crate::hooks::hooks_that_ran(ran.as_deref(), &present);
         let printed = if hooks.is_empty() { String::new() } else { crate::hooks::printed(&said) };
-        Ok(Committed { skipped, hooks, printed, stopped: None })
+        Ok(Committed { skipped, hooks, printed, stopped: None, head: self.tip_oid() })
     }
 
     pub fn commit_message(&self, oid: &str) -> Result<String> {
@@ -942,7 +951,18 @@ impl Repository {
         successful(output).map(|name| Some(OsString::from_vec(without_final_newline(&name).into())))
     }
 
+    #[cfg(test)]
     pub fn amend(&self, oid: &str, reference: Option<&OsStr>, message: Option<&str>) -> std::result::Result<Committed, Failure> {
+        self.amend_with(oid, reference, message, Hooks::Run)
+    }
+
+    pub(crate) fn amend_with(
+        &self,
+        oid: &str,
+        reference: Option<&OsStr>,
+        message: Option<&str>,
+        hooks: Hooks,
+    ) -> std::result::Result<Committed, Failure> {
         self.ensure_index_writable()?;
         validate_oid(oid)?;
         if message.is_some_and(|message| message.trim().is_empty()) {
@@ -954,13 +974,13 @@ impl Repository {
             return Err("The checked-out branch or its tip changed. Reopen Amend last commit.".to_owned().into());
         }
         let mut command = self.command();
-        command.args(["-c", "user.useConfigOnly=true", "commit", "--amend", "--allow-empty"]);
+        command.args(["-c", "user.useConfigOnly=true", "commit", "--amend", "--allow-empty"]).args(hooks.flag());
         if let Some(message) = message {
             command.args(["-m", message]);
         } else {
             command.arg("--no-edit");
         }
-        self.committing(&mut command, crate::hooks::AMEND, false)
+        self.committing(&mut command, &hooks.events(crate::hooks::AMEND), false)
     }
 
     pub fn stage_all(&self) -> Result<()> {
@@ -975,7 +995,18 @@ impl Repository {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn commit_all(&self, head: Option<&str>, reference: Option<&OsStr>, message: &str) -> std::result::Result<Committed, Failure> {
+        self.commit_all_with(head, reference, message, Hooks::Run)
+    }
+
+    pub(crate) fn commit_all_with(
+        &self,
+        head: Option<&str>,
+        reference: Option<&OsStr>,
+        message: &str,
+        hooks: Hooks,
+    ) -> std::result::Result<Committed, Failure> {
         self.ensure_index_writable()?;
         if message.trim().is_empty() {
             return Err("Enter a commit message.".to_owned().into());
@@ -988,11 +1019,33 @@ impl Repository {
             return Err("The checked-out branch or its tip changed. Look again before committing.".to_owned().into());
         }
         checked(self.command().args(["add", "--all", "--", "."]))?;
-        self.committing(
-            self.command().args(["-c", "user.useConfigOnly=true", "commit", "-m", message]),
-            crate::hooks::COMMIT,
-            true,
-        )
+        let mut command = self.command();
+        command.args(["-c", "user.useConfigOnly=true", "commit"]).args(hooks.flag()).args(["-m", message]);
+        self.committing(&mut command, &hooks.events(crate::hooks::COMMIT), true)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Hooks {
+    #[default]
+    Run,
+    Skip,
+}
+
+impl Hooks {
+    fn flag(self) -> &'static [&'static str] {
+        match self {
+            Hooks::Run => &[],
+            Hooks::Skip => &["--no-verify"],
+        }
+    }
+
+    pub(crate) fn events(self, events: &'static [&'static str]) -> Vec<&'static str> {
+        events
+            .iter()
+            .copied()
+            .filter(|event| self == Hooks::Run || !crate::hooks::SKIPPED_BY_NO_VERIFY.contains(event))
+            .collect()
     }
 }
 

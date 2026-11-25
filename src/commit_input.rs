@@ -288,6 +288,12 @@ impl CommitInput {
         self.set_text("", cx);
     }
 
+    pub(crate) fn rewrite(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.editor.value != text {
+            self.replace(0..self.editor.value.len(), text, Edit::Other, cx);
+        }
+    }
+
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.marked = None;
         self.layout = None;

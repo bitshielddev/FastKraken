@@ -387,6 +387,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn replacing_the_whole_text_is_one_step_that_undo_takes_back() {
+        let now = Instant::now();
+        let mut field = Editor::new(true, false);
+        field.reset("Body text");
+        typed(&mut field, "!", now);
+        let length = field.value.len();
+        field.replace(0..length, "Body text!\n\nCo-authored-by: Ada <ada@example.invalid>", Edit::Other, now, false);
+        assert_eq!(field.caret, field.value.len());
+        assert!(field.undo());
+        assert_eq!(field.value, "Body text!");
+        assert!(field.redo());
+        assert!(field.value.ends_with("<ada@example.invalid>"));
+    }
+
     fn shown(editor: &Editor) -> String {
         let mut shown = editor.value.clone();
         let selected = editor.selection();

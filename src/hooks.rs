@@ -20,6 +20,7 @@ use std::{
 
 pub(crate) const COMMIT: &[&str] = &["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"];
 pub(crate) const AMEND: &[&str] = &["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-rewrite"];
+pub(crate) const SKIPPED_BY_NO_VERIFY: &[&str] = &["pre-commit", "commit-msg"];
 
 const HOOKED: &[&str] = &["am", "checkout", "cherry-pick", "commit", "merge", "pull", "push", "rebase", "revert", "switch"];
 const POLL: Duration = Duration::from_millis(40);
@@ -290,6 +291,7 @@ pub(crate) struct Committed {
     pub hooks: Vec<String>,
     pub printed: String,
     pub stopped: Option<String>,
+    pub head: Option<String>,
 }
 
 impl Committed {
