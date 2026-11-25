@@ -261,6 +261,10 @@ pub(crate) fn fill(tab: &mut Tab, cx: &mut Context<Tab>) {
     }
 }
 
+pub(crate) fn replaceable(shown: &CommitDraft, template: Option<&CommitDraft>) -> bool {
+    shown.message().is_empty() || template == Some(shown)
+}
+
 pub(crate) fn committed(tab: &mut Tab, head: Option<String>, push: Option<Push>, cx: &mut Context<Tab>) {
     tab.ui.commit_options.skip_hooks = false;
     fill(tab, cx);
@@ -366,7 +370,7 @@ pub(crate) fn with_coauthor(description: &str, author: &Author) -> String {
     }
     let trailers = last_paragraph(kept);
     let joined = trailers.lines().all(trailer_line)
-        && trailers.lines().any(|line| line.to_ascii_lowercase().starts_with(&COAUTHOR_KEY.to_ascii_lowercase()));
+        && trailers.lines().any(|line| line.split_once(':').is_some_and(|(key, _)| key.contains('-')));
     if joined { format!("{kept}\n{trailer}") } else { format!("{kept}\n\n{trailer}") }
 }
 
@@ -648,6 +652,18 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_box_or_the_untouched_template_gives_way_to_an_operations_message() {
+        let template = CommitDraft { summary: "Area:".to_owned(), description: "Why:".to_owned() };
+        let empty = CommitDraft { summary: String::new(), description: String::new() };
+        let edited = CommitDraft { summary: "Area: fixed".to_owned(), description: "Why:".to_owned() };
+        assert!(replaceable(&empty, None));
+        assert!(replaceable(&empty, Some(&template)));
+        assert!(replaceable(&template, Some(&template)));
+        assert!(!replaceable(&edited, Some(&template)));
+        assert!(!replaceable(&template, None));
+    }
+
+    #[test]
     fn the_template_is_read_from_the_repositorys_configuration_with_its_comment_character() {
         let f = Fixture::new();
         assert_eq!(read_template(&f.repo).unwrap(), None);
@@ -685,6 +701,10 @@ mod tests {
         assert_eq!(
             with_coauthor("Body\n\nSee: the notes", &ada),
             "Body\n\nSee: the notes\n\nCo-authored-by: Ada Lovelace <ada@example.invalid>"
+        );
+        assert_eq!(
+            with_coauthor("Body\n\nSigned-off-by: Dan <dan@example.invalid>", &ada),
+            "Body\n\nSigned-off-by: Dan <dan@example.invalid>\nCo-authored-by: Ada Lovelace <ada@example.invalid>"
         );
         assert_eq!(coauthors(&once), [ada.clone(), alan.clone()]);
         assert_eq!(coauthors("Subject\n\nco-authored-by: Ada Lovelace <ada@example.invalid>\nSigned-off-by: X <x@y>"), [ada]);

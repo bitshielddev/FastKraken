@@ -1372,7 +1372,8 @@ fn put_back(
 }
 
 pub(crate) fn draft_message(ui: &Ui, message: &str, cx: &mut gpui::App) {
-    if message.trim().is_empty() || !ui.draft(cx).message().is_empty() {
+    let shown = ui.draft(cx);
+    if message.trim().is_empty() || !crate::commit_options::replaceable(&shown, ui.commit_options.template.as_ref()) {
         return;
     }
     ui.set_draft(&view::CommitDraft::from_message(message), cx);

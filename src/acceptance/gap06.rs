@@ -945,6 +945,9 @@ impl Replay<'_> {
         self.start("GAP0613");
         let root = init(dir, "Ledger")?;
         record(&root, "accounts.txt", "March: open\n", "Open the ledger")?;
+        git(&root, &["switch", "-q", "-c", "audit"])?;
+        record(&root, "audit.txt", "Audit: passed\n", "Record the audit")?;
+        git(&root, &["switch", "-q", "main"])?;
         let template = dir.join("ledger-template.txt");
         fs::write(
             &template,
@@ -972,6 +975,16 @@ impl Replay<'_> {
         .await?;
         git_is(&root, &["log", "-1", "--format=%B"], "Ledger: close March\n\nWhy:\nChecked by:\n\n")?;
         self.draft_is("Ledger:", "Why:\nChecked by:")?;
+        self.until("audit listed", |tab| tab.ui.refs.local(std::ffi::OsStr::new("audit")).is_some()).await?;
+        self.action(Action::Merge(crate::merge::Action::Start(
+            crate::merge::Source::Branch("audit".into()),
+            crate::merge::Mode::Squash,
+        )))?;
+        self.until("audit squashed into the index", |tab| !tab.ui.busy() && files(tab, &["audit.txt"], &[])).await?;
+        let squashed = self.tab.read_with(self.cx, |tab, cx| tab.ui.draft(cx))?;
+        if squashed.summary != "Squash merge audit into main" || !squashed.description.contains("Record the audit") {
+            return Err(format!("After a squash the commit box still holds {squashed:?}").into());
+        }
         self.action(Action::CommitOptions(Options::ToggleTemplate))?;
         let filling = self.tab.read_with(self.cx, |_, cx| settings::settings(cx).fill_from_template)?;
         if filling {
