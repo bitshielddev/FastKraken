@@ -17,7 +17,7 @@ pub(crate) use diff_view::{
 use crate::diff_doc::{DiffDoc, PatchState};
 use gpui::{
     App, ClipboardItem, Context, CursorStyle, Div, DragMoveEvent, Entity, FocusHandle, Focusable,
-    FontWeight, KeyBinding, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, ScrollStrategy,
+    FontWeight, KeyBinding, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle,
     UniformListScrollHandle, Window, actions, anchored, deferred, div, prelude::*, px, rgb,
     uniform_list,
 };
@@ -545,6 +545,8 @@ pub enum Action {
     Tag(crate::tag::Action),
     Tracking(crate::tracking::Action),
     Search(crate::search::Action),
+    Reveal(crate::reveal::Action),
+    GraphView(crate::graph_view::Action),
     Stash(crate::stash::Action),
     Sync(crate::sync::Action),
     Publish(crate::publish::Action),
@@ -710,6 +712,8 @@ pub struct Ui {
     pub(crate) images: crate::image_diff::State,
     pub(crate) file_view: crate::file_view::State,
     pub(crate) recover: crate::recover::State,
+    pub(crate) reveal: crate::reveal::State,
+    pub(crate) graph_view: crate::graph_view::GraphView,
     pub has_more: bool,
     pub input: Entity<CommitInput>,
     pub description: Entity<CommitInput>,
@@ -803,6 +807,8 @@ impl Ui {
             images: Default::default(),
             file_view: Default::default(),
             recover: Default::default(),
+            reveal: Default::default(),
+            graph_view: Default::default(),
             has_more: false,
             input,
             description,
@@ -853,12 +859,6 @@ impl Ui {
                 .map(|commit| self.stash.commit_row(commit)),
             Selection::Stash(oid) => self.stash.stash_row(oid),
             _ => None,
-        }
-    }
-
-    pub fn scroll_to_commit(&self, oid: &str) {
-        if let Some(index) = self.history.iter().position(|commit| commit.oid == oid) {
-            self.history_scroll.scroll_to_item(self.stash.commit_row(index), ScrollStrategy::Center);
         }
     }
 
@@ -1081,6 +1081,7 @@ actions!(
         Zoom,
         FullScreen,
         ChooseSearchResult,
+        PreviousSearchResult,
         NextFocus,
         PreviousFocus,
         ActivateControl,
@@ -1160,6 +1161,7 @@ pub fn bindings(cx: &mut App) {
         KeyBinding::new("up", MoveUp, Some("HistorySearch > CommitField")),
         KeyBinding::new("down", MoveDown, Some("HistorySearch > CommitField")),
         KeyBinding::new("enter", ChooseSearchResult, Some("HistorySearch > CommitField")),
+        KeyBinding::new("shift-enter", PreviousSearchResult, Some("HistorySearch > CommitField")),
         KeyBinding::new("enter", ActivateControl, Some("DeskButton")),
         KeyBinding::new("space", ActivateControl, Some("DeskButton")),
     ]);
@@ -1183,7 +1185,7 @@ pub(crate) const OTHER_KEYS: &[(&str, &str)] = &[
     ("h", "Move left between the sidebar, graph and files"),
     ("l", "Move right between the sidebar, graph and files"),
     ("enter", "Open the highlighted file or row"),
-    ("shift-enter", "Previous match while finding in a diff; Return goes to the next"),
+    ("shift-enter", "Previous match while finding in a diff or in the graph; Return goes to the next"),
     ("pageup", "Up a page, or scroll the open file up"),
     ("pagedown", "Down a page, or scroll the open file down"),
     ("home", "First row, or the top of the open file"),
@@ -1729,8 +1731,11 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     let active = matches!(&ui.selection, Some(Selection::Commit(id)) if id == &oid);
                     let checked_out = ui.head.as_deref() == Some(row.oid.as_str());
                     let merge = row.parents.len() > 1;
+                    let marking = ui.search.in_graph();
+                    let marked = ui.search.marks(&row.oid);
                     kit::row(("commit", i), active)
                         .h(px(ROW))
+                        .when(marked && !active, |d| d.bg(soft(FIND_MATCH, 0x8c)).border_color(rgb(FIND_CURRENT)))
                         .on_click(cx.listener(move |app, _, w, cx| {
                             select(app, Selection::Commit(oid.clone()), w, cx)
                         }))
@@ -1761,7 +1766,13 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                 )
                                 .child(
                                     kit::fit(row.subject.clone())
-                                        .color(if merge { TEXT_2 } else { TEXT })
+                                        .color(if marking && !marked {
+                                            TEXT_3
+                                        } else if merge {
+                                            TEXT_2
+                                        } else {
+                                            TEXT
+                                        })
                                         .grow(),
                                 ),
                         )
@@ -2442,6 +2453,9 @@ pub fn render<T: Desk>(
         }))
         .on_action(cx.listener(|app, _: &ChooseSearchResult, w, cx| {
             app.dispatch(Action::Search(crate::search::Action::Pick(None)), w, cx);
+        }))
+        .on_action(cx.listener(|app, _: &PreviousSearchResult, w, cx| {
+            app.dispatch(Action::Search(crate::search::Action::Step(-1)), w, cx);
         }))
         .on_action(cx.listener(|app, _: &NextFocus, w, cx| {
             if app.ui().prompt.open() {

@@ -1190,6 +1190,10 @@ impl State {
         commit + self.placements.partition_point(|stash| stash.base <= commit)
     }
 
+    pub(crate) fn base_of(&self, oid: &str) -> Option<&str> {
+        self.entries.iter().find(|entry| entry.oid == oid)?.base.as_deref()
+    }
+
     pub fn stash_row(&self, oid: &str) -> Option<usize> {
         self.placements.iter().find(|stash| self.entries[stash.stash].oid == oid).map(|stash| stash.row)
     }

@@ -24,6 +24,7 @@ mod explain;
 mod file_view;
 mod find;
 mod github;
+mod graph_view;
 mod guard;
 mod handoff;
 mod help;
@@ -54,6 +55,7 @@ mod publish;
 mod refs;
 mod remotes;
 mod repository;
+mod reveal;
 mod reverse;
 mod scene;
 mod scrollbar;
@@ -359,6 +361,15 @@ impl Tab {
     }
 
     fn load_history(&mut self, reset: bool, cx: &mut Context<Self>) {
+        self.load_rows(reset, PAGE, cx);
+    }
+
+    fn load_history_to(&mut self, rows: usize, cx: &mut Context<Self>) {
+        let wanted = rows.saturating_sub(self.ui.history.len()).max(PAGE);
+        self.load_rows(false, wanted, cx);
+    }
+
+    fn load_rows(&mut self, reset: bool, wanted: usize, cx: &mut Context<Self>) {
         if !reset && (self.loading_page || !self.ui.has_more) {
             return;
         }
@@ -369,10 +380,11 @@ impl Tab {
         self.history_ticket += 1;
         let ticket = self.history_ticket;
         let epoch = self.epoch;
+        let view = self.ui.graph_view.clone();
         self.loading_page = true;
         Self::work(
             cx,
-            move || repo.history(offset, PAGE + 1),
+            move || repo.history_in(&view, offset, wanted + 1),
             move |tab, result, cx| {
                 if tab.epoch != epoch || ticket != tab.history_ticket {
                     return;
@@ -380,8 +392,8 @@ impl Tab {
                 tab.loading_page = false;
                 match result {
                     Ok(mut page) => {
-                        tab.ui.has_more = page.len() > PAGE;
-                        page.truncate(PAGE);
+                        tab.ui.has_more = page.len() > wanted;
+                        page.truncate(wanted);
                         if reset {
                             tab.ui.replace_history(page);
                         } else {
@@ -397,11 +409,13 @@ impl Tab {
                                 tab.select(Selection::Commit(first.oid.clone()), cx);
                             }
                         }
+                        reveal::landed(tab, cx);
                         cx.notify();
                     }
                     Err(err) => {
                         tab.ui.has_more = false;
                         tab.error(err, cx);
+                        reveal::landed(tab, cx);
                     }
                 }
             },
@@ -1560,6 +1574,8 @@ impl Tab {
             Action::Sync(action) => sync::dispatch(self, action, window, cx),
             Action::Publish(action) => publish::dispatch(self, action, window, cx),
             Action::Search(action) => search::dispatch(self, action, window, cx),
+            Action::Reveal(action) => reveal::dispatch(self, action, window, cx),
+            Action::GraphView(action) => graph_view::dispatch(self, action, window, cx),
             Action::ViewChanges => {
                 if let Some(first) = self.ui.files.first() {
                     self.follow = Follow::Nothing;
@@ -1578,6 +1594,7 @@ impl Tab {
             Action::UnstageAll => self.mutate(cx, |repo| repo.unstage_all()),
             Action::More => self.load_history(false, cx),
             Action::Select(selection) => {
+                reveal::chose(self, &selection);
                 self.ui.picked = None;
                 if self.ui.selection.as_ref() != Some(&selection) {
                     self.ui.text.unfocus();

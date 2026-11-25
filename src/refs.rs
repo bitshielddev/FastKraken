@@ -782,11 +782,10 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
                 .find(|item| item.kind == kind && item.name == name)
                 .and_then(|item| item.oid.clone());
             if let Some(oid) = oid {
-                tab.follow = crate::Follow::Nothing;
-                tab.ui.scroll_to_commit(&oid);
-                tab.ui.diff_open = false;
-                tab.select(Selection::Commit(oid), cx);
                 view::focus(&tab.ui, window);
+                tab.follow = crate::Follow::Nothing;
+                tab.ui.diff_open = false;
+                crate::reveal::dispatch(tab, crate::reveal::Action::Commit(oid), window, cx);
             }
         }
         Action::Switch(name) => {
@@ -915,11 +914,7 @@ pub(crate) fn activate_row(tab: &mut Tab, index: usize, window: &mut Window, cx:
             view::Action::Refs(Action::Inspect(item.kind, item.name.clone()))
         }
         Some(SideRow::Stash(index)) => {
-            let oid = tab.ui.stash.entries[*index].oid.clone();
-            if let Some(row) = tab.ui.stash.stash_row(&oid) {
-                tab.ui.history_scroll.scroll_to_item(row, gpui::ScrollStrategy::Center);
-            }
-            view::Action::Select(Selection::Stash(oid))
+            view::Action::Reveal(crate::reveal::Action::Stash(tab.ui.stash.entries[*index].oid.clone()))
         }
         Some(SideRow::Note) => view::Action::Publish(crate::publish::Action::Publish),
         None => return,
@@ -1367,14 +1362,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         .child(view::when(entry.time, &entry.date, view::now())),
                                 )
                                 .on_click(cx.listener(move |app, _, w, cx| {
-                                    if let Some(row) = app.ui().stash.stash_row(&oid) {
-                                        app.ui().history_scroll.scroll_to_item(row, gpui::ScrollStrategy::Center);
-                                    }
-                                    app.dispatch(
-                                        view::Action::Select(Selection::Stash(oid.clone())),
-                                        w,
-                                        cx,
-                                    )
+                                    app.dispatch(view::Action::Reveal(crate::reveal::Action::Stash(oid.clone())), w, cx)
                                 }))
                                 .on_mouse_down(
                                     MouseButton::Right,

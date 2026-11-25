@@ -1,16 +1,17 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap, HashSet},
     env,
     ffi::{OsStr, OsString},
-    io::{Read, Write},
+    io::{BufRead, Read, Write},
     ops::Range,
     os::unix::ffi::OsStringExt,
     path::{Component, Path, PathBuf},
     process::{Command, Output, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     thread,
 };
 
-use crate::{hooks::Committed, line_patch::Direction, notice::Failure};
+use crate::{graph_view::GraphView, hooks::Committed, line_patch::Direction, notice::Failure};
 
 type Result<T> = std::result::Result<T, String>;
 const MAX_DIFF_BYTES: usize = 1024 * 1024;
@@ -473,28 +474,127 @@ impl Repository {
         cmd
     }
 
+    #[cfg(test)]
     pub fn history(&self, offset: usize, limit: usize) -> Result<Vec<Commit>> {
+        self.history_in(&GraphView::default(), offset, limit)
+    }
+
+    pub(crate) fn history_in(&self, view: &GraphView, offset: usize, limit: usize) -> Result<Vec<Commit>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         Self::read_log(
             self.log_command()
-                .args(["--exclude=refs/stash", "--all"])
+                .args(view.history_args())
                 .arg(format!("--skip={offset}"))
                 .arg(format!("--max-count={limit}")),
         )
+    }
+
+    pub(crate) fn positions(
+        &self,
+        revisions: &[OsString],
+        wanted: &HashSet<String>,
+        stop: &AtomicBool,
+    ) -> Result<HashMap<String, usize>> {
+        let mut found = HashMap::new();
+        if wanted.is_empty() {
+            return Ok(found);
+        }
+        let mut command = self.read_command();
+        command.args(["rev-list", "--topo-order"]).args(revisions).arg("--");
+        let (started, at) = (std::time::Instant::now(), std::time::SystemTime::now());
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Run bundled Git: {e}"))?;
+        let mut read = Ok(());
+        let mut whole = true;
+        if let Some(stdout) = child.stdout.take() {
+            for (index, line) in std::io::BufReader::new(stdout).lines().enumerate() {
+                if stop.load(Ordering::Relaxed) {
+                    whole = false;
+                    break;
+                }
+                match line {
+                    Ok(line) if wanted.contains(line.as_str()) => {
+                        found.insert(line, index);
+                        if found.len() == wanted.len() {
+                            whole = false;
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        read = Err(error.to_string());
+                        whole = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if !whole {
+            let _ = child.kill();
+        }
+        let mut errors = Vec::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            let _ = stderr.read_to_end(&mut errors);
+        }
+        let status = child.wait().map_err(|e| e.to_string())?;
+        crate::activity::record(&command, started, at, &Ok(Output { status, stdout: Vec::new(), stderr: errors.clone() }));
+        read?;
+        if stop.load(Ordering::Relaxed) {
+            return Err("Stopped before Git finished listing the history.".to_owned());
+        }
+        if whole && !status.success() {
+            return Err(git_error(&errors, status));
+        }
+        Ok(found)
+    }
+
+    pub(crate) fn has_commit(&self, oid: &str) -> Result<bool> {
+        validate_oid(oid)?;
+        let output = self
+            .read_command()
+            .args(["cat-file", "-e"])
+            .arg(format!("{oid}^{{commit}}"))
+            .run()
+            .map_err(|e| format!("Run bundled Git: {e}"))?;
+        Ok(output.status.success())
+    }
+
+    pub(crate) fn on_any_ref(&self, oid: &str) -> Result<bool> {
+        validate_oid(oid)?;
+        let refs = checked(
+            self.read_command()
+                .args(["for-each-ref", "--count=1", "--format=%(refname)"])
+                .arg(format!("--contains={oid}"))
+                .args(["refs/heads", "refs/remotes", "refs/tags"]),
+        )?;
+        Ok(!refs.trim_ascii().is_empty())
     }
 
     pub(crate) fn search_history(&self, query: &str, limit: usize) -> Result<Vec<Commit>> {
         if query.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let mut commits = Self::read_log(
-            self.log_command()
-                .args(["--exclude=refs/stash", "--all", "--regexp-ignore-case", "--fixed-strings"])
-                .arg(format!("--grep={query}"))
-                .arg(format!("--max-count={limit}")),
-        )?;
+        let matching = |pattern: String| {
+            Self::read_log(
+                self.log_command()
+                    .args(["--exclude=refs/stash", "--all", "--regexp-ignore-case", "--fixed-strings"])
+                    .arg(pattern)
+                    .arg(format!("--max-count={limit}")),
+            )
+        };
+        let mut commits = matching(format!("--grep={query}"))?;
+        let by_author = matching(format!("--author={query}"))?;
+        if commits.is_empty() {
+            commits = by_author;
+        } else if !by_author.is_empty() {
+            commits = self.in_history_order(commits, by_author, limit)?;
+        }
         if (4..=64).contains(&query.len()) && query.bytes().all(|b| b.is_ascii_hexdigit()) {
             let prefix = query.to_ascii_lowercase();
             let mut exact = Self::read_log(
@@ -507,6 +607,20 @@ impl Repository {
             }
         }
         Ok(commits)
+    }
+
+    fn in_history_order(&self, first: Vec<Commit>, second: Vec<Commit>, limit: usize) -> Result<Vec<Commit>> {
+        let mut all = first;
+        for commit in second {
+            if !all.iter().any(|row| row.oid == commit.oid) {
+                all.push(commit);
+            }
+        }
+        let wanted = all.iter().map(|row| row.oid.clone()).collect::<HashSet<_>>();
+        let at = self.positions(&GraphView::default().history_args(), &wanted, &AtomicBool::new(false))?;
+        all.sort_by_key(|row| at.get(&row.oid).copied().unwrap_or(usize::MAX));
+        all.truncate(limit);
+        Ok(all)
     }
 
     pub(crate) fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool> {

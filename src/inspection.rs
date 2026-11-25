@@ -387,6 +387,7 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
     }
     if let Action::OpenRevision { oid, path } = action {
         tab.dispatch(view::Action::Select(Selection::Commit(oid.clone())), window, cx);
+        crate::reveal::dispatch(tab, crate::reveal::Action::Commit(oid.clone()), window, cx);
         if tab.ui.selection == Some(Selection::Commit(oid)) {
             tab.ui.inspection.opening = Some(path);
             open_waiting(tab, cx);
@@ -619,7 +620,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     } else {
                         "parents"
                     }));
-                    for (i, parent) in state.parents.iter().enumerate().take(2) {
+                    for (i, parent) in state.parents.iter().enumerate() {
                         let target = parent.clone();
                         row = row.child(
                             div()
@@ -629,9 +630,10 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                 .text_size(px(11.5))
                                 .text_color(rgb(ACCENT))
                                 .child(parent.chars().take(7).collect::<String>())
+                                .tooltip(kit::tip("Show this parent in the graph"))
                                 .on_click(cx.listener(move |app, _, w, cx| {
                                     app.dispatch(
-                                        view::Action::Select(Selection::Commit(target.clone())),
+                                        view::Action::Reveal(crate::reveal::Action::Commit(target.clone())),
                                         w,
                                         cx,
                                     )

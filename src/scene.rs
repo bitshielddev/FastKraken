@@ -27,6 +27,7 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             None
         }
         "searchpick" => Some(Action::Search(search::Action::Pick(None))),
+        "searchgraph" => Some(Action::Search(search::Action::ShowInGraph)),
         "changes" => Some(Action::Select(Selection::Changes)),
         "identity" => Some(Action::Identity(crate::identity::Action::Edit)),
         "autofetch" => Some(Action::AutoFetch(crate::autofetch::Action::Tick)),
