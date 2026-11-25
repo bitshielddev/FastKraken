@@ -553,6 +553,9 @@ fn step(tab: &mut Tab, cx: &mut Context<Tab>) -> bool {
         return false;
     };
     if !present(ui, column) {
+        if !column.resolver() && view::centre(ui) == view::Centre::Diff && ui.loading_diff() {
+            return true;
+        }
         tab.ui.text.ticking = false;
         return false;
     }

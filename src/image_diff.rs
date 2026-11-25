@@ -665,8 +665,7 @@ fn start(tab: &mut Tab, which: Slot, cx: &mut Context<Tab>) {
 }
 
 fn render_vector(bytes: Vec<u8>, which: Slot, ticket: u64, index: usize, cx: &mut Context<Tab>) {
-    let name = format!("{}{ticket}-{index}.svg", crate::assets::LENT);
-    crate::assets::lend(name.clone(), bytes);
+    let name = crate::assets::lend("svg", bytes);
     let loading = <ImageAssetLoader as Asset>::load(Resource::Embedded(name.into()), cx);
     let task = cx.background_executor().spawn(loading);
     cx.spawn(async move |tab, cx| {

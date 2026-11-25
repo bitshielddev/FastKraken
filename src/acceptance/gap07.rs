@@ -606,6 +606,7 @@ impl Replay<'_> {
         let first = self.tab.read_with(self.cx, |tab, _| row(tab, "+tide 1"))?.ok_or("No first tide row")?;
         self.action(Action::Text(diff_select::Action::Press { column: Column::Unified, spot: Spot { row: first, at: 0 }, clicks: 1, extend: false }))?;
         self.action(Action::Text(diff_select::Action::DragTo { spot: Spot { row: first + 3, at: 2 }, edge: diff_select::Edge::Below }))?;
+        self.action(Action::Refresh)?;
         let scrolled = |tab: &Tab| f32::from(tab.ui.diff_scroll.0.borrow().base_handle.offset().y);
         self.until("dragging below the diff scrolling it down", |tab| {
             scrolled(tab) <= -200. && diff_select::current(&tab.ui).is_some_and(|chosen| chosen.head.row > first + 20)

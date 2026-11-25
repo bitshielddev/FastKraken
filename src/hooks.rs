@@ -381,6 +381,10 @@ mod tests {
         fs::read_to_string(path).unwrap().trim().parse().unwrap()
     }
 
+    fn written(path: &Path) -> bool {
+        fs::read_to_string(path).is_ok_and(|text| text.ends_with('\n') && text.trim().parse::<libc::pid_t>().is_ok())
+    }
+
     fn wait_for(what: &str, ready: impl Fn() -> bool) {
         let start = Instant::now();
         while !ready() {
@@ -539,7 +543,7 @@ mod tests {
             let (repo, link) = (f.repo.clone(), link.clone());
             thread::spawn(move || link.enter(|| repo.commit("Swap the tent")))
         };
-        wait_for("the hook to start", || own.exists() && child.exists() && link.hook().is_some_and(|(hook, _)| hook == "pre-commit"));
+        wait_for("the hook to start", || written(&own) && written(&child) && link.hook().is_some_and(|(hook, _)| hook == "pre-commit"));
         wait_for("the hook's line", || link.latest().as_deref() == Some("checking the tent"));
         let (hook_pid, sleep_pid) = (pid(&own), pid(&child));
         assert_eq!(unsafe { libc::getpgid(hook_pid) }, unsafe { libc::getpgid(sleep_pid) });
@@ -598,7 +602,7 @@ mod tests {
             let (repo, link, moved) = (f.repo.clone(), link.clone(), moved.clone());
             thread::spawn(move || link.enter(|| repo.commit_all(moved.as_deref(), Some(std::ffi::OsStr::new("refs/heads/main")), "Pack")))
         };
-        wait_for("the hook to start", || own.exists() && link.cancellable());
+        wait_for("the hook to start", || written(&own) && link.cancellable());
         let hook_pid = pid(&own);
         assert!(link.cancel());
         let failure = worker.join().unwrap().unwrap_err().notice();

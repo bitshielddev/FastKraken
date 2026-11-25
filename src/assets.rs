@@ -2,10 +2,13 @@ use gpui::{AssetSource, SharedString};
 use std::{
     borrow::Cow,
     collections::HashMap,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
-pub(crate) const LENT: &str = "lent/";
+const LENT: &str = "lent/";
 
 macro_rules! icons {
     ($($name:literal),* $(,)?) => {
@@ -55,8 +58,11 @@ fn lent() -> std::sync::MutexGuard<'static, HashMap<String, Vec<u8>>> {
     LENT_BYTES.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-pub(crate) fn lend(name: String, bytes: Vec<u8>) {
-    lent().insert(name, bytes);
+pub(crate) fn lend(extension: &str, bytes: Vec<u8>) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = format!("{LENT}{}.{extension}", NEXT.fetch_add(1, Ordering::Relaxed));
+    lent().insert(name.clone(), bytes);
+    name
 }
 
 impl AssetSource for Assets {
