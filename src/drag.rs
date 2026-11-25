@@ -737,12 +737,29 @@ pub(crate) fn move_ref(repo: &Repository, branch: &OsStr, from: &str, to: &str, 
             String::from_utf8_lossy(&worktree)
         ));
     }
+    if rewritten_elsewhere(repo, &full, branch) {
+        return Err(format!("{shown} is being rebased or bisected, so it cannot be moved from here."));
+    }
     let mut commit = OsString::from(to);
     commit.push("^{commit}");
     if repo.resolve(&commit).ok().as_deref() != Some(to) {
         return Err("That commit is not in the repository. Refresh and try again.".into());
     }
     checked(repo.command().args(["update-ref", "-m", reason]).arg(&full).args([to, from])).map(|_| ())
+}
+
+fn rewritten_elsewhere(repo: &Repository, full: &OsStr, branch: &OsStr) -> bool {
+    let common = repo.common_dir();
+    let mut git_dirs = vec![common.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(common.join("worktrees")) {
+        git_dirs.extend(entries.flatten().map(|entry| entry.path()));
+    }
+    let names = |dir: &std::path::Path, file: &str, wanted: &OsStr| {
+        std::fs::read(dir.join(file)).is_ok_and(|text| text.trim_ascii_end() == wanted.as_bytes())
+    };
+    git_dirs.iter().any(|dir| {
+        names(dir, "rebase-merge/head-name", full) || names(dir, "rebase-apply/head-name", full) || names(dir, "BISECT_START", branch)
+    })
 }
 
 pub(crate) fn move_branch(repo: &Repository, branch: &OsStr, from: &str, to: &str, label: &str) -> Result<Outcome, String> {
@@ -761,7 +778,7 @@ pub(crate) fn move_branch(repo: &Repository, branch: &OsStr, from: &str, to: &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repository::tests::Fixture;
+    use crate::repository::{Run, tests::Fixture};
     use std::fs;
 
     fn rev(f: &Fixture, name: &str) -> String {
@@ -828,6 +845,30 @@ mod tests {
         let err = move_ref(&f.repo, OsStr::new("ridge"), &ridge, &base, "x").unwrap_err();
         assert!(err.contains("is checked out in") && err.contains("ridge-tree"), "{err}");
         assert_eq!(rev(&f, "ridge"), ridge);
+    }
+
+    #[test]
+    fn moving_a_branch_refuses_one_that_a_worktree_is_rebasing_or_bisecting() {
+        let (f, base, ridge) = camp();
+        commit(&f, "camp.txt", "Moved\n", "Move the camp");
+        let worktree = f.dir.join("ridge-tree");
+        f.git(&["worktree", "add", "-q", worktree.to_str().unwrap(), "ridge"]);
+        let stopped = f.repo.command().args(["-C", worktree.to_str().unwrap(), "rebase", "-q", "-x", "false", "main"]).run().unwrap();
+        assert!(!stopped.status.success());
+        let err = move_ref(&f.repo, OsStr::new("ridge"), &ridge, &base, "x").unwrap_err();
+        assert_eq!(err, "ridge is being rebased or bisected, so it cannot be moved from here.");
+        assert_eq!(rev(&f, "refs/heads/ridge"), ridge);
+        f.git(&["-C", worktree.to_str().unwrap(), "rebase", "--abort"]);
+        f.git(&["-C", worktree.to_str().unwrap(), "bisect", "start"]);
+        f.git(&["-C", worktree.to_str().unwrap(), "bisect", "bad"]);
+        f.git(&["-C", worktree.to_str().unwrap(), "bisect", "good", &base]);
+        let err = move_ref(&f.repo, OsStr::new("ridge"), &ridge, &base, "x").unwrap_err();
+        assert_eq!(err, "ridge is being rebased or bisected, so it cannot be moved from here.");
+        assert_eq!(rev(&f, "refs/heads/ridge"), ridge);
+        f.git(&["-C", worktree.to_str().unwrap(), "bisect", "reset"]);
+        f.git(&["worktree", "remove", "--force", worktree.to_str().unwrap()]);
+        move_ref(&f.repo, OsStr::new("ridge"), &ridge, &base, "x").unwrap();
+        assert_eq!(rev(&f, "refs/heads/ridge"), base);
     }
 
     #[test]
