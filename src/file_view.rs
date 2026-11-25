@@ -155,11 +155,14 @@ fn loading(ui: &Ui) -> bool {
 }
 
 pub(crate) fn locate(diff: &DiffDoc, selection: &Selection, path: &Path, root: &Path) -> Option<(Origin, Version)> {
+    let present = |id: Option<&String>| id.filter(|id| !absent(id)).cloned();
     let file = match diff.files.as_slice() {
         [file] => Some(file),
-        files => files.iter().find(|file| file.path.as_deref() == Some(path)),
+        files => {
+            let named = || files.iter().filter(|file| file.path.as_deref() == Some(path));
+            named().find(|file| present(file.new_blob.as_ref()).is_some()).or_else(|| named().next())
+        }
     };
-    let present = |id: Option<&String>| id.filter(|id| !absent(id)).cloned();
     let (old, new) = file.map_or((None, None), |file| (present(file.old_blob.as_ref()), present(file.new_blob.as_ref())));
     let listed = file.is_some_and(|file| file.new_blob.is_some());
     if listed && new.is_none() {
@@ -605,6 +608,36 @@ mod tests {
         let shown = doc.file.as_deref().unwrap();
         assert_eq!(shown.version, Version::Before);
         assert!(shown.marks.is_empty());
+    }
+
+    #[test]
+    fn a_file_replaced_by_a_link_shows_the_link_not_the_version_before() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("target.txt"), "aim\n").unwrap();
+        fs::write(f.dir.join("swap me.txt"), "plain\ntext\n").unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "file"]);
+        fs::remove_file(f.dir.join("swap me.txt")).unwrap();
+        std::os::unix::fs::symlink("target.txt", f.dir.join("swap me.txt")).unwrap();
+        let path = Path::new("swap me.txt");
+        let unstaged = Selection::File { path: path.into(), staged: false };
+        let diff = doc_of(&f.repo.file_diff_with(path, false, DiffOptions::default()).unwrap().text);
+        assert_eq!(diff.files.len(), 2);
+        assert_eq!(locate(&diff, &unstaged, path, &f.dir), Some((Origin::Working(f.dir.join(path)), Version::Working)));
+        let (doc, _) = open(&f.repo, &diff, &unstaged, None);
+        assert_eq!(doc.file.as_deref().unwrap().contents.as_deref(), Some("target.txt"));
+        f.git(&["add", "-A"]);
+        f.git(&["commit", "-qm", "link"]);
+        let head = id(&f, "HEAD");
+        let link = id(&f, "HEAD:swap me.txt");
+        let diff = doc_of(&f.repo.commit_path_diff_with(&head, path, None, DiffOptions::default()).unwrap().text);
+        assert_eq!(diff.files.len(), 2);
+        let selection = Selection::Commit(head);
+        assert_eq!(locate(&diff, &selection, path, &f.dir), Some((Origin::Stored(link), Version::Changed)));
+        let (doc, _) = open(&f.repo, &diff, &selection, Some(path));
+        assert_eq!(rows(&doc), [(Some(1), "target.txt".to_owned())]);
+        let shown = doc.file.as_deref().unwrap();
+        assert_eq!((shown.version, shown.marks.as_slice()), (Version::Changed, [Some(Touch::Added)].as_slice()));
     }
 
     #[test]
