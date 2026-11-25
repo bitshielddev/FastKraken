@@ -2750,6 +2750,41 @@ mod tests {
     }
 
     #[test]
+    fn a_stashed_diff_is_read_with_the_shown_options() {
+        let f = Fixture::new();
+        let base: String = (1..=12).map(|n| format!("  step {n}\n")).collect();
+        fs::write(f.dir.join("route.txt"), &base).unwrap();
+        f.git(&["add", "."]);
+        f.git(&["commit", "-qm", "base"]);
+        fs::write(f.dir.join("route.txt"), base.replace("  step 1\n", "  step one\n").replace("  step 12\n", "\tstep 12\n")).unwrap();
+        f.repo.push_stash(&Push { message: "Route".into(), staged: None, files: None }).unwrap();
+        let stash = rev(&f, "refs/stash");
+        let path = Path::new("route.txt");
+        let changed = |diff: &Diff| -> Vec<String> {
+            diff.text
+                .lines()
+                .filter(|line| (line.starts_with('+') || line.starts_with('-')) && !line.starts_with("+++") && !line.starts_with("---"))
+                .map(str::to_owned)
+                .collect()
+        };
+        let shows_middle = |diff: &Diff| diff.text.lines().any(|line| line.ends_with("step 6"));
+        let plain = f.repo.stash_file_diff(&stash, path, None, DiffOptions::default()).unwrap();
+        assert_eq!(changed(&plain), ["-  step 1", "+  step one", "-  step 12", "+\tstep 12"]);
+        assert!(!shows_middle(&plain));
+        let spaces = DiffOptions { whole_file: false, ignore_whitespace: true };
+        let quiet = f.repo.stash_file_diff(&stash, path, None, spaces).unwrap();
+        assert_eq!(changed(&quiet), ["-  step 1", "+  step one"]);
+        assert_eq!(quiet.options, spaces);
+        let whole_file = DiffOptions { whole_file: true, ignore_whitespace: false };
+        let whole = f.repo.stash_diff(&stash, whole_file).unwrap();
+        assert_eq!(changed(&whole), ["-  step 1", "+  step one", "-  step 12", "+\tstep 12"]);
+        assert_eq!((whole.hunks.len(), whole.options), (1, whole_file));
+        assert!(shows_middle(&whole));
+        let quiet = f.repo.stash_diff(&stash, spaces).unwrap();
+        assert_eq!(changed(&quiet), ["-  step 1", "+  step one"]);
+    }
+
+    #[test]
     fn each_stashed_file_opens_as_its_own_diff() {
         let (f, stash) = surveyed();
         let diff = f.repo.stash_file_diff(&stash, Path::new("map.txt"), None, DiffOptions::default()).unwrap();

@@ -3036,6 +3036,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_commit_file_and_a_staged_rename_are_read_with_the_shown_options() {
+        let f = Fixture::new();
+        let base: String = (1..=30).map(|n| format!("  row {n}\n")).collect();
+        committed(&f, "deck.txt", base.as_bytes());
+        let edited = base.replace("  row ", "    row ").replace("    row 20\n", "    row twenty\n");
+        fs::write(f.dir.join("deck.txt"), &edited).unwrap();
+        f.git(&["commit", "-qam", "edit"]);
+        let head = String::from_utf8(f.git(&["rev-parse", "HEAD"])).unwrap();
+        let (head, path) = (head.trim(), Path::new("deck.txt"));
+        let shows = |diff: &Diff, row: &str| diff.text.lines().any(|line| line.ends_with(row));
+        let plain = f.repo.commit_path_diff(head, path, None).unwrap();
+        assert_eq!(changed_lines(&plain).len(), 60);
+        let quiet = f.repo.commit_path_diff_with(head, path, None, SPACES).unwrap();
+        assert_eq!(changed_lines(&quiet), ["-  row 20", "+    row twenty"]);
+        assert!(!shows(&quiet, "row 1") && !shows(&quiet, "row 30"));
+        assert_eq!(quiet.options, SPACES);
+        let both = DiffOptions { whole_file: true, ignore_whitespace: true };
+        let whole = f.repo.commit_path_diff_with(head, path, None, both).unwrap();
+        assert_eq!(changed_lines(&whole), ["-  row 20", "+    row twenty"]);
+        assert_eq!(whole.hunks.len(), 1);
+        assert!(shows(&whole, "row 1") && shows(&whole, "row 30"));
+        assert_eq!(whole.options, both);
+
+        let f = Fixture::new();
+        renamed(&f, "trail map.txt", "maps/trail é.txt");
+        let (from, to) = (Path::new("trail map.txt"), Path::new("maps/trail é.txt"));
+        let plain = f.repo.staged_rename_diff(from, to).unwrap();
+        assert!(!plain.text.lines().any(|line| line == " ten"));
+        let whole = f.repo.staged_rename_diff_with(from, to, WHOLE).unwrap();
+        assert_eq!(changed_lines(&whole), ["-four", "+FOUR"]);
+        assert!(whole.text.lines().any(|line| line == " ten") && whole.text.contains("rename from trail map.txt"));
+        assert_eq!((whole.hunks.len(), whole.options), (1, WHOLE));
+        assert!(!whole.stageable());
+    }
+
+    #[test]
     fn a_staged_copy_keeps_its_own_stageable_diff() {
         let f = Fixture::new();
         fs::write(f.dir.join("source.txt"), TRAIL).unwrap();
