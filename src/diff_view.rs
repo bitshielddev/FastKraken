@@ -1037,54 +1037,70 @@ fn marker(face: &Face, kind: Kind) -> Div {
 
 pub(crate) fn highlights(ui: &Ui, index: usize, row: &Line, column: Column) -> Vec<(Range<usize>, HighlightStyle)> {
     let color = if row.kind == Kind::Added { ADDED_HI } else { DELETED_HI };
-    let changed = HighlightStyle {
-        background_color: Some(rgb(color).into()),
-        ..Default::default()
-    };
-    let selected = HighlightStyle {
-        background_color: Some(rgb(TEXT_SELECTION).into()),
-        ..Default::default()
-    };
     let chosen: Vec<Range<usize>> = diff_select::span(ui, index, column).into_iter().collect();
     let (found, focus) = crate::find::marks(ui, crate::find::Pane::Diff, index);
-    let ink = |token: Token| HighlightStyle {
-        color: Some(rgb(token.color()).into()),
-        ..Default::default()
-    };
-    let plain = chosen.is_empty() && found.is_empty() && focus.is_empty();
-    if row.syntax.is_empty() && plain {
-        return row.words.iter().cloned().map(|span| (span, changed)).collect();
-    }
-    if row.words.is_empty() && plain {
-        return row.syntax.iter().map(|(span, token)| (span.clone(), ink(*token))).collect();
-    }
-    let (matched, current) = crate::find::styles();
-    let inked: Vec<(Vec<Range<usize>>, HighlightStyle)> = Token::ALL
-        .iter()
-        .map(|token| {
-            let spans: Vec<Range<usize>> = row.syntax.iter().filter(|(_, held)| held == token).map(|(span, _)| span.clone()).collect();
-            (spans, ink(*token))
-        })
-        .filter(|layer| !layer.0.is_empty())
-        .collect();
-    let readable = HighlightStyle { color: Some(rgb(TEXT).into()), ..Default::default() };
-    let chosen_focus: Vec<Range<usize>> = chosen
-        .iter()
-        .flat_map(|chosen| focus.iter().map(move |hit| chosen.start.max(hit.start)..chosen.end.min(hit.end)))
-        .filter(|span| span.start < span.end)
-        .collect();
-    let mut layers: Vec<(&[Range<usize>], HighlightStyle)> = vec![
-        (&chosen_focus, readable),
-        (&chosen, selected),
-        (&focus, current),
-        (&found, matched),
-        (&row.words, changed),
-    ];
-    layers.extend(inked.iter().map(|(spans, style)| (spans.as_slice(), *style)));
-    layered(&layers)
+    Marks { chosen: &chosen, found: &found, focus: &focus, words: &row.words, changed: color, syntax: &row.syntax }.runs()
 }
 
-fn clipped(runs: Vec<(Range<usize>, HighlightStyle)>, piece: &Range<usize>) -> Vec<(Range<usize>, HighlightStyle)> {
+pub(crate) struct Marks<'a> {
+    pub(crate) chosen: &'a [Range<usize>],
+    pub(crate) found: &'a [Range<usize>],
+    pub(crate) focus: &'a [Range<usize>],
+    pub(crate) words: &'a [Range<usize>],
+    pub(crate) changed: u32,
+    pub(crate) syntax: &'a [(Range<usize>, Token)],
+}
+
+impl Marks<'_> {
+    pub(crate) fn runs(&self) -> Vec<(Range<usize>, HighlightStyle)> {
+        let changed = HighlightStyle {
+            background_color: Some(rgb(self.changed).into()),
+            ..Default::default()
+        };
+        let selected = HighlightStyle {
+            background_color: Some(rgb(TEXT_SELECTION).into()),
+            ..Default::default()
+        };
+        let (chosen, found, focus, words, syntax) = (self.chosen, self.found, self.focus, self.words, self.syntax);
+        let ink = |token: Token| HighlightStyle {
+            color: Some(rgb(token.color()).into()),
+            ..Default::default()
+        };
+        let plain = chosen.is_empty() && found.is_empty() && focus.is_empty();
+        if syntax.is_empty() && plain {
+            return words.iter().cloned().map(|span| (span, changed)).collect();
+        }
+        if words.is_empty() && plain {
+            return syntax.iter().map(|(span, token)| (span.clone(), ink(*token))).collect();
+        }
+        let (matched, current) = crate::find::styles();
+        let inked: Vec<(Vec<Range<usize>>, HighlightStyle)> = Token::ALL
+            .iter()
+            .map(|token| {
+                let spans: Vec<Range<usize>> = syntax.iter().filter(|(_, held)| held == token).map(|(span, _)| span.clone()).collect();
+                (spans, ink(*token))
+            })
+            .filter(|layer| !layer.0.is_empty())
+            .collect();
+        let readable = HighlightStyle { color: Some(rgb(TEXT).into()), ..Default::default() };
+        let chosen_focus: Vec<Range<usize>> = chosen
+            .iter()
+            .flat_map(|chosen| focus.iter().map(move |hit| chosen.start.max(hit.start)..chosen.end.min(hit.end)))
+            .filter(|span| span.start < span.end)
+            .collect();
+        let mut layers: Vec<(&[Range<usize>], HighlightStyle)> = vec![
+            (&chosen_focus, readable),
+            (chosen, selected),
+            (focus, current),
+            (found, matched),
+            (words, changed),
+        ];
+        layers.extend(inked.iter().map(|(spans, style)| (spans.as_slice(), *style)));
+        layered(&layers)
+    }
+}
+
+pub(crate) fn clipped(runs: Vec<(Range<usize>, HighlightStyle)>, piece: &Range<usize>) -> Vec<(Range<usize>, HighlightStyle)> {
     runs.into_iter()
         .filter_map(|(range, style)| {
             let start = range.start.max(piece.start);
@@ -1104,6 +1120,10 @@ fn code(ui: &Ui, index: usize, row: &Line, column: Column, part: usize) -> Div {
     } else {
         (code, highlights(ui, index, row, column))
     };
+    drawn(face, text, highlights)
+}
+
+pub(crate) fn drawn(face: &Face, text: &str, highlights: Vec<(Range<usize>, HighlightStyle)>) -> Div {
     let highlights = diff_text::shown_runs(text, highlights, face.tab);
     let text = diff_text::expanded(text, face.tab).into_owned();
     div()

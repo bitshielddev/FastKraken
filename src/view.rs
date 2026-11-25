@@ -8,9 +8,9 @@ mod graph;
 use crate::{kit, navigate::Action as Move, stash::HistoryItem, theme::*};
 pub use commit_input::CommitInput;
 pub(crate) use diff_view::{
-    Change as DiffChange, Columns as DiffColumns, Layout as DiffLayout, Mode as DiffMode, WHITESPACE_HIDDEN,
-    Wrapped as DiffWrapped, bar_texts as diff_bar_texts,
-    changes as diff_changes, doc_row as diff_doc_row, highlights as diff_highlights, layered as diff_layered,
+    Change as DiffChange, Columns as DiffColumns, Layout as DiffLayout, Marks as DiffMarks, Mode as DiffMode,
+    WHITESPACE_HIDDEN, Wrapped as DiffWrapped, bar_texts as diff_bar_texts, changes as diff_changes,
+    clipped as diff_clipped, doc_row as diff_doc_row, drawn as diff_drawn, highlights as diff_highlights,
     part as diff_part, part_at as diff_part_at, piece as diff_piece, placeholder_text as diff_placeholder,
     rows as diff_rows, shaped as diff_shaped, visual_of as diff_visual_of, width_in_cells as diff_cells,
 };
@@ -2517,6 +2517,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Text(crate::diff_select::Action::Clear), w, cx);
             } else if centre(ui) == Centre::Diff {
                 app.dispatch(Action::CloseDiff, w, cx);
+            } else if centre(ui) == Centre::Resolver && crate::diff_select::current(ui).is_some() {
+                app.dispatch(Action::Text(crate::diff_select::Action::Clear), w, cx);
             } else if ui.merge.editing().is_some() {
                 app.dispatch(Action::Merge(crate::merge::Action::Close), w, cx);
             } else if centre(ui) == Centre::Chooser {

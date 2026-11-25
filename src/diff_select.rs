@@ -2,6 +2,7 @@ use crate::{
     Tab,
     commands::{Availability, Command, Group, Target},
     diff_doc::{DiffDoc, Kind},
+    find::Pane,
     notice::Notice,
     view::{self, Desk, DiffMode, Selection, Tone, Ui},
 };
@@ -19,6 +20,7 @@ pub(crate) enum Column {
     Unified,
     Old,
     New,
+    Resolver(Pane),
 }
 
 impl Column {
@@ -27,6 +29,7 @@ impl Column {
             Self::Unified => kind.is_code(),
             Self::Old => matches!(kind, Kind::Context | Kind::Deleted),
             Self::New => matches!(kind, Kind::Context | Kind::Added),
+            Self::Resolver(_) => false,
         }
     }
 
@@ -36,10 +39,18 @@ impl Column {
 
     fn index(self) -> usize {
         match self {
-            Self::Unified => 0,
+            Self::Unified | Self::Resolver(Pane::Diff) => 0,
             Self::Old => 1,
             Self::New => 2,
+            Self::Resolver(Pane::Current) => 3,
+            Self::Resolver(Pane::Incoming) => 4,
+            Self::Resolver(Pane::Original) => 5,
+            Self::Resolver(Pane::Result) => 6,
         }
+    }
+
+    fn resolver(self) -> bool {
+        matches!(self, Self::Resolver(_))
     }
 
     pub(crate) fn split(old: bool) -> Self {
@@ -92,7 +103,7 @@ pub(crate) enum Action {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Chosen {
-    selection: Selection,
+    selection: Option<Selection>,
     fingerprint: u64,
     pub(crate) column: Column,
     pub(crate) anchor: Spot,
@@ -118,7 +129,7 @@ pub(crate) struct State {
     edge: Edge,
     ticking: bool,
     focused: bool,
-    origins: Rc<Cell<[Pixels; 3]>>,
+    origins: Rc<Cell<[Pixels; 7]>>,
 }
 
 impl State {
@@ -138,9 +149,21 @@ fn showing(ui: &Ui) -> bool {
         && crate::image_diff::showing(ui).is_none()
 }
 
+fn resolving(ui: &Ui) -> bool {
+    view::centre(ui) == view::Centre::Resolver && ui.merge.editing().is_some()
+}
+
+fn present(ui: &Ui, column: Column) -> bool {
+    if column.resolver() { resolving(ui) } else { showing(ui) }
+}
+
 fn held(ui: &Ui) -> Option<&Chosen> {
     let chosen = ui.text.chosen.as_ref()?;
-    (chosen.column.shown(ui.shown_mode()) && ui.selection.as_ref() == Some(&chosen.selection) && showing(ui)).then_some(chosen)
+    let same = match chosen.column {
+        Column::Resolver(pane) => ui.merge.text_key(pane) == Some(chosen.fingerprint),
+        column => column.shown(ui.shown_mode()) && chosen.selection.is_some() && ui.selection == chosen.selection,
+    };
+    (same && present(ui, chosen.column)).then_some(chosen)
 }
 
 pub(crate) fn current(ui: &Ui) -> Option<&Chosen> {
@@ -148,7 +171,7 @@ pub(crate) fn current(ui: &Ui) -> Option<&Chosen> {
 }
 
 pub(crate) fn focused(ui: &Ui) -> bool {
-    ui.text.focused && showing(ui) && !ui.modal_open()
+    ui.text.focused && (showing(ui) || resolving(ui)) && !ui.modal_open()
 }
 
 pub(crate) fn keep_focus(ui: &mut Ui) {
@@ -161,26 +184,81 @@ fn boundary(text: &str, at: usize) -> usize {
     text.floor_char_boundary(at.min(text.len()))
 }
 
+pub(crate) trait Lines {
+    fn code_at(&self, column: Column, row: usize) -> Option<&str>;
+    fn holds(&self, column: Column, row: usize) -> bool;
+    fn rows(&self, column: Column) -> usize;
+}
+
+impl Lines for DiffDoc {
+    fn code_at(&self, _: Column, row: usize) -> Option<&str> {
+        self.lines.get(row).map(|line| self.code(line))
+    }
+
+    fn holds(&self, column: Column, row: usize) -> bool {
+        self.lines.get(row).is_some_and(|line| column.holds(line.kind))
+    }
+
+    fn rows(&self, _: Column) -> usize {
+        self.lines.len()
+    }
+}
+
+impl Lines for crate::merge::State {
+    fn code_at(&self, column: Column, row: usize) -> Option<&str> {
+        match column {
+            Column::Resolver(pane) => self.pane_line(pane, row),
+            _ => None,
+        }
+    }
+
+    fn holds(&self, column: Column, row: usize) -> bool {
+        self.code_at(column, row).is_some()
+    }
+
+    fn rows(&self, column: Column) -> usize {
+        match column {
+            Column::Resolver(pane) => self.pane_rows(pane),
+            _ => 0,
+        }
+    }
+}
+
+impl Lines for Ui {
+    fn code_at(&self, column: Column, row: usize) -> Option<&str> {
+        if column.resolver() { self.merge.code_at(column, row) } else { self.diff.code_at(column, row) }
+    }
+
+    fn holds(&self, column: Column, row: usize) -> bool {
+        if column.resolver() { self.merge.holds(column, row) } else { self.diff.holds(column, row) }
+    }
+
+    fn rows(&self, column: Column) -> usize {
+        if column.resolver() { self.merge.rows(column) } else { self.diff.rows(column) }
+    }
+}
+
 pub(crate) fn span(ui: &Ui, row: usize, column: Column) -> Option<Range<usize>> {
     let chosen = current(ui).filter(|chosen| chosen.column == column)?;
     let (start, end) = chosen.ordered();
-    if row < start.row || row > end.row {
+    if row < start.row || row > end.row || !ui.holds(column, row) {
         return None;
     }
-    let line = ui.diff.lines.get(row).filter(|line| column.holds(line.kind))?;
-    let code = ui.diff.code(line);
+    let code = ui.code_at(column, row)?;
     let from = if row == start.row { boundary(code, start.at) } else { 0 };
     let to = if row == end.row { boundary(code, end.at) } else { code.len() };
     (from < to).then_some(from..to)
 }
 
-pub(crate) fn text(doc: &DiffDoc, column: Column, start: Spot, end: Spot) -> String {
+pub(crate) fn text(doc: &impl Lines, column: Column, start: Spot, end: Spot) -> String {
     let mut copied = String::new();
     let mut first = true;
-    let last = end.row.min(doc.lines.len().saturating_sub(1));
+    let last = end.row.min(doc.rows(column).saturating_sub(1));
     for row in start.row..=last {
-        let Some(line) = doc.lines.get(row).filter(|line| column.holds(line.kind)) else { continue };
-        let code = doc.code(line);
+        if !doc.holds(column, row) {
+            continue;
+        }
+        let Some(code) = doc.code_at(column, row) else { continue };
         let from = if row == start.row { boundary(code, start.at) } else { 0 };
         let to = if row == end.row { boundary(code, end.at) } else { code.len() };
         if !first {
@@ -195,7 +273,7 @@ pub(crate) fn text(doc: &DiffDoc, column: Column, start: Spot, end: Spot) -> Str
 pub(crate) fn selected_text(ui: &Ui) -> Option<String> {
     let chosen = current(ui)?;
     let (start, end) = chosen.ordered();
-    Some(text(&ui.diff, chosen.column, start, end))
+    Some(text(ui, chosen.column, start, end))
 }
 
 fn word(text: &str, at: usize) -> Range<usize> {
@@ -210,8 +288,8 @@ fn word(text: &str, at: usize) -> Range<usize> {
     last
 }
 
-fn unit_at(doc: &DiffDoc, spot: Spot, unit: Unit) -> (Spot, Spot) {
-    let code = doc.lines.get(spot.row).map_or("", |line| doc.code(line));
+fn unit_at(doc: &impl Lines, column: Column, spot: Spot, unit: Unit) -> (Spot, Spot) {
+    let code = doc.code_at(column, spot.row).unwrap_or_default();
     let row = spot.row;
     match unit {
         Unit::Character => {
@@ -226,8 +304,8 @@ fn unit_at(doc: &DiffDoc, spot: Spot, unit: Unit) -> (Spot, Spot) {
     }
 }
 
-fn dragged(doc: &DiffDoc, drag: Drag, spot: Spot) -> (Spot, Spot) {
-    let reached = unit_at(doc, spot, drag.unit);
+fn dragged(doc: &impl Lines, column: Column, drag: Drag, spot: Spot) -> (Spot, Spot) {
+    let reached = unit_at(doc, column, spot, drag.unit);
     if reached.0 < drag.origin.0 {
         (drag.origin.1, reached.0)
     } else {
@@ -235,16 +313,17 @@ fn dragged(doc: &DiffDoc, drag: Drag, spot: Spot) -> (Spot, Spot) {
     }
 }
 
-pub(crate) fn everything(doc: &DiffDoc, column: Column) -> Option<(Spot, Spot)> {
-    let held = |(_, line): &(usize, &crate::diff_doc::Line)| column.holds(line.kind);
-    let (first, _) = doc.lines.iter().enumerate().find(held)?;
-    let (last, line) = doc.lines.iter().enumerate().rev().find(held)?;
-    Some((Spot { row: first, at: 0 }, Spot { row: last, at: doc.code(line).len() }))
+pub(crate) fn everything(doc: &impl Lines, column: Column) -> Option<(Spot, Spot)> {
+    let rows = doc.rows(column);
+    let first = (0..rows).find(|&row| doc.holds(column, row))?;
+    let last = (0..rows).rev().find(|&row| doc.holds(column, row))?;
+    Some((Spot { row: first, at: 0 }, Spot { row: last, at: doc.code_at(column, last).map_or(0, str::len) }))
 }
 
 pub(crate) fn reloaded(ui: &mut Ui) {
     let kept = ui.text.chosen.as_ref().is_some_and(|chosen| {
-        ui.selection.as_ref() == Some(&chosen.selection) && chosen.fingerprint == ui.diff.fingerprint()
+        chosen.column.resolver()
+            || (chosen.selection.is_some() && ui.selection == chosen.selection && chosen.fingerprint == ui.diff.fingerprint())
     });
     if !kept {
         ui.text.chosen = None;
@@ -255,14 +334,23 @@ pub(crate) fn reloaded(ui: &mut Ui) {
 
 fn fingerprint(ui: &Ui, selection: &Selection) -> u64 {
     match &ui.text.chosen {
-        Some(chosen) if &chosen.selection == selection => chosen.fingerprint,
+        Some(chosen) if !chosen.column.resolver() && chosen.selection.as_ref() == Some(selection) => chosen.fingerprint,
         _ => ui.diff.fingerprint(),
     }
 }
 
 fn choose(ui: &mut Ui, column: Column, anchor: Spot, head: Spot) {
-    let Some(selection) = ui.selection.clone() else { return };
-    let fingerprint = fingerprint(ui, &selection);
+    let (selection, fingerprint) = match column {
+        Column::Resolver(pane) => {
+            let Some(key) = ui.merge.text_key(pane) else { return };
+            (None, key)
+        }
+        _ => {
+            let Some(selection) = ui.selection.clone() else { return };
+            let fingerprint = fingerprint(ui, &selection);
+            (Some(selection), fingerprint)
+        }
+    };
     ui.text.chosen = Some(Chosen { selection, fingerprint, column, anchor, head });
     ui.text.focused = true;
 }
@@ -359,18 +447,18 @@ fn copy(tab: &mut Tab, text: String, what: &str, cx: &mut Context<Tab>) {
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, _window: &mut Window, cx: &mut Context<Tab>) {
     match action {
         Action::Press { column, spot, clicks, extend } => {
-            if !showing(&tab.ui) || !tab.ui.diff.lines.get(spot.row).is_some_and(|line| column.holds(line.kind)) {
+            if !present(&tab.ui, column) || !tab.ui.holds(column, spot.row) {
                 return;
             }
             let unit = Unit::of(clicks);
             let kept = held(&tab.ui).filter(|chosen| chosen.column == column).map(|chosen| chosen.anchor);
             let (anchor, head, origin) = match kept {
                 Some(anchor) if extend && unit == Unit::Character => {
-                    let (at, _) = unit_at(&tab.ui.diff, spot, unit);
+                    let (at, _) = unit_at(&tab.ui, column, spot, unit);
                     (anchor, at, (anchor, anchor))
                 }
                 _ => {
-                    let origin = unit_at(&tab.ui.diff, spot, unit);
+                    let origin = unit_at(&tab.ui, column, spot, unit);
                     (origin.0, origin.1, origin)
                 }
             };
@@ -383,7 +471,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _window: &mut Window, cx: 
             let Some(drag) = tab.ui.text.drag else { return };
             let Some(column) = tab.ui.text.chosen.as_ref().map(|chosen| chosen.column) else { return };
             tab.ui.text.edge = edge;
-            let (anchor, head) = dragged(&tab.ui.diff, drag, spot);
+            let (anchor, head) = dragged(&tab.ui, column, drag, spot);
             if tab.ui.text.chosen.as_ref().is_some_and(|chosen| chosen.anchor != anchor || chosen.head != head) {
                 choose(&mut tab.ui, column, anchor, head);
                 cx.notify();
@@ -402,14 +490,17 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _window: &mut Window, cx: 
             cx.notify();
         }
         Action::SelectAll => {
-            if !showing(&tab.ui) {
+            let column = if resolving(&tab.ui) {
+                current(&tab.ui).map_or(Column::Resolver(Pane::Result), |chosen| chosen.column)
+            } else if showing(&tab.ui) {
+                match tab.ui.shown_mode() {
+                    DiffMode::Unified => Column::Unified,
+                    DiffMode::Split => current(&tab.ui).map_or(Column::New, |chosen| chosen.column),
+                }
+            } else {
                 return;
-            }
-            let column = match tab.ui.shown_mode() {
-                DiffMode::Unified => Column::Unified,
-                DiffMode::Split => current(&tab.ui).map_or(Column::New, |chosen| chosen.column),
             };
-            if let Some((start, end)) = everything(&tab.ui.diff, column) {
+            if let Some((start, end)) = everything(&tab.ui, column) {
                 tab.ui.text.drag = None;
                 choose(&mut tab.ui, column, start, end);
                 cx.notify();
@@ -457,16 +548,20 @@ fn step(tab: &mut Tab, cx: &mut Context<Tab>) -> bool {
     let ui = &tab.ui;
     let edge = ui.text.edge;
     let column = ui.text.chosen.as_ref().map(|chosen| chosen.column);
-    let (Some(drag), Some(column)) = (ui.text.drag.filter(|_| edge != Edge::Inside && showing(ui)), column) else {
+    let (Some(drag), Some(column)) = (ui.text.drag.filter(|_| edge != Edge::Inside), column) else {
         tab.ui.text.ticking = false;
         return false;
     };
-    let rows = view::diff_rows(ui);
-    let Some(visual) = scrolled(&ui.diff_scroll, edge, rows, ui.diff_text.face.line()) else { return true };
-    let Some(row) = view::diff_doc_row(ui, visual, column) else { return true };
-    let piece = view::diff_piece(ui, row, view::diff_part(ui, visual));
+    if !present(ui, column) {
+        tab.ui.text.ticking = false;
+        return false;
+    }
+    let (handle, rows, line) = track(ui, column);
+    let Some(visual) = scrolled(handle, edge, rows, line) else { return true };
+    let Some((row, part)) = place(ui, column, visual) else { return true };
+    let piece = piece(ui, column, row, part);
     let at = if edge == Edge::Above { piece.start } else { piece.end };
-    let (anchor, head) = dragged(&ui.diff, drag, Spot { row, at });
+    let (anchor, head) = dragged(ui, column, drag, Spot { row, at });
     choose(&mut tab.ui, column, anchor, head);
     cx.notify();
     true
@@ -513,14 +608,34 @@ fn pointed(handle: &UniformListScrollHandle, y: Pixels, rows: usize, line: f32) 
     Some(((visual.max(0.) as usize).min(rows - 1), edge))
 }
 
+fn track(ui: &Ui, column: Column) -> (&UniformListScrollHandle, usize, f32) {
+    match column {
+        Column::Resolver(pane) => ui.merge.track(pane, &ui.diff_text.face),
+        _ => (&ui.diff_scroll, view::diff_rows(ui), ui.diff_text.face.line()),
+    }
+}
+
+fn place(ui: &Ui, column: Column, visual: usize) -> Option<(usize, usize)> {
+    match column {
+        Column::Resolver(_) => (visual < ui.rows(column)).then_some((visual, 0)),
+        _ => Some((view::diff_doc_row(ui, visual, column)?, view::diff_part(ui, visual))),
+    }
+}
+
+fn piece(ui: &Ui, column: Column, row: usize, part: usize) -> Range<usize> {
+    match column {
+        Column::Resolver(_) => 0..ui.code_at(column, row).map_or(0, crate::merge::shown_length),
+        _ => view::diff_piece(ui, row, part),
+    }
+}
+
 pub(crate) fn origin(ui: &Ui, column: Column) -> Pixels {
     ui.text.origins.get()[column.index()]
 }
 
 pub(crate) fn hit(ui: &Ui, window: &Window, row: usize, part: usize, column: Column, x: Pixels, unit: Unit) -> usize {
-    let Some(line) = ui.diff.lines.get(row) else { return 0 };
-    let code = ui.diff.code(line);
-    let piece = view::diff_piece(ui, row, part);
+    let Some(code) = ui.code_at(column, row) else { return 0 };
+    let piece = piece(ui, column, row, part);
     let shown = code.get(piece.clone()).unwrap_or_default();
     if shown.is_empty() {
         return boundary(code, piece.start);
@@ -574,11 +689,12 @@ pub(crate) fn moved<T: Desk>(app: &mut T, event: &MouseMoveEvent, window: &mut W
         return;
     }
     let Some(column) = ui.text.chosen.as_ref().map(|chosen| chosen.column) else { return };
-    let Some((visual, edge)) = pointed(&ui.diff_scroll, event.position.y, view::diff_rows(ui), ui.diff_text.face.line()) else {
+    let (handle, rows, line) = track(ui, column);
+    let Some((visual, edge)) = pointed(handle, event.position.y, rows, line) else {
         return;
     };
-    let Some(row) = view::diff_doc_row(ui, visual, column) else { return };
-    let at = hit(ui, window, row, view::diff_part(ui, visual), column, event.position.x, Unit::Character);
+    let Some((row, part)) = place(ui, column, visual) else { return };
+    let at = hit(ui, window, row, part, column, event.position.x, Unit::Character);
     app.dispatch(view::Action::Text(Action::DragTo { spot: Spot { row, at }, edge }), window, cx);
 }
 
@@ -708,15 +824,15 @@ mod tests {
     #[test]
     fn double_and_triple_presses_take_a_word_and_a_line_and_dragging_extends_by_them() {
         let doc = sample();
-        assert_eq!(unit_at(&doc, at(3, 6), Unit::Word), (at(3, 4), at(3, 10)));
-        assert_eq!(unit_at(&doc, at(3, 3), Unit::Word), (at(3, 3), at(3, 4)));
-        assert_eq!(unit_at(&doc, at(1, 2), Unit::Line), (at(1, 0), at(1, 14)));
-        assert_eq!(unit_at(&doc, at(1, 99), Unit::Character), (at(1, 14), at(1, 14)));
-        let words = Drag { origin: unit_at(&doc, at(3, 6), Unit::Word), unit: Unit::Word };
-        assert_eq!(dragged(&doc, words, at(4, 1)), (at(3, 4), at(4, 3)));
-        assert_eq!(dragged(&doc, words, at(1, 6)), (at(3, 10), at(1, 5)));
-        let lines = Drag { origin: unit_at(&doc, at(2, 0), Unit::Line), unit: Unit::Line };
-        assert_eq!(dragged(&doc, lines, at(3, 1)), (at(2, 0), at(3, 10)));
+        assert_eq!(unit_at(&doc, Column::Unified, at(3, 6), Unit::Word), (at(3, 4), at(3, 10)));
+        assert_eq!(unit_at(&doc, Column::Unified, at(3, 3), Unit::Word), (at(3, 3), at(3, 4)));
+        assert_eq!(unit_at(&doc, Column::Unified, at(1, 2), Unit::Line), (at(1, 0), at(1, 14)));
+        assert_eq!(unit_at(&doc, Column::Unified, at(1, 99), Unit::Character), (at(1, 14), at(1, 14)));
+        let words = Drag { origin: unit_at(&doc, Column::Unified, at(3, 6), Unit::Word), unit: Unit::Word };
+        assert_eq!(dragged(&doc, Column::Unified, words, at(4, 1)), (at(3, 4), at(4, 3)));
+        assert_eq!(dragged(&doc, Column::Unified, words, at(1, 6)), (at(3, 10), at(1, 5)));
+        let lines = Drag { origin: unit_at(&doc, Column::Unified, at(2, 0), Unit::Line), unit: Unit::Line };
+        assert_eq!(dragged(&doc, Column::Unified, lines, at(3, 1)), (at(2, 0), at(3, 10)));
         assert_eq!(Unit::of(1), Unit::Character);
         assert_eq!(Unit::of(2), Unit::Word);
         assert_eq!(Unit::of(3), Unit::Line);

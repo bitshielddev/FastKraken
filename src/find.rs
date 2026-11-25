@@ -27,6 +27,7 @@ pub(crate) enum Pane {
     Diff,
     Current,
     Incoming,
+    Original,
     Result,
 }
 
@@ -406,14 +407,6 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
     cx.notify();
 }
 
-fn layer(spans: &[Range<usize>], current: &[Range<usize>]) -> Vec<(Range<usize>, HighlightStyle)> {
-    if spans.is_empty() && current.is_empty() {
-        return Vec::new();
-    }
-    let (found, focus) = styles();
-    view::diff_layered(&[(current, focus), (spans, found)])
-}
-
 pub(crate) fn styles() -> (HighlightStyle, HighlightStyle) {
     let found = HighlightStyle { background_color: Some(rgb(FIND_MATCH).into()), ..Default::default() };
     let focus = HighlightStyle {
@@ -444,11 +437,6 @@ pub(crate) fn marks(ui: &Ui, pane: Pane, row: usize) -> (Vec<Range<usize>>, Vec<
         }
     }
     (found, focus)
-}
-
-pub(crate) fn styled(ui: &Ui, pane: Pane, row: usize) -> Vec<(Range<usize>, HighlightStyle)> {
-    let (found, focus) = marks(ui, pane, row);
-    layer(&found, &focus)
 }
 
 pub(crate) fn bar<T: Desk>(app: &T, surface: Surface, cx: &Context<T>) -> Option<Div> {

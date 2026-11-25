@@ -521,6 +521,16 @@ fn colour_text(set: &SyntaxSet, syntax: &SyntaxReference, text: &str, upto: u32,
     Some(Coloured { lines, complete })
 }
 
+pub(crate) fn colour_lines(path: &Path, text: &str, cancel: &AtomicBool) -> Option<Vec<Spans>> {
+    if text.len() as u64 > FILE_LIMIT {
+        return None;
+    }
+    let set = grammars();
+    let syntax = grammar(set, path, text.lines().next())?;
+    let coloured = colour_text(set, syntax, text, u32::MAX, cancel)?;
+    Some(coloured.lines.into_iter().map(|line| line.spans).collect())
+}
+
 pub(crate) fn working_root(repo: &Repository, selection: &Selection) -> Option<PathBuf> {
     matches!(selection, Selection::File { staged: false, .. }).then(|| repo.root.clone())
 }
@@ -575,6 +585,7 @@ pub(crate) fn follow(tab: &mut Tab, on: bool, cx: &mut Context<Tab>) {
         tab.ui.syntax.stop();
         clear(&mut tab.ui.diff);
     }
+    crate::merge::colour(tab, cx);
 }
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, _window: &mut Window, cx: &mut Context<Tab>) {

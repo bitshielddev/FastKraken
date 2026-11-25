@@ -258,6 +258,7 @@ enum Piece {
 #[derive(Debug)]
 struct Hunk {
     current: Range<usize>,
+    base: Option<Range<usize>>,
     incoming: Range<usize>,
 }
 
@@ -287,6 +288,7 @@ pub(super) enum ResultRow {
 pub(super) struct Preview {
     pub rows: Vec<ResultRow>,
     pub hunk_starts: Vec<usize>,
+    pub sources: Vec<usize>,
 }
 
 pub(super) type Choices = Vec<Vec<Option<Choice>>>;
@@ -365,6 +367,201 @@ fn align(source: &str, hunk: Hunk) -> Vec<LinePair> {
     rows
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Place {
+    Shared(Range<usize>),
+    Conflict { hunk: usize, line: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Row {
+    pub place: Place,
+    pub current: Option<usize>,
+    pub incoming: Option<usize>,
+}
+
+impl Row {
+    pub fn number(&self, side: Side) -> Option<usize> {
+        match side {
+            Side::Current => self.current,
+            Side::Incoming => self.incoming,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Original {
+    Added,
+    Found(Vec<Option<Vec<String>>>),
+    Unreadable(String),
+}
+
+impl Original {
+    pub fn lines(&self, hunk: usize) -> &[String] {
+        match self {
+            Self::Found(hunks) => hunks.get(hunk).and_then(Option::as_deref).unwrap_or_default(),
+            _ => &[],
+        }
+    }
+
+    pub fn missing(&self, hunk: usize) -> Option<String> {
+        match self {
+            Self::Added => Some("Both sides added this file, so it has no original version.".into()),
+            Self::Unreadable(reason) => Some(format!("Git could not read the original version. {reason}")),
+            Self::Found(hunks) => match hunks.get(hunk) {
+                Some(Some(lines)) if lines.is_empty() => {
+                    Some("The original had no lines here: both sides added theirs.".into())
+                }
+                Some(Some(_)) => None,
+                _ => Some("Git's original version has no lines that line up with this conflict.".into()),
+            },
+        }
+    }
+}
+
+fn plain(line: &str) -> &str {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
+struct Spread<'a> {
+    current: Vec<&'a str>,
+    incoming: Vec<&'a str>,
+    hunks: Vec<(Range<usize>, Range<usize>)>,
+}
+
+fn spread<'a>(source: &'a str, pieces: &[Piece], hunks: &[Hunk]) -> Spread<'a> {
+    let mut spread = Spread { current: Vec::new(), incoming: Vec::new(), hunks: Vec::new() };
+    for piece in pieces {
+        match piece {
+            Piece::Shared(range) => {
+                for line in source_lines(source, range.clone()) {
+                    spread.current.push(plain(&source[line.clone()]));
+                    spread.incoming.push(plain(&source[line]));
+                }
+            }
+            Piece::Hunk(index) => {
+                let hunk = &hunks[*index];
+                let (current, incoming) = (spread.current.len(), spread.incoming.len());
+                spread.current.extend(source_lines(source, hunk.current.clone()).map(|line| plain(&source[line])));
+                spread.incoming.extend(source_lines(source, hunk.incoming.clone()).map(|line| plain(&source[line])));
+                spread.hunks.push((current..spread.current.len(), incoming..spread.incoming.len()));
+            }
+        }
+    }
+    spread
+}
+
+fn touches(a: &Range<usize>, b: &Range<usize>) -> bool {
+    match (a.is_empty(), b.is_empty()) {
+        (false, false) => a.start < b.end && b.start < a.end,
+        (true, _) => b.start <= a.start && a.start <= b.end,
+        (false, true) => a.start <= b.start && b.start <= a.end,
+    }
+}
+
+fn ancestors(shown: &Spread, merged: &str, pieces: &[Piece], hunks: &[Hunk]) -> Option<Vec<Option<Vec<String>>>> {
+    let full = spread(merged, pieces, hunks);
+    if full.current != shown.current || full.incoming != shown.incoming {
+        return None;
+    }
+    let lines = |range: Range<usize>| source_lines(merged, range).map(|line| plain(&merged[line]).to_owned());
+    Some(
+        shown
+            .hunks
+            .iter()
+            .map(|(current, incoming)| {
+                let matched: Vec<usize> = full
+                    .hunks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (their_current, their_incoming))| {
+                        touches(current, their_current) && touches(incoming, their_incoming)
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                let (&first, &last) = (matched.first()?, matched.last()?);
+                let mut original = Vec::new();
+                for index in first..=last {
+                    if index > first
+                        && let Some(Piece::Shared(between)) = pieces.get(2 * index)
+                    {
+                        original.extend(lines(between.clone()));
+                    }
+                    original.extend(lines(hunks[index].base.clone()?));
+                }
+                Some(original)
+            })
+            .collect(),
+    )
+}
+
+fn original(repo: &Repository, stages: &[Option<String>; 3], width: usize, shown: &Spread) -> Original {
+    let [Some(base), Some(current), Some(incoming)] = stages else {
+        return Original::Added;
+    };
+    let mut reason = String::new();
+    for algorithm in ["histogram", "myers"] {
+        let output = repo
+            .read_command()
+            .args(["merge-file", "--object-id", "-p", "--diff3"])
+            .arg(format!("--marker-size={width}"))
+            .arg(format!("--diff-algorithm={algorithm}"))
+            .args(["-L", "current", "-L", "original", "-L", "incoming"])
+            .args([current, base, incoming])
+            .run();
+        let output = match output {
+            Ok(output) if output.status.code().is_some_and(|code| (0..128).contains(&code)) => output,
+            Ok(output) => {
+                reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                continue;
+            }
+            Err(err) => return Original::Unreadable(err.to_string()),
+        };
+        let Ok(merged) = String::from_utf8(output.stdout) else {
+            return Original::Unreadable("The original version is not UTF-8 text.".into());
+        };
+        let Ok((pieces, hunks)) = parse(merged.as_bytes(), width) else { continue };
+        if let Some(found) = ancestors(shown, &merged, &pieces, &hunks) {
+            return Original::Found(found);
+        }
+    }
+    if reason.is_empty() {
+        Original::Found(vec![None; shown.hunks.len()])
+    } else {
+        Original::Unreadable(reason)
+    }
+}
+
+fn layout(source: &str, pieces: &[Piece], hunks: &[Vec<LinePair>]) -> (Vec<Row>, Vec<usize>) {
+    let (mut rows, mut starts) = (Vec::new(), Vec::new());
+    let (mut current, mut incoming) = (0, 0);
+    for piece in pieces {
+        match piece {
+            Piece::Shared(range) => {
+                for line in source_lines(source, range.clone()) {
+                    current += 1;
+                    incoming += 1;
+                    rows.push(Row { place: Place::Shared(line), current: Some(current), incoming: Some(incoming) });
+                }
+            }
+            Piece::Hunk(hunk) => {
+                starts.push(rows.len());
+                for (line, pair) in hunks[*hunk].iter().enumerate() {
+                    current += usize::from(pair.current.is_some());
+                    incoming += usize::from(pair.incoming.is_some());
+                    rows.push(Row {
+                        place: Place::Conflict { hunk: *hunk, line },
+                        current: pair.current.as_ref().map(|_| current),
+                        incoming: pair.incoming.as_ref().map(|_| incoming),
+                    });
+                }
+            }
+        }
+    }
+    (rows, starts)
+}
+
 #[derive(Debug)]
 pub(super) struct Document {
     pub id: Id,
@@ -373,6 +570,9 @@ pub(super) struct Document {
     stages: Vec<u8>,
     pieces: Vec<Piece>,
     pub hunks: Vec<Vec<LinePair>>,
+    pub rows: Vec<Row>,
+    pub hunk_rows: Vec<usize>,
+    pub original: Original,
 }
 
 pub(crate) fn marker_width(repo: &Repository, path: &Path) -> Result<usize> {
@@ -423,14 +623,16 @@ fn parse(bytes: &[u8], width: usize) -> Result<(Vec<Piece>, Vec<Hunk>)> {
                 current = Some(end);
             }
             Some(b'|') if current.is_some() && ancestor.is_none() && incoming.is_none() => {
-                ancestor = Some(offset)
+                ancestor = Some((offset, end))
             }
             Some(b'=') if current.is_some() && incoming.is_none() => incoming = Some((offset, end)),
             Some(b'>') if current.is_some() && incoming.is_some() => {
                 let (split, start) = incoming.take().unwrap();
+                let ancestor: Option<(usize, usize)> = ancestor.take();
                 pieces.push(Piece::Hunk(hunks.len()));
                 hunks.push(Hunk {
-                    current: current.take().unwrap()..ancestor.take().unwrap_or(split),
+                    current: current.take().unwrap()..ancestor.map_or(split, |(marker, _)| marker),
+                    base: ancestor.map(|(_, after)| after..split),
                     incoming: start..offset,
                 });
                 shared = end;
@@ -462,6 +664,7 @@ impl Document {
         let ends_in_conflict =
             matches!(pieces.last(), Some(Piece::Shared(range)) if range.is_empty());
         let mut sides = 0;
+        let mut ids: [Option<String>; 3] = Default::default();
         for record in stages.split(|&b| b == 0).filter(|r| !r.is_empty()) {
             let header = record.split(|&b| b == b'\t').next().unwrap_or_default();
             let fields = header.split(|&b| b == b' ').collect::<Vec<_>>();
@@ -473,6 +676,13 @@ impl Document {
             }
             let oid = std::str::from_utf8(fields[1]).map_err(|e| e.to_string())?;
             validate_oid(oid)?;
+            let stage = match fields[2] {
+                b"1" => 0,
+                b"2" => 1,
+                b"3" => 2,
+                _ => return Err("The line resolver opens only regular files.".into()),
+            };
+            ids[stage] = Some(oid.to_owned());
             let size = checked(repo.read_command().args(["cat-file", "-s", oid]))?;
             if String::from_utf8_lossy(&size)
                 .trim()
@@ -517,14 +727,40 @@ impl Document {
                 "The line resolver needs a version from both sides.".into(),
             );
         }
+        let original = original(repo, &ids, width, &spread(&source, &pieces, &hunks));
+        let hunks: Vec<Vec<LinePair>> = hunks.into_iter().map(|hunk| align(&source, hunk)).collect();
+        let (rows, hunk_rows) = layout(&source, &pieces, &hunks);
         Ok(Self {
             id,
             path,
-            hunks: hunks.into_iter().map(|hunk| align(&source, hunk)).collect(),
+            hunks,
             source,
             stages,
             pieces,
+            rows,
+            hunk_rows,
+            original,
         })
+    }
+
+    pub fn on(&self, row: &Row, side: Side) -> Option<Range<usize>> {
+        match &row.place {
+            Place::Shared(range) => Some(range.clone()),
+            Place::Conflict { hunk, line } => self.hunks[*hunk][*line].on(side).map(|(_, range)| range.clone()),
+        }
+    }
+
+    pub fn side_text(&self, side: Side) -> (String, Vec<usize>) {
+        let mut text = String::new();
+        let mut starts = Vec::new();
+        for row in &self.rows {
+            if let Some(range) = self.on(row, side) {
+                starts.push(range.start);
+                text.push_str(plain(&self.source[range]));
+                text.push('\n');
+            }
+        }
+        (text, starts)
     }
 
     pub fn new_choices(&self) -> Choices {
@@ -540,16 +776,19 @@ impl Document {
     pub fn preview(&self, choices: &[Vec<Option<Choice>>]) -> Preview {
         let mut rows = Vec::new();
         let mut hunk_starts = Vec::new();
+        let mut sources = Vec::new();
         for piece in &self.pieces {
             match piece {
                 Piece::Shared(range) => {
-                    rows.extend(source_lines(&self.source, range.clone()).map(|range| {
-                        ResultRow::Text { range, side: None }
-                    }));
+                    for range in source_lines(&self.source, range.clone()) {
+                        sources.push(rows.len());
+                        rows.push(ResultRow::Text { range, side: None });
+                    }
                 }
                 Piece::Hunk(hunk) => {
                     hunk_starts.push(rows.len());
                     for (line, pair) in self.hunks[*hunk].iter().enumerate() {
+                        sources.push(rows.len());
                         if pair.shared {
                             let (_, range) = pair.current.as_ref().expect("shared line has both versions");
                             rows.push(ResultRow::Text { range: range.clone(), side: None });
@@ -566,7 +805,7 @@ impl Document {
                 }
             }
         }
-        Preview { rows, hunk_starts }
+        Preview { rows, hunk_starts, sources }
     }
 
     pub fn output(&self, choices: &[Vec<Option<Choice>>]) -> String {
@@ -888,6 +1127,9 @@ mod tests {
             pieces,
             hunks: hunks.into_iter().map(|hunk| align(text, hunk)).collect(),
             stages: vec![],
+            rows: Vec::new(),
+            hunk_rows: Vec::new(),
+            original: Original::Added,
         };
         assert_eq!(
             doc.output(&sides(&doc, &[Some(Side::Incoming)])),
@@ -931,7 +1173,7 @@ mod tests {
     #[test]
     fn alignment_keeps_common_lines_and_separates_both_missing_eof_newlines() {
         let source = "extra\r\nshared\r\ncurrent\r\nshared\r\nincoming\r\n";
-        let hunk = Hunk { current: 0.."extra\r\nshared\r\ncurrent".len(), incoming: "extra\r\nshared\r\ncurrent\r\n".len()..source.len() - 2 };
+        let hunk = Hunk { base: None, current: 0.."extra\r\nshared\r\ncurrent".len(), incoming: "extra\r\nshared\r\ncurrent\r\n".len()..source.len() - 2 };
         let rows = align(source, hunk);
         assert_eq!(rows.len(), 3);
         assert!(rows[0].incoming.is_none());
@@ -943,6 +1185,9 @@ mod tests {
             stages: vec![],
             pieces: vec![Piece::Hunk(0)],
             hunks: vec![rows],
+            rows: Vec::new(),
+            hunk_rows: Vec::new(),
+            original: Original::Added,
         };
         let choices = vec![vec![Some(Choice::Both), None, Some(Choice::Both)]];
         assert_eq!(doc.output(&choices), "extra\r\nshared\r\ncurrent\r\nincoming");
@@ -1317,5 +1562,110 @@ mod tests {
         assert_eq!(f.git(&["status", "--porcelain=v1"]), b" M notes.txt\n");
         assert_eq!(f.git(&["stash", "list"]), b"");
         assert!(crate::autostash::pending(&f.repo).is_none());
+    }
+
+    fn conflicted(base: &str, ours: &str, theirs: &str) -> (Fixture, Id) {
+        use crate::operation::tests::{commit, stops};
+        let f = Fixture::new();
+        commit(&f, "trail.txt", base, "Base");
+        f.git(&["switch", "-qc", "side"]);
+        commit(&f, "trail.txt", theirs, "Side");
+        f.git(&["switch", "-q", "main"]);
+        commit(&f, "trail.txt", ours, "Main");
+        stops(&f, &["merge", "side"]);
+        let id = snapshot(&f.repo).unwrap().unwrap().id;
+        (f, id)
+    }
+
+    fn numbered(count: usize) -> String {
+        (1..=count).map(|i| format!("line {i}\n")).collect()
+    }
+
+    #[test]
+    fn whole_sides_number_every_line_and_rebuild_each_side_of_the_file() {
+        let base = numbered(12);
+        let ours = base.replace("line 4\n", "Willow\n").replace("line 5\n", "Ford\n");
+        let theirs = base.replace("line 4\n", "Ridge\n").replace("line 5\n", "Ford\n").replace("line 10\n", "Camp\n");
+        let (f, id) = conflicted(&base, &ours, &theirs);
+        let index = f.git(&["ls-files", "--stage", "-z"]);
+        let file = fs::read(f.dir.join("trail.txt")).unwrap();
+        let doc = Document::open(&f.repo, id, "trail.txt".into()).unwrap();
+        assert_eq!(f.git(&["ls-files", "--stage", "-z"]), index);
+        assert_eq!(fs::read(f.dir.join("trail.txt")).unwrap(), file);
+        assert_eq!(doc.hunk_rows, [3]);
+        assert_eq!(doc.rows.len(), 12);
+        assert_eq!(doc.rows[3], Row { place: Place::Conflict { hunk: 0, line: 0 }, current: Some(4), incoming: Some(4) });
+        assert_eq!(doc.rows[11].number(Side::Current), Some(12));
+        assert_eq!(doc.rows[11].number(Side::Incoming), Some(12));
+        let text = |row: usize, side| doc.on(&doc.rows[row], side).map(|range| doc.source[range].to_owned());
+        assert_eq!(text(3, Side::Current).as_deref(), Some("Willow\n"));
+        assert_eq!(text(3, Side::Incoming).as_deref(), Some("Ridge\n"));
+        assert_eq!(text(9, Side::Current).as_deref(), Some("Camp\n"));
+        let (current, starts) = doc.side_text(Side::Current);
+        assert_eq!(current, doc.output(&sides(&doc, &[Some(Side::Current)])));
+        assert_eq!(starts.len(), 12);
+        assert_eq!(doc.side_text(Side::Incoming).0, theirs);
+        let mut choices = doc.new_choices();
+        assert_eq!(doc.preview(&choices).sources, (0..12).collect::<Vec<_>>());
+        choices[0][0] = Some(Choice::Both);
+        let preview = doc.preview(&choices);
+        assert_eq!(preview.sources.len(), doc.rows.len());
+        assert_eq!(&preview.sources[2..6], [2, 3, 5, 6]);
+        assert!(matches!(&preview.rows[preview.sources[11]], ResultRow::Text { range, .. } if &doc.source[range.clone()] == "line 12\n"));
+    }
+
+    #[test]
+    fn the_original_lines_of_a_conflict_come_from_the_common_ancestor() {
+        let base = numbered(12);
+        let ours = base.replace("line 4\n", "Willow\n").replace("line 5\n", "Ford\n");
+        let theirs = base.replace("line 4\n", "Ridge\n").replace("line 5\n", "Ford\n");
+        let (f, id) = conflicted(&base, &ours, &theirs);
+        let doc = Document::open(&f.repo, id, "trail.txt".into()).unwrap();
+        assert_eq!(doc.hunks[0].len(), 1);
+        assert_eq!(doc.original, Original::Found(vec![Some(vec!["line 4".into(), "line 5".into()])]));
+        assert_eq!(doc.original.lines(0), ["line 4", "line 5"]);
+        assert_eq!(doc.original.missing(0), None);
+
+        let ours = base.replace("line 3\n", "M3\n").replace("line 5\n", "M5\n");
+        let theirs = base.replace("line 3\n", "S3\n").replace("line 5\n", "S5\n").replace("line 11\n", "Spur\n");
+        let (f, id) = conflicted(&base, &ours, &theirs);
+        let doc = Document::open(&f.repo, id, "trail.txt".into()).unwrap();
+        assert_eq!(doc.hunks.len(), 1);
+        assert_eq!(doc.original.lines(0), ["line 3", "line 4", "line 5"]);
+
+        let (f, _, _, _) = divergent(Path::new("trail.txt"));
+        let id = snapshot(&f.repo).unwrap().unwrap().id;
+        let doc = Document::open(&f.repo, id, "trail.txt".into()).unwrap();
+        assert_eq!(doc.original, Original::Found(vec![Some(vec!["line 4".into()]), Some(vec!["line 22".into()])]));
+        assert_eq!(doc.source.lines().filter(|line| line.starts_with("|||||||||")).count(), 2);
+        assert_eq!(doc.on(&doc.rows[doc.hunk_rows[0]], Side::Current).map(|range| &doc.source[range]), Some("Willow bridge\n"));
+    }
+
+    #[test]
+    fn a_file_both_sides_added_has_no_original() {
+        use crate::operation::tests::{commit, stops};
+        let f = Fixture::new();
+        commit(&f, "README", "start\n", "Base");
+        f.git(&["switch", "-qc", "side"]);
+        commit(&f, "trail.txt", "Ridge\n", "Side");
+        f.git(&["switch", "-q", "main"]);
+        commit(&f, "trail.txt", "Willow\n", "Main");
+        stops(&f, &["merge", "side"]);
+        let id = snapshot(&f.repo).unwrap().unwrap().id;
+        let doc = Document::open(&f.repo, id, "trail.txt".into()).unwrap();
+        assert_eq!(doc.original, Original::Added);
+        assert!(doc.original.lines(0).is_empty());
+        assert!(doc.original.missing(0).unwrap().contains("Both sides added this file"));
+    }
+
+    #[test]
+    fn both_sides_adding_lines_where_the_original_had_none_says_so() {
+        let base = numbered(6);
+        let ours = base.replace("line 3\n", "line 3\nWillow\n");
+        let theirs = base.replace("line 3\n", "line 3\nRidge\n");
+        let (f, id) = conflicted(&base, &ours, &theirs);
+        let doc = Document::open(&f.repo, id, "trail.txt".into()).unwrap();
+        assert_eq!(doc.original, Original::Found(vec![Some(Vec::new())]));
+        assert!(doc.original.missing(0).unwrap().contains("no lines here"));
     }
 }

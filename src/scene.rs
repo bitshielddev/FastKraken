@@ -73,6 +73,12 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             clicks: 1,
             extend: false,
         })),
+        "conflictpick" => Some(Action::Text(crate::diff_select::Action::Press {
+            column: crate::diff_select::Column::Resolver(crate::find::Pane::Incoming),
+            spot: crate::diff_select::Spot { row: index, at: 4 },
+            clicks: 1,
+            extend: false,
+        })),
         "textto" => Some(Action::Text(crate::diff_select::Action::DragTo {
             spot: crate::diff_select::Spot { row: index, at: 6 },
             edge: crate::diff_select::Edge::Inside,
@@ -195,6 +201,8 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             .conflicted()
             .get(index)
             .map(|path| Action::Merge(merge::Action::Open(path.to_path_buf()))),
+        "wholeconflict" => Some(Action::Merge(merge::Action::WholeFile(true))),
+        "original" => Some(Action::Merge(merge::Action::ShowOriginal(true))),
         "abort" => Some(Action::Operation(crate::operation::Action::Abort)),
         "choose" => Some(Action::Merge(merge::Action::Choose(
             index,
