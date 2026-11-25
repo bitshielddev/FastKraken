@@ -25,6 +25,7 @@ pub(crate) const BINARY: &str = "This is a binary file, so it has no lines to bl
 pub(crate) const HINT: &str = "Click a line's annotation to see the commit that last changed it.";
 const NEVER_COMMITTED: &str = "This file has never been committed";
 const NO_COMMITS: &str = "There are no commits yet";
+const DELETED_IN_COMPARISON: &str = "This file is deleted on the newer side, so it has no lines to blame";
 const POLL: Duration = Duration::from_millis(40);
 const SEPARATOR_ALPHA: u8 = 0x26;
 const CHOSEN_ALPHA: u8 = 0x4c;
@@ -459,8 +460,13 @@ fn unavailable(ui: &Ui, path: &Path, side: &Side) -> Option<String> {
             let row = ui.files.iter().find(|row| row.path == path && row.staged == staged);
             row.is_some_and(|row| row.status == "Untracked").then(|| NEVER_COMMITTED.to_owned())
         }
+        Side::Compare(Rev::Commit(_)) if compared_deleted(ui, path) => Some(DELETED_IN_COMPARISON.to_owned()),
         Side::Commit(_) | Side::Stash(_) | Side::Compare(_) => None,
     }
+}
+
+fn compared_deleted(ui: &Ui, path: &Path) -> bool {
+    ui.compare.files.iter().any(|file| file.path == path && file.status == "Deleted")
 }
 
 fn deleted(file: Option<&crate::repository::ChangedFile>) -> bool {
@@ -474,9 +480,7 @@ pub(crate) fn request(ui: &Ui, path: &Path, side: &Side) -> Option<Request> {
         Side::Commit(oid) => At::Commit(oid.clone()),
         Side::Stash(oid) if deleted(ui.stash.file(oid, path)) => At::ParentOf(oid.clone()),
         Side::Stash(oid) => At::Commit(oid.clone()),
-        Side::Compare(Rev::Commit(_)) if ui.compare.files.iter().any(|file| file.path == path && file.status == "Deleted") => {
-            return None;
-        }
+        Side::Compare(Rev::Commit(_)) if compared_deleted(ui, path) => return None,
         Side::Compare(Rev::Commit(oid)) => At::Commit(oid.clone()),
         Side::Compare(Rev::WorkingTree) => At::Working,
     };

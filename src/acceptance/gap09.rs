@@ -205,6 +205,7 @@ impl Replay<'_> {
         record(&root, "trail.txt", "Trail\n", "Mark the trail")?;
         let trail = oid(&root, "HEAD")?;
         git(&root, &["mv", "camp.txt", "base.txt"])?;
+        git(&root, &["rm", "-q", "trail.txt"])?;
         git(&root, &["commit", "-qm", "Rename the camp"])?;
         record(&root, "lake.txt", "Map the lake\n", "Map the lake")?;
         let lake = oid(&root, "HEAD")?;
@@ -228,6 +229,11 @@ impl Replay<'_> {
         })?;
         if read != (Some(title.clone()), true) {
             return Err(format!("Picking down the graph reads {read:?}").into());
+        }
+        let gone = Target::File { path: "trail.txt".into(), side: Side::Compare(Rev::Commit(lake.clone())) };
+        let blame = self.menu_rows(&gone)?.into_iter().find(|row| row.0 == "file.blame").and_then(|row| row.2);
+        if blame.as_deref() != Some("This file is deleted on the newer side, so it has no lines to blame") {
+            return Err(format!("Blame on the deleted trail.txt reads {blame:?}").into());
         }
         self.open_compared("lake.txt", "+Map the lake").await?;
         self.action(Action::FileHistory(file_history::Action::OpenHere))?;
@@ -1047,6 +1053,17 @@ impl Replay<'_> {
         let unstaged = ["docs/intro.md", "src/application.rs", "src/lib.rs", "src/app/models/team.rs", "src/app/models/user.rs"];
         self.until("the models folder unstaged", |tab| files(tab, &["src/app/view.rs"], &unstaged)).await?;
         git_is(&root, &["diff", "--cached", "--name-only"], "src/app/view.rs\n")?;
+        let docs = Target::Folder { path: PathBuf::from("docs"), side: Side::Unstaged };
+        self.run_entry(&docs, "folder.discard", "Discard folder…").await?;
+        let (_, danger) = self.asked_about("Discard changes to intro.md?").await?;
+        if !danger {
+            return Err("Discarding the one-file docs folder asks without the danger style".into());
+        }
+        self.key("escape")?;
+        self.until("the discard prompt cancelled", |tab| !tab.ui.prompt.open()).await?;
+        if fs::read_to_string(root.join("docs/intro.md"))? != "second\n" {
+            return Err("Cancelling the folder discard changed docs/intro.md".into());
+        }
 
         self.run_entry(&working, "files.collapse-all", "Collapse all folders").await?;
         self.until("every folder folded", |tab| {

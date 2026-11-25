@@ -532,20 +532,24 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             if paths.is_empty() {
                 return;
             }
-            let action = match verb {
-                Verb::Stage => view::Action::Picked(crate::picked::Action::Stage(paths)),
-                Verb::Unstage => view::Action::Picked(crate::picked::Action::Unstage(paths)),
-                Verb::Discard => view::Action::Picked(crate::picked::Action::AskDiscard(paths)),
-                Verb::Stash => view::Action::Stash(crate::stash::Action::SaveFiles(paths)),
-                Verb::Ignore => view::Action::Ignore(crate::ignore::Action::Ignore {
-                    paths,
-                    rule: crate::ignore::Rule::Enclosing(path.components().count()),
-                }),
-            };
-            return tab.dispatch(action, window, cx);
+            return tab.dispatch(folder_call(&path, paths, verb), window, cx);
         }
     }
     cx.notify();
+}
+
+fn folder_call(folder: &Path, mut paths: Vec<PathBuf>, verb: Verb) -> view::Action {
+    match verb {
+        Verb::Stage => view::Action::Picked(crate::picked::Action::Stage(paths)),
+        Verb::Unstage => view::Action::Picked(crate::picked::Action::Unstage(paths)),
+        Verb::Discard if paths.len() == 1 => view::Action::AskDiscard(view::Discard::File(paths.remove(0))),
+        Verb::Discard => view::Action::Picked(crate::picked::Action::AskDiscard(paths)),
+        Verb::Stash => view::Action::Stash(crate::stash::Action::SaveFiles(paths)),
+        Verb::Ignore => view::Action::Ignore(crate::ignore::Action::Ignore {
+            paths,
+            rule: crate::ignore::Rule::Enclosing(folder.components().count()),
+        }),
+    }
 }
 
 fn panel_of(ui: &Ui, target: &Target) -> Option<Panel> {
@@ -1067,6 +1071,31 @@ mod tests {
         let tree = shape(Mode::Tree, Sort::Path, "", &none);
         assert_ne!(fingerprint(&files, &tree), fingerprint(&changed, &tree));
         assert_ne!(fingerprint(&files, &tree), fingerprint(&files, &shape(Mode::List, Sort::Path, "", &none)));
+    }
+
+    #[test]
+    fn discarding_a_folder_of_one_file_asks_about_that_file_and_a_larger_folder_lists_its_files() {
+        let folder = Path::new("docs");
+        let one = vec![PathBuf::from("docs/intro.md")];
+        match folder_call(folder, one.clone(), Verb::Discard) {
+            view::Action::AskDiscard(view::Discard::File(path)) => assert_eq!(path, one[0]),
+            other => panic!("one file asks {other:?}"),
+        }
+        let two = vec![PathBuf::from("docs/intro.md"), PathBuf::from("docs/notes.md")];
+        match folder_call(folder, two.clone(), Verb::Discard) {
+            view::Action::Picked(crate::picked::Action::AskDiscard(paths)) => assert_eq!(paths, two),
+            other => panic!("two files ask {other:?}"),
+        }
+        match folder_call(Path::new("src/app/models"), one.clone(), Verb::Ignore) {
+            view::Action::Ignore(crate::ignore::Action::Ignore { paths, rule }) => {
+                assert_eq!((paths, rule), (one.clone(), crate::ignore::Rule::Enclosing(3)))
+            }
+            other => panic!("ignoring asks {other:?}"),
+        }
+        match folder_call(folder, one.clone(), Verb::Stage) {
+            view::Action::Picked(crate::picked::Action::Stage(paths)) => assert_eq!(paths, one),
+            other => panic!("staging asks {other:?}"),
+        }
     }
 
     fn worktree() -> Fixture {
