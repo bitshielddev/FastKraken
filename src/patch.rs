@@ -355,11 +355,9 @@ impl Repository {
         let paths = match changes {
             Changes::All => Vec::new(),
             Changes::Unstaged(paths) | Changes::Staged(paths) if paths.is_empty() => return Err(format!("{NOTHING}.")),
-            Changes::Unstaged(paths) | Changes::Staged(paths) => paths.clone(),
+            Changes::Unstaged(paths) => self.with_origins(paths, false)?,
+            Changes::Staged(paths) => self.with_origins(paths, true)?,
         };
-        for path in &paths {
-            validate_path(path)?;
-        }
         if self.unmerged_among(&paths)? {
             return Err(format!("{CONFLICTED}."));
         }
@@ -464,9 +462,11 @@ pub(crate) fn subjects(patch: &[u8]) -> Vec<String> {
     let text = String::from_utf8_lossy(patch);
     let mut subjects = Vec::new();
     let mut in_headers = false;
+    let mut in_subject = false;
     for line in text.lines() {
         if is_mail_start(line) {
             in_headers = true;
+            in_subject = false;
             subjects.push(String::new());
             continue;
         }
@@ -475,20 +475,82 @@ pub(crate) fn subjects(patch: &[u8]) -> Vec<String> {
         }
         if line.is_empty() {
             in_headers = false;
+            in_subject = false;
+        } else if in_subject && line.starts_with([' ', '\t']) {
+            if let Some(last) = subjects.last_mut() {
+                last.push(' ');
+                last.push_str(line.trim_start());
+            }
         } else if let Some(subject) = line.strip_prefix("Subject: ") {
-            let subject = subject.trim();
-            let subject = match subject.strip_prefix('[') {
-                Some(rest) if rest.split(']').next().is_some_and(|tag| tag.starts_with("PATCH")) => {
-                    rest.split_once(']').map_or(subject, |(_, after)| after.trim_start())
-                }
-                _ => subject,
-            };
+            in_subject = true;
             if let Some(last) = subjects.last_mut() {
                 *last = subject.to_owned();
             }
+        } else {
+            in_subject = false;
         }
     }
-    if text.lines().next().is_some_and(is_mail_start) { subjects } else { Vec::new() }
+    if !text.lines().next().is_some_and(is_mail_start) {
+        return Vec::new();
+    }
+    subjects.iter().map(|raw| shown_subject(raw)).collect()
+}
+
+fn shown_subject(raw: &str) -> String {
+    let subject = decoded(raw);
+    let subject = subject.trim();
+    let subject = match subject.strip_prefix('[') {
+        Some(rest) if rest.split(']').next().is_some_and(|tag| tag.starts_with("PATCH")) => {
+            rest.split_once(']').map_or(subject, |(_, after)| after.trim_start())
+        }
+        _ => subject,
+    };
+    subject.to_owned()
+}
+
+fn decoded(header: &str) -> String {
+    let mut text = String::new();
+    let mut bytes = Vec::new();
+    for (index, word) in header.split(' ').enumerate() {
+        if let Some(decoded) = encoded_word(word) {
+            if index > 0 && bytes.is_empty() {
+                text.push(' ');
+            }
+            bytes.extend(decoded);
+            continue;
+        }
+        if !bytes.is_empty() {
+            text.push_str(&String::from_utf8_lossy(&std::mem::take(&mut bytes)));
+        }
+        if index > 0 {
+            text.push(' ');
+        }
+        text.push_str(word);
+    }
+    text.push_str(&String::from_utf8_lossy(&bytes));
+    text
+}
+
+fn encoded_word(word: &str) -> Option<Vec<u8>> {
+    let inner = word.strip_prefix("=?")?.strip_suffix("?=")?;
+    let mut parts = inner.splitn(3, '?');
+    let (_, encoding, data) = (parts.next()?, parts.next()?, parts.next()?);
+    if !encoding.eq_ignore_ascii_case("q") {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let mut raw = data.bytes();
+    while let Some(byte) = raw.next() {
+        match byte {
+            b'_' => bytes.push(b' '),
+            b'=' => {
+                let pair = [raw.next()?, raw.next()?];
+                bytes.push(u8::from_str_radix(std::str::from_utf8(&pair).ok()?, 16).ok()?);
+            }
+            other => bytes.push(other),
+        }
+    }
+    Some(bytes)
 }
 
 fn is_mail_start(line: &str) -> bool {
@@ -1177,5 +1239,43 @@ mod tests {
         assert_eq!(conflicting("Applied patch to 'a.txt' cleanly.\nApplied patch to 'b c.txt' with conflicts.\nU b c.txt\n"), ["b c.txt"]);
         assert_eq!(slug("Raise the ridge: part 2/3!"), "Raise-the-ridge-part-2-3");
         assert_eq!(slug("..."), "");
+    }
+
+    #[test]
+    fn subjects_read_long_and_unicode_subjects_as_the_commits_have_them() {
+        let f = Fixture::new();
+        commit(&f, "camp.txt", "Camp\n", "Pitch the camp");
+        let long = "Mark the trail from the car park to the high ridge and on past the lake to the shore";
+        let unicode = "Café by the lake: crème brûlée =?ok?= and under_scores, ünïcode all the way down to the water";
+        let first = commit(&f, "trail.txt", "Trail\n", long);
+        let second = commit(&f, "lake.txt", "Lake\n", unicode);
+        let one = f.git(&["format-patch", "-1", "--stdout", &second]);
+        assert!(String::from_utf8_lossy(&one).contains("=?UTF-8?q?"));
+        assert_eq!(subjects(&one), [unicode]);
+        let two = f.git(&["format-patch", "--stdout", &format!("{first}^..{second}")]);
+        assert!(String::from_utf8_lossy(&two).lines().any(|line| line.starts_with(' ')));
+        assert_eq!(subjects(&two), [long, unicode]);
+        assert_eq!(decoded("=?UTF-8?q?Caf=C3?= =?UTF-8?q?=A9?= au lait"), "Café au lait");
+        assert_eq!(decoded("=?UTF-8?b?Q2Fmw6k=?="), "=?UTF-8?b?Q2Fmw6k=?=");
+        assert_eq!(decoded("plain =?broken"), "plain =?broken");
+    }
+
+    #[test]
+    fn a_staged_rename_saves_with_its_old_path_removed() {
+        let f = Fixture::new();
+        commit(&f, "old map.txt", "Trail\nRidge\nLake\nShore\n", "Draw the map");
+        let start = oid(&f, "HEAD");
+        f.git(&["mv", "old map.txt", "maps é.txt"]);
+        let before = state(&f);
+        let out = tempfile::tempdir().unwrap();
+        let path = out.path().join("renamed.patch");
+        f.repo.save_patch(&Source::Changes(Changes::Staged(vec!["maps é.txt".into()])), &path).unwrap();
+        assert_eq!(state(&f), before);
+        f.git(&["reset", "-q", "--hard", &start]);
+        let checked = f.repo.check_patch(&fs::read(&path).unwrap()).unwrap();
+        assert!(checked.files.contains(&PathBuf::from("maps é.txt")));
+        let applied = f.repo.command().args(["apply", "--index"]).arg(&path).output().unwrap();
+        assert!(applied.status.success());
+        assert_eq!(text(&f, &["ls-files", "-z"]), "maps é.txt\0");
     }
 }
