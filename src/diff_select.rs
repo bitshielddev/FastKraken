@@ -280,12 +280,53 @@ pub(crate) fn file_of(ui: &Ui, row: usize) -> Option<PathBuf> {
 }
 
 pub(crate) fn header_path(header: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
     let rest = header.strip_prefix("diff --git ")?;
-    let path = match rest.rsplit_once(" \"b/") {
-        Some((_, quoted)) => quoted.strip_suffix('"')?,
-        None => rest.rsplit_once(" b/")?.1,
+    let path = if rest.ends_with('"') {
+        let start = rest.rfind(" \"b/")? + 1;
+        unquoted(&rest[start..])?.strip_prefix(b"b/")?.to_vec()
+    } else {
+        let same = rest.strip_prefix("a/").and_then(|both| {
+            let length = both.len().checked_sub(3)? / 2;
+            let (old, new) = (both.get(..length)?, both.get(length..)?);
+            (new.strip_prefix(" b/")? == old).then_some(old)
+        });
+        match same {
+            Some(path) => path,
+            None => rest.rsplit_once(" b/")?.1,
+        }
+        .as_bytes()
+        .to_vec()
     };
-    (!path.is_empty()).then(|| PathBuf::from(path))
+    (!path.is_empty()).then(|| PathBuf::from(std::ffi::OsString::from_vec(path)))
+}
+
+fn unquoted(quoted: &str) -> Option<Vec<u8>> {
+    let mut bytes = quoted.strip_prefix('"')?.strip_suffix('"')?.bytes();
+    let mut path = Vec::new();
+    while let Some(byte) = bytes.next() {
+        if byte != b'\\' {
+            path.push(byte);
+            continue;
+        }
+        let escaped = bytes.next()?;
+        path.push(match escaped {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b't' => b'\t',
+            b'n' => b'\n',
+            b'v' => 0x0b,
+            b'f' => 0x0c,
+            b'r' => b'\r',
+            b'0'..=b'3' => {
+                let (middle, low) = (bytes.next()?, bytes.next()?);
+                let digit = |byte: u8| matches!(byte, b'0'..=b'7').then(|| byte - b'0');
+                (escaped - b'0') * 64 + digit(middle)? * 8 + digit(low)?
+            }
+            other => other,
+        });
+    }
+    Some(path)
 }
 
 pub(crate) fn code_target(ui: &Ui, row: usize, at: u32) -> Option<Target> {
@@ -678,7 +719,38 @@ mod tests {
         assert_eq!(header_path("diff --git a/src/log b/src/log"), Some(PathBuf::from("src/log")));
         assert_eq!(header_path("diff --git \"a/my log\" \"b/my log\""), Some(PathBuf::from("my log")));
         assert_eq!(header_path("diff --git a/x b/"), None);
+        assert_eq!(header_path("diff --git \"a/caf\\303\\251.txt\" \"b/caf\\303\\251.txt\""), Some(PathBuf::from("café.txt")));
+        assert_eq!(header_path("diff --git \"a/tab\\tname\" \"b/tab\\tname\""), Some(PathBuf::from("tab\tname")));
+        assert_eq!(header_path("diff --git a/x b/y.txt b/x b/y.txt"), Some(PathBuf::from("x b/y.txt")));
+        assert_eq!(header_path("diff --git a/old name b/new name"), Some(PathBuf::from("new name")));
+        assert_eq!(header_path("diff --git \"a/\\\"quote\\\\\" b/plain"), Some(PathBuf::from("plain")));
         assert_eq!(header_path("@@ -1 +1 @@"), None);
+    }
+
+    #[test]
+    fn every_file_of_a_real_commit_diff_is_named_by_its_header() {
+        let f = crate::repository::tests::Fixture::new();
+        let names = ["café.txt", "tab\tname.txt", "x b/y.txt", "quote\"d.txt", "plain.txt"];
+        for name in names {
+            let path = f.dir.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "shore\n").unwrap();
+        }
+        f.git(&["add", "-A"]);
+        f.git(&["commit", "-qm", "Name the files"]);
+        let head = f.git(&["rev-parse", "HEAD"]);
+        let diff = f.repo.commit_diff(String::from_utf8_lossy(&head).trim()).unwrap();
+        let shown = doc(&diff.text);
+        let mut found: Vec<PathBuf> = shown
+            .lines
+            .iter()
+            .filter(|line| line.kind == Kind::File)
+            .filter_map(|line| header_path(shown.text(line)))
+            .collect();
+        found.sort();
+        let mut expected: Vec<PathBuf> = names.iter().map(PathBuf::from).collect();
+        expected.sort();
+        assert_eq!(found, expected);
     }
 
     #[test]

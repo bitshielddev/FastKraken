@@ -1237,12 +1237,12 @@ impl Replay<'_> {
             crate::diff_select::code_target(&tab.ui, row, 2)
         })?;
         let line = line.ok_or("The diff has no row for line 2")?;
-        let rows: Vec<(String, String)> = self
-            .menu_rows(&line)?
-            .into_iter()
-            .filter(|row| row.0.starts_with("file."))
-            .map(|row| (row.0.to_owned(), row.1))
-            .collect();
+        let rows: Vec<(&str, String, Option<String>)> =
+            self.menu_rows(&line)?.into_iter().filter(|row| row.0.starts_with("file.")).collect();
+        if let Some(row) = rows.iter().find(|row| row.2.is_some()) {
+            return Err(format!("{} is disabled: {:?}", row.0, row.2).into());
+        }
+        let rows: Vec<(String, String)> = rows.into_iter().map(|row| (row.0.to_owned(), row.1)).collect();
         let expected = [
             ("file.edit", "Open in VS Code at line 2"),
             ("file.reveal", "Reveal in Finder"),
