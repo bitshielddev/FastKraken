@@ -50,9 +50,8 @@ pub(crate) struct GraphView {
 }
 
 fn exact_glob(name: &str) -> String {
-    let mut chars = name.chars();
-    match chars.next_back() {
-        Some(last) => format!("--glob={}[{last}]", chars.as_str()),
+    match name.char_indices().rev().find(|(_, c)| c.is_ascii_alphanumeric()) {
+        Some((at, c)) => format!("--glob={}[{c}]{}", &name[..at], &name[at + 1..]),
         None => format!("--glob={name}"),
     }
 }
@@ -104,6 +103,7 @@ impl GraphView {
             args.push("--all".into());
         }
         if self.filtered() {
+            args.push("--ignore-missing".into());
             args.push("HEAD".into());
         }
         args
@@ -744,7 +744,15 @@ pub(crate) const COMMANDS: &[Command] = &[
         "graph.author",
         Group::View,
         |_, _| "Filter by author…".into(),
-        |ui, target, _| if on_repo(ui, target) { Availability::Enabled } else { Availability::Hidden },
+        |ui, target, _| {
+            if !on_repo(ui, target) {
+                Availability::Hidden
+            } else if view::centre(ui) != view::Centre::History {
+                Availability::Disabled("Show the graph first".to_owned())
+            } else {
+                Availability::Enabled
+            }
+        },
         |_, _| Some(view::Action::GraphView(Action::OpenAuthors)),
     )
     .words(&["graph", "commits by", "dim"])
@@ -798,6 +806,7 @@ mod tests {
                 "--exclude=refs/remotes/origin/*",
                 "--exclude=refs/stash",
                 "--all",
+                "--ignore-missing",
                 "HEAD"
             ]
         );
@@ -817,6 +826,7 @@ mod tests {
                 "--glob=refs/heads/feature/[x]",
                 "--exclude=refs/remotes/origin/old",
                 "--glob=refs/remotes/origin/*",
+                "--ignore-missing",
                 "HEAD"
             ]
         );
@@ -825,9 +835,9 @@ mod tests {
     #[test]
     fn only_the_current_branch_lists_head_and_its_upstream() {
         let mut view = GraphView { only_current: true, solo: set(&["refs/heads/x"]), ..GraphView::default() };
-        assert_eq!(args(&view), ["HEAD"]);
+        assert_eq!(args(&view), ["--ignore-missing", "HEAD"]);
         view.upstream = Some("refs/remotes/origin/main".into());
-        assert_eq!(args(&view), ["--glob=refs/remotes/origin/mai[n]", "HEAD"]);
+        assert_eq!(args(&view), ["--glob=refs/remotes/origin/mai[n]", "--ignore-missing", "HEAD"]);
     }
 
     #[test]
@@ -934,6 +944,46 @@ mod tests {
         assert_eq!(subjects(&tag), set(&["Side only", "Main only", "Base"]));
         assert_eq!((head(&f, "main"), head(&f, "side"), head(&f, "sidecar")), before);
         assert_eq!(f.git(&["status", "--porcelain"]), b"");
+    }
+
+    #[test]
+    fn a_filtered_view_still_lists_history_while_head_is_an_unborn_branch() {
+        let f = Fixture::new();
+        f.git(&["commit", "--allow-empty", "-qm", "Base"]);
+        f.git(&["switch", "-qc", "side"]);
+        f.git(&["commit", "--allow-empty", "-qm", "Side only"]);
+        f.git(&["switch", "-q", "--orphan", "fresh"]);
+        let subjects = |view: &GraphView| -> BTreeSet<String> {
+            f.repo.history_in(view, 0, 10).unwrap().into_iter().map(|row| row.subject).collect()
+        };
+        assert_eq!(subjects(&GraphView { hidden: set(&["refs/heads/side"]), ..GraphView::default() }), set(&["Base"]));
+        assert_eq!(subjects(&GraphView { solo: set(&["refs/heads/side"]), ..GraphView::default() }), set(&["Side only", "Base"]));
+        assert_eq!(subjects(&GraphView { only_current: true, ..GraphView::default() }), BTreeSet::new());
+        let side = head(&f, "side");
+        let at = f.repo.positions(&GraphView { hidden: set(&[TAGS]), ..GraphView::default() }.history_args(), &[side.clone()].into(), &std::sync::atomic::AtomicBool::new(false));
+        assert_eq!(at.unwrap().get(&side), Some(&0));
+    }
+
+    #[test]
+    fn soloing_a_branch_whose_name_ends_in_punctuation_or_an_accent_lists_its_history() {
+        let f = Fixture::new();
+        f.git(&["commit", "--allow-empty", "-qm", "Base"]);
+        for name in ["café", "wow!", "fix]", "cafés"] {
+            f.git(&["switch", "-qc", name, "main"]);
+            f.git(&["commit", "--allow-empty", "-qm", &format!("On {name}")]);
+        }
+        f.git(&["switch", "-q", "main"]);
+        let subjects = |view: &GraphView| -> BTreeSet<String> {
+            f.repo.history_in(view, 0, 10).unwrap().into_iter().map(|row| row.subject).collect()
+        };
+        for name in ["café", "wow!", "fix]"] {
+            let solo = GraphView { solo: set(&[&format!("{BRANCHES}{name}")]), ..GraphView::default() };
+            assert_eq!(subjects(&solo), set(&[&format!("On {name}"), "Base"]), "{name}");
+        }
+        assert_eq!(args(&GraphView { solo: set(&["refs/heads/café"]), ..GraphView::default() })[0], "--glob=refs/heads/ca[f]é");
+        let mut current = GraphView { only_current: true, ..GraphView::default() };
+        current.upstream = Some(format!("{BRANCHES}wow!"));
+        assert_eq!(subjects(&current), set(&["On wow!", "Base"]));
     }
 
     #[test]

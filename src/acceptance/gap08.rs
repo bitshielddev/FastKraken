@@ -1218,7 +1218,21 @@ impl Replay<'_> {
         })
         .await?;
 
-        self.action(Action::GraphView(graph_view::Action::OpenAuthors))?;
+        self.action(Action::Run("view.activity"))?;
+        self.until("the activity log covering the graph", |tab| view::centre(&tab.ui) == view::Centre::Activity).await?;
+        let covered = self.tab.read_with(self.cx, |tab, cx| {
+            commands::find("graph.author").and_then(|command| commands::entry(command, &tab.ui, &Target::Repo, cx)).map(|entry| entry.disabled)
+        })?;
+        if covered != Some(Some("Show the graph first".to_owned())) {
+            return Err(format!("With the graph covered Filter by author reads {covered:?}").into());
+        }
+        self.action(Action::Run("graph.author"))?;
+        self.action(Action::Run("view.activity"))?;
+        self.until("the graph back with the author filter still closed", |tab| {
+            view::centre(&tab.ui) == view::Centre::History && !tab.ui.author_picker.open()
+        })
+        .await?;
+        self.action(Action::Run("graph.author"))?;
         self.until("the author filter open", |tab| tab.ui.author_picker.open()).await?;
         self.tab.update(self.cx, |tab, window, cx| {
             tab.ui.author_picker.filter.update(cx, |field, cx| field.replace_text_in_range(None, "juni", window, cx))
