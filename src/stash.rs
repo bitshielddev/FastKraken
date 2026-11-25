@@ -1345,7 +1345,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
                             selected(tab, None, cx);
                             tab.clear_diff();
                             tab.ui.selection = None;
-                            tab.select_head = true;
+                            tab.follow = crate::Follow::Head;
                             tab.load_status(cx);
                         }
                     }

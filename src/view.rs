@@ -141,6 +141,9 @@ pub enum Menu {
         at: Point<Pixels>,
     },
     CommitActions,
+    Changes {
+        at: Point<Pixels>,
+    },
     Object {
         target: crate::commands::Target,
         at: Point<Pixels>,
@@ -167,7 +170,8 @@ impl Surface {
             (Self::Menu(open), Action::Menu(Some(menu))) => match (open, menu) {
                 (Menu::Repo, Menu::Repo)
                 | (Menu::CommitActions, Menu::CommitActions)
-                | (Menu::Remotes { .. }, Menu::Remotes { .. }) => true,
+                | (Menu::Remotes { .. }, Menu::Remotes { .. })
+                | (Menu::Changes { .. }, Menu::Changes { .. }) => true,
                 (Menu::Labels { oid: open, .. }, Menu::Labels { oid, .. }) => open == oid,
                 _ => false,
             },
@@ -244,6 +248,9 @@ pub use crate::notice::Tone;
 
 pub(crate) const REPO_MENU: &[&str] =
     &["repo.open", "repo.close", "repo.refresh", "repo.reveal", "repo.terminal", "repo.editor", "repo.labels"];
+
+pub(crate) const CHANGES_MENU: &[&str] =
+    &["repo.stage-all", "repo.unstage-all", "repo.stash", "repo.stash-options", "repo.discard-all"];
 
 pub(crate) const COMMANDS: &[crate::commands::Command] = {
     use crate::commands::{Availability, Bar, Command, Group, Side, Target, busy, operating, on_repo};
@@ -1726,6 +1733,15 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                             .child(kit::fit(summary).size(TEXT_SMALL).color(TEXT_3).grow()),
                     )
                     .on_click(cx.listener(|app, _, w, cx| select(app, Selection::Changes, w, cx)))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|app, event: &MouseDownEvent, w, cx| {
+                            if !app.ui().working() {
+                                select(app, Selection::Changes, w, cx);
+                            }
+                            app.dispatch(Action::Menu(Some(Menu::Changes { at: event.position })), w, cx);
+                        }),
+                    )
         })
         .when(!unborn(ui), |d| d.child(list).child(kit::scrollbar("history-scrollbar", &ui.history_scroll)))
         .when(unborn(ui), |d| {
@@ -2138,6 +2154,7 @@ fn context_menu<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoElemen
     let open = ui.menu.as_ref()?;
     let (at, width) = match open {
         Menu::Remotes { at } => (*at, 230.),
+        Menu::Changes { at } => (*at, 230.),
         Menu::Object { target, at } => (
             *at,
             match target {

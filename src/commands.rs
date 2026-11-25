@@ -438,6 +438,7 @@ pub(crate) fn entries_of(ui: &Ui, open: &view::Menu, cx: &App) -> Vec<Entry> {
             rows
         }
         Menu::Remotes { .. } => listed(ui, &Target::Repo, crate::publish::REMOTES_MENU, cx),
+        Menu::Changes { .. } => listed(ui, &Target::Repo, view::CHANGES_MENU, cx),
         Menu::CommitActions => match &ui.selection {
             Some(Selection::Commit(oid)) => menu(ui, &Target::Commit(oid.clone()), cx),
             _ => Vec::new(),
@@ -942,7 +943,7 @@ mod tests {
 
     #[test]
     fn hand_picked_menus_name_real_commands() {
-        for id in view::REPO_MENU.iter().chain(crate::publish::REMOTES_MENU) {
+        for id in view::REPO_MENU.iter().chain(crate::publish::REMOTES_MENU).chain(view::CHANGES_MENU) {
             assert!(find(id).is_some(), "{id} is not in the command table");
         }
     }

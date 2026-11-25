@@ -441,7 +441,7 @@ pub(crate) fn run(tab: &mut Tab, step: Move, stash: bool, cx: &mut Context<Tab>)
         done,
         true,
         move |repo| step.run(&repo, stash, &kept),
-        |_, _| {},
+        |tab, _| tab.follow = crate::Follow::ChangesOrHead,
         move |tab, _| stopped.remember(&mut tab.ui),
     );
 }

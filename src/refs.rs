@@ -782,7 +782,7 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
                 .find(|item| item.kind == kind && item.name == name)
                 .and_then(|item| item.oid.clone());
             if let Some(oid) = oid {
-                tab.select_head = false;
+                tab.follow = crate::Follow::Nothing;
                 tab.ui.scroll_to_commit(&oid);
                 tab.ui.diff_open = false;
                 tab.select(Selection::Commit(oid), cx);
@@ -812,6 +812,7 @@ pub(crate) fn switch_to(tab: &mut Tab, name: OsString, stash: bool, window: &mut
         true,
         move |repo| switched(&repo, &name, stash, &kept),
         |tab, _| {
+            tab.follow = crate::Follow::ChangesOrHead;
             tab.ui.refs.list_open = false;
             tab.ui.refs.draft = None;
         },
@@ -893,6 +894,9 @@ fn submit(
             })
         },
         move |tab, cx| {
+            if checkout {
+                tab.follow = crate::Follow::ChangesOrHead;
+            }
             tab.ui.refs.draft = None;
             tab.ui.refs.list_open = false;
             if let Some((name, remote)) = pushed {

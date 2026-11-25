@@ -78,7 +78,8 @@ impl Replay<'_> {
         self.skip_hooks(dir).await?;
         self.commit_and_push(dir).await?;
         self.commit_template(dir).await?;
-        self.restore_from_a_stash(dir).await
+        self.restore_from_a_stash(dir).await?;
+        self.switch_carrying_changes(dir).await
     }
 
     async fn asked_about(&mut self, title: &str) -> Result<(Vec<String>, bool)> {
@@ -1143,6 +1144,172 @@ impl Replay<'_> {
         }
         others()?;
         git_is(&root, &["stash", "list", "--format=%H"], &format!("{saved}\n"))?;
+        self.pass();
+        Ok(())
+    }
+
+    fn changes_menu(&mut self) -> Result<Vec<(&'static str, String, Option<String>)>> {
+        self.action(Action::Menu(Some(view::Menu::Changes { at: gpui::Point::default() })))?;
+        let open = self.tab.read_with(self.cx, |tab, _| matches!(tab.ui.menu, Some(view::Menu::Changes { .. })))?;
+        if !open {
+            return Err("Right-clicking the uncommitted row opened no menu".into());
+        }
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            commands::entries_of(&tab.ui, &view::Menu::Changes { at: gpui::Point::default() }, cx)
+                .into_iter()
+                .map(|entry| (entry.id, entry.title, entry.disabled))
+                .collect()
+        })?)
+    }
+
+    fn choose_on_changes(&mut self, id: &str) -> Result<()> {
+        let chosen = self.tab.read_with(self.cx, |tab, cx| {
+            commands::entries_of(&tab.ui, &view::Menu::Changes { at: gpui::Point::default() }, cx)
+                .into_iter()
+                .find(|entry| entry.id == id)
+                .and_then(|entry| entry.action)
+        })?;
+        let action = chosen.ok_or_else(|| format!("The uncommitted row's menu has no enabled {id}"))?;
+        self.action(Action::Menu(None))?;
+        self.action(action)
+    }
+
+    async fn switch_carrying_changes(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0615");
+        let (root, bare, peer) = super::gap04::published(dir, "Carry-on")?;
+        record(&root, "camp.txt", "Camp: by the lake\n", "Pitch the camp")?;
+        git(&root, &["push", "-q", "origin", "main"])?;
+        git(&root, &["switch", "-q", "-c", "ridge"])?;
+        record(&root, "ridge.txt", "Ridge: windy\n", "Walk the ridge")?;
+        let ridge = oid(&root, "ridge")?;
+        git(&root, &["switch", "-q", "main"])?;
+        let main = oid(&root, "main")?;
+        fs::write(root.join("camp.txt"), "Camp: by the lake, tent up\n")?;
+        fs::write(root.join("trail.txt"), "FastKraken: git for the impatient, and the patient\n")?;
+        git(&root, &["add", "--", "trail.txt"])?;
+        fs::write(root.join("pack é.txt"), "Pack: water\n")?;
+        let carried = " M camp.txt\nM  trail.txt\n?? \"pack \\303\\251.txt\"\n";
+        git_is(&root, &["status", "--porcelain=v1"], carried)?;
+        self.open(&root)?;
+        self.until("Carry-on open on main with its HEAD commit selected", |tab| {
+            tab.ui.repo == "Carry-on"
+                && tab.ui.branch == "main"
+                && tab.ui.selection == Some(Selection::Commit(main.clone()))
+                && tab.ui.refs.local(std::ffi::OsStr::new("ridge")).is_some()
+                && files(tab, &["trail.txt"], &["camp.txt", "pack é.txt"])
+        })
+        .await?;
+
+        self.action(Action::Refs(refs::Action::Switch("ridge".into())))?;
+        self.until("ridge checked out with the uncommitted row selected", |tab| {
+            tab.ui.branch == "ridge"
+                && tab.ui.head.as_deref() == Some(ridge.as_str())
+                && tab.ui.selection == Some(Selection::Changes)
+                && !tab.ui.diff_open
+                && files(tab, &["trail.txt"], &["camp.txt", "pack é.txt"])
+        })
+        .await?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/ridge\n")?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{ridge}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1"], carried)?;
+
+        let rows = self.changes_menu()?;
+        let expected = [
+            ("repo.stage-all", "Stage all"),
+            ("repo.unstage-all", "Unstage all"),
+            ("repo.stash", "Stash changes"),
+            ("repo.stash-options", "Stash with a message…"),
+            ("repo.discard-all", "Discard all changes…"),
+        ];
+        if rows.len() != expected.len()
+            || rows.iter().zip(expected).any(|(row, (id, title))| row.0 != id || row.1 != title || row.2.is_some())
+        {
+            return Err(format!("The uncommitted row's menu lists {rows:?}").into());
+        }
+        self.choose_on_changes("repo.stage-all")?;
+        self.until("everything staged from the row's menu", |tab| {
+            !tab.ui.busy() && tab.ui.menu.is_none() && files(tab, &["camp.txt", "pack é.txt", "trail.txt"], &[])
+        })
+        .await?;
+        git_is(&root, &["status", "--porcelain=v1"], "M  camp.txt\nA  \"pack \\303\\251.txt\"\nM  trail.txt\n")?;
+        self.changes_menu()?;
+        self.choose_on_changes("repo.stash")?;
+        self.until("the changes stashed from the row's menu", |tab| {
+            !tab.ui.busy() && tab.ui.files.is_empty() && tab.ui.stash.entries.len() == 1
+        })
+        .await?;
+        git_is(&root, &["status", "--porcelain=v1"], "")?;
+        if git(&root, &["stash", "list"])?.lines().count() != 1 {
+            return Err("Stashing from the row's menu did not make exactly one stash".into());
+        }
+        git_is(&root, &["show", "stash@{0}:camp.txt"], "Camp: by the lake, tent up\n")?;
+        git_is(&root, &["show", "stash@{0}:pack é.txt"], "Pack: water\n")?;
+        let menu = self.changes_menu()?;
+        let clean = |id: &str| menu.iter().find(|row| row.0 == id).and_then(|row| row.2.clone());
+        if clean("repo.stage-all").as_deref() != Some("Nothing to stage")
+            || clean("repo.discard-all").as_deref() != Some("There are no changes to discard")
+        {
+            return Err(format!("With a clean tree the uncommitted row's menu lists {menu:?}").into());
+        }
+        self.action(Action::Menu(None))?;
+
+        self.action(Action::Refs(refs::Action::Switch("main".into())))?;
+        self.until("main checked out with a clean tree and its HEAD commit selected", |tab| {
+            tab.ui.branch == "main"
+                && tab.ui.head.as_deref() == Some(main.as_str())
+                && tab.ui.selection == Some(Selection::Commit(main.clone()))
+                && tab.ui.files.is_empty()
+        })
+        .await?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
+
+        fs::write(root.join("notes.txt"), "Notes: start early\n")?;
+        self.until("the new note listed", |tab| files(tab, &[], &["notes.txt"])).await?;
+        self.action(Action::Branch(crate::branch::Action::Detach { oid: ridge.clone(), tag: None }))?;
+        self.until("ridge's commit checked out with the uncommitted row selected", |tab| {
+            tab.ui.detached
+                && tab.ui.head.as_deref() == Some(ridge.as_str())
+                && tab.ui.selection == Some(Selection::Changes)
+                && files(tab, &[], &["notes.txt"])
+        })
+        .await?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{ridge}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1"], "?? notes.txt\n")?;
+
+        self.action(Action::Select(Selection::Commit(ridge.clone())))?;
+        self.action(Action::Refs(refs::Action::Switch("main".into())))?;
+        self.until("main checked out again with the note carried", |tab| {
+            tab.ui.branch == "main" && !tab.ui.detached && tab.ui.selection == Some(Selection::Changes)
+        })
+        .await?;
+        git(&peer, &["pull", "-q", "--ff-only", path(&bare)?, "main"])?;
+        record(&peer, "summit.txt", "Summit: cairn\n", "Mark the summit")?;
+        git(&peer, &["push", "-q", path(&bare)?, "main"])?;
+        let summit = oid(&peer, "HEAD")?;
+        self.action(Action::Select(Selection::Commit(main.clone())))?;
+        self.until("main's commit selected", |tab| tab.ui.selection == Some(Selection::Commit(main.clone()))).await?;
+        self.action(Action::Sync(crate::sync::Action::Pull))?;
+        self.until("the pull done with the uncommitted row selected", |tab| {
+            tab.ui.head.as_deref() == Some(summit.as_str())
+                && tab.ui.notices.newest().is_some_and(|notice| notice.title == "Pulled Successfully")
+                && tab.ui.selection == Some(Selection::Changes)
+                && files(tab, &[], &["notes.txt"])
+        })
+        .await?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{summit}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1"], "?? notes.txt\n")?;
+
+        fs::remove_file(root.join("notes.txt"))?;
+        self.until("the tree clean again", |tab| tab.ui.files.is_empty()).await?;
+        self.action(Action::Select(Selection::Changes))?;
+        self.action(Action::Branch(crate::branch::Action::Detach { oid: ridge.clone(), tag: None }))?;
+        self.until("ridge's commit checked out from a clean tree with it selected", |tab| {
+            tab.ui.detached
+                && tab.ui.head.as_deref() == Some(ridge.as_str())
+                && tab.ui.selection == Some(Selection::Commit(ridge.clone()))
+        })
+        .await?;
+        git_is(&root, &["status", "--porcelain=v1"], "")?;
         self.pass();
         Ok(())
     }

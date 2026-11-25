@@ -860,7 +860,7 @@ fn pull_with(tab: &mut Tab, seen: Option<String>, strategy: Strategy, stash: boo
                     false => Failure { text: format!("Pull Failed — {}", err.text), ..err },
                 })
         },
-        |_, _| {},
+        |tab, _| tab.follow = crate::Follow::ChangesOrHead,
         move |tab, _| {
             if let Some((oid, label)) = started.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 tab.ui.operation.started = Some((crate::operation::Kind::Rebase, oid, label));

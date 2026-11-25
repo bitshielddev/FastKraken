@@ -108,6 +108,9 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             (argument == "reads").then_some(Action::Activity(crate::activity::Action::ToggleReads))
         }
         "repo" => Some(Action::Menu(Some(Menu::Repo))),
+        "changesmenu" => Some(Action::Menu(Some(Menu::Changes {
+            at: gpui::point(px(520.), px(96.)),
+        }))),
         "labels" => tab.ui.history.get(index).map(|row| {
             Action::Menu(Some(Menu::Labels {
                 oid: row.oid.clone(),

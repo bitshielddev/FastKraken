@@ -76,6 +76,35 @@ use view::{
 
 const PAGE: usize = 250;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Follow {
+    #[default]
+    Nothing,
+    Head,
+    ChangesOrHead,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Landing {
+    Head,
+    Changes,
+}
+
+impl Follow {
+    fn head_if(select_head: bool) -> Self {
+        if select_head { Self::Head } else { Self::Nothing }
+    }
+
+    fn landing(self, carried: bool) -> Option<Landing> {
+        match self {
+            Self::Nothing => None,
+            Self::Head => Some(Landing::Head),
+            Self::ChangesOrHead if carried => Some(Landing::Changes),
+            Self::ChangesOrHead => Some(Landing::Head),
+        }
+    }
+}
+
 struct Tab {
     ui: Ui,
     repo: Option<Repository>,
@@ -89,7 +118,7 @@ struct Tab {
     loading_status: bool,
     status_dirty: bool,
     refs_dirty: bool,
-    select_head: bool,
+    follow: Follow,
     waiting: Option<Box<dyn FnOnce(&mut Tab, &mut Context<Tab>)>>,
     queued: Option<Box<dyn FnOnce(&mut Tab, &mut Context<Tab>)>>,
     trail: activity::Trail,
@@ -116,7 +145,7 @@ impl Tab {
             loading_status: false,
             status_dirty: false,
             refs_dirty: false,
-            select_head: false,
+            follow: Follow::Nothing,
             waiting: None,
             queued: None,
             trail: activity::Trail::default(),
@@ -219,7 +248,7 @@ impl Tab {
                 tab.loading_status = false;
                 tab.status_dirty = false;
                 tab.refs_dirty = false;
-                tab.select_head = true;
+                tab.follow = Follow::Head;
                 tab.ui = Ui::new(cx);
                 tab.ui.root = repo.root.clone();
                 tab.ui.repo = repo
@@ -306,7 +335,7 @@ impl Tab {
         self.loading_status = false;
         self.status_dirty = false;
         self.refs_dirty = false;
-        self.select_head = false;
+        self.follow = Follow::Nothing;
         self.stale = None;
         self.ui = Ui::new(cx);
         cx.notify();
@@ -407,12 +436,21 @@ impl Tab {
                         tab.ui.head = status.head.clone();
                         tab.ui.head_ref = status.head_ref;
                         tab.ui.upstream = status.upstream;
-                        if std::mem::take(&mut tab.select_head) {
-                            if let Some(oid) = status.head {
-                                if tab.ui.selection != Some(Selection::Commit(oid.clone())) {
-                                    tab.select(Selection::Commit(oid), cx);
+                        let carried = !status.unstaged.is_empty() || !status.staged.is_empty();
+                        match std::mem::take(&mut tab.follow).landing(carried) {
+                            Some(Landing::Head) => {
+                                if let Some(oid) = status.head {
+                                    if tab.ui.selection != Some(Selection::Commit(oid.clone())) {
+                                        tab.select(Selection::Commit(oid), cx);
+                                    }
                                 }
                             }
+                            Some(Landing::Changes) => {
+                                if !tab.ui.working() {
+                                    tab.select(Selection::Changes, cx);
+                                }
+                            }
+                            None => {}
                         }
                         if tab.ui.head.is_none() && tab.ui.selection.is_none() {
                             tab.select(Selection::Changes, cx);
@@ -939,7 +977,7 @@ impl Tab {
                 tab.ui.notices.finish(spinner, declined());
                 after_failure(tab, cx);
             } else if tab.conclude(Some(spinner), Some(notice), result) {
-                tab.select_head = select_head;
+                tab.follow = Follow::head_if(select_head);
                 after_success(tab, cx);
             } else {
                 after_failure(tab, cx);
@@ -1078,7 +1116,7 @@ impl Tab {
             tab.ui.jobs.end_write();
             tab.ui.jobs.end_network(id);
             if tab.conclude(Some(spinner), Some(notice), result.map(Into::into)) {
-                tab.select_head = select_head;
+                tab.follow = Follow::head_if(select_head);
                 after_success(tab, cx);
             } else {
                 after_failure(tab, cx);
@@ -1152,7 +1190,7 @@ impl Tab {
         E: Into<notice::Failure> + Send + 'static,
     {
         self.apply_operation(cx, progress, Some(notice), true, job, move |tab, cx| {
-            tab.select_head = select_head;
+            tab.follow = Follow::head_if(select_head);
             after_success(tab, cx);
         });
     }
@@ -1171,7 +1209,7 @@ impl Tab {
         E: Into<notice::Failure> + Send + 'static,
     {
         let after_success = move |tab: &mut Self, cx: &mut Context<Self>| {
-            tab.select_head = select_head;
+            tab.follow = Follow::head_if(select_head);
             after_success(tab, cx);
         };
         self.apply_operation_or(cx, progress, Some(notice), true, job, after_success, after_failure);
@@ -1462,7 +1500,7 @@ impl Tab {
             Action::Search(action) => search::dispatch(self, action, window, cx),
             Action::ViewChanges => {
                 if let Some(first) = self.ui.files.first() {
-                    self.select_head = false;
+                    self.follow = Follow::Nothing;
                     self.ui.diff_open = true;
                     self.select(
                         Selection::File {
@@ -1480,7 +1518,7 @@ impl Tab {
             Action::Select(selection) => {
                 self.ui.picked = None;
                 self.ui.navigate.chose(&selection);
-                self.select_head = false;
+                self.follow = Follow::Nothing;
                 self.ui.diff_open = matches!(selection, Selection::File { .. });
                 self.select(selection, cx);
             }
@@ -1816,4 +1854,25 @@ fn main() {
         }
         if offscreen { perf::drive_offscreen(handle, cx); } else { cx.activate(true); }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Follow, Landing};
+
+    #[test]
+    fn a_switch_lands_on_the_changes_it_carries_and_on_head_when_clean() {
+        assert_eq!(Follow::ChangesOrHead.landing(true), Some(Landing::Changes));
+        assert_eq!(Follow::ChangesOrHead.landing(false), Some(Landing::Head));
+    }
+
+    #[test]
+    fn other_operations_keep_landing_on_head_or_leave_the_selection() {
+        assert_eq!(Follow::Head.landing(true), Some(Landing::Head));
+        assert_eq!(Follow::Head.landing(false), Some(Landing::Head));
+        assert_eq!(Follow::Nothing.landing(true), None);
+        assert_eq!(Follow::head_if(true), Follow::Head);
+        assert_eq!(Follow::head_if(false), Follow::Nothing);
+        assert_eq!(Follow::default(), Follow::Nothing);
+    }
 }
