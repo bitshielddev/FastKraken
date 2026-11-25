@@ -383,7 +383,9 @@ impl DiffDoc {
             builder.line(text);
         }
         let state = builder.state();
-        builder.finish_file();
+        if !source.truncated {
+            builder.finish_file();
+        }
         let mut doc = builder.doc;
         doc.state = state;
         doc.stageable = source.stageable && !source.truncated && !doc.shortened;
@@ -673,7 +675,7 @@ pub(crate) mod tests {
         let working_size = working.then(|| std::fs::metadata(f.dir.join(path)).unwrap().len());
         DiffDoc::build(&Source {
             text: &diff.text,
-            stageable: diff.stageable(),
+            stageable: diff.hunks_stageable(),
             truncated: diff.truncated,
             sizes: &sizes,
             working_size,
@@ -768,6 +770,30 @@ pub(crate) mod tests {
         assert!(!shortened.stageable);
         assert!(shortened.text(&shortened.lines[2]).ends_with(SHORTENED));
         assert!(doc(text).stageable);
+
+        let cut_after_header = concat!(
+            "diff --git a/kept b/kept\n--- a/kept\n+++ b/kept\n@@ -1 +1 @@\n-a\n+b\n",
+            "diff --git a/blank b/blank\nnew file mode 100644\n",
+        );
+        let cut = with(cut_after_header, |source| source.truncated = true);
+        assert!(texts(&cut, Kind::Note).is_empty());
+        assert_eq!(texts(&doc(cut_after_header), Kind::Note), [EMPTY_FILE]);
+    }
+
+    #[test]
+    fn a_type_change_offers_no_hunk_to_stage() {
+        let f = crate::repository::tests::Fixture::new();
+        std::fs::write(f.dir.join("link"), "hello\n").unwrap();
+        f.repo.stage_all().unwrap();
+        f.repo.commit("base").unwrap();
+        std::fs::remove_file(f.dir.join("link")).unwrap();
+        std::os::unix::fs::symlink("target", f.dir.join("link")).unwrap();
+
+        let doc = read(&f, "link", false, false);
+        assert_eq!(texts(&doc, Kind::File).len(), 2);
+        assert_eq!(doc.hunks.len(), 2);
+        assert!(!doc.stageable);
+        assert_eq!(doc.stageable_hunks(), 0);
     }
 
     #[test]

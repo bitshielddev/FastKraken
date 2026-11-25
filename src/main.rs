@@ -631,7 +631,7 @@ impl Tab {
                 };
                 let doc = diff_doc::DiffDoc::build(&diff_doc::Source {
                     text: &diff.text,
-                    stageable: diff.stageable() && matches!(selection, Selection::File { .. }),
+                    stageable: diff.hunks_stageable() && matches!(selection, Selection::File { .. }),
                     truncated: diff.truncated,
                     sizes: &sizes,
                     working_size,

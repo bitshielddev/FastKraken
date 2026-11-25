@@ -188,6 +188,10 @@ impl Diff {
     pub fn stageable(&self) -> bool {
         self.source.is_some()
     }
+
+    pub(crate) fn hunks_stageable(&self) -> bool {
+        self.stageable() && !self.hunks.is_empty()
+    }
 }
 
 #[derive(Clone, Debug)]
