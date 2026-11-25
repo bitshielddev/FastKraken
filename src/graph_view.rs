@@ -1,7 +1,7 @@
 use crate::{
     Tab, kit,
     commands::{Availability, Bar, Command, Group, Target, on_repo},
-    refs::{Kind, Section},
+    refs::{Kind, NamedRef, Section},
     settings::Memory,
     storage,
     theme::*,
@@ -45,8 +45,33 @@ pub(crate) struct GraphView {
     pub(crate) hide_stashes: bool,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) author: Option<Person>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) pin: crate::pin::Pin,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) stale_months: Option<u32>,
     #[serde(skip)]
     pub(crate) upstream: Option<String>,
+    #[serde(skip)]
+    pub(crate) stale: BTreeSet<String>,
+    #[serde(skip)]
+    pub(crate) bodies: bool,
+}
+
+pub(crate) const STALE_MONTHS: [u32; 4] = [1, 3, 6, 12];
+const MONTH: i64 = 2_629_746;
+
+pub(crate) fn stale(refs: &[NamedRef], months: Option<u32>, keep: Option<&str>, now: i64) -> BTreeSet<String> {
+    let Some(months) = months else { return BTreeSet::new() };
+    let cutoff = now - i64::from(months) * MONTH;
+    refs.iter()
+        .filter(|item| item.kind == Kind::Remote && item.time > 0 && item.time < cutoff)
+        .map(|item| format!("{REMOTES}{}", item.name.to_string_lossy()))
+        .filter(|name| hideable(name) && keep != Some(name.as_str()))
+        .collect()
+}
+
+fn months_text(months: u32) -> String {
+    if months == 1 { "a month".to_owned() } else { format!("{months} months") }
 }
 
 fn exact_glob(name: &str) -> String {
@@ -69,20 +94,24 @@ fn covers(entry: &str, full: &str) -> bool {
 
 impl GraphView {
     pub(crate) fn filtered(&self) -> bool {
-        !self.hidden.is_empty() || !self.solo.is_empty() || self.only_current
+        !self.hidden.is_empty() || !self.stale.is_empty() || !self.solo.is_empty() || self.only_current
     }
 
     pub(crate) fn active(&self) -> bool {
-        self.filtered() || self.hide_stashes || self.author.is_some()
+        self.filtered() || self.hide_stashes || self.author.is_some() || self.stale_months.is_some()
     }
 
-    pub(crate) fn listing(&self) -> (&BTreeSet<String>, &BTreeSet<String>, bool, Option<&String>) {
-        (&self.hidden, &self.solo, self.only_current, self.upstream.as_ref().filter(|_| self.only_current))
+    pub(crate) fn listing(&self) -> (&BTreeSet<String>, &BTreeSet<String>, &BTreeSet<String>, bool, Option<&String>) {
+        (&self.hidden, &self.stale, &self.solo, self.only_current, self.upstream.as_ref().filter(|_| self.only_current))
     }
 
     pub(crate) fn history_args(&self) -> Vec<OsString> {
-        let excludes: Vec<OsString> =
-            self.hidden.iter().map(|name| format!("--exclude={}", pattern(name)).into()).collect();
+        let excludes: Vec<OsString> = self
+            .hidden
+            .iter()
+            .chain(self.stale.iter().filter(|name| self.hidden_by(name).is_none()))
+            .map(|name| format!("--exclude={}", pattern(name)).into())
+            .collect();
         let mut args: Vec<OsString> = Vec::new();
         if self.only_current {
             if let Some(upstream) = &self.upstream {
@@ -118,7 +147,7 @@ impl GraphView {
     }
 
     pub(crate) fn shows(&self, full: &str, current: Option<&str>) -> bool {
-        if self.hidden_by(full).is_some() {
+        if self.hidden_by(full).is_some() || self.stale.contains(full) {
             return false;
         }
         if self.only_current {
@@ -136,11 +165,18 @@ impl GraphView {
         self.hidden.retain(|name| hideable(name));
         self.solo.retain(|name| hideable(name) && !self.hidden.contains(name));
         self.upstream = None;
+        self.stale.clear();
+        self.stale_months = self.stale_months.filter(|months| STALE_MONTHS.contains(months));
+        if let crate::pin::Pin::Ref(name) = &self.pin {
+            if !crate::pin::pinnable(name) {
+                self.pin = crate::pin::Pin::Head;
+            }
+        }
         self
     }
 
     fn stored(&self) -> Option<Self> {
-        let kept = Self { upstream: None, ..self.clone() };
+        let kept = Self { upstream: None, stale: BTreeSet::new(), bodies: false, ..self.clone() };
         (kept != Self::default()).then_some(kept)
     }
 }
@@ -186,10 +222,13 @@ pub(crate) fn current(ui: &Ui) -> Option<&str> {
 
 pub(crate) fn query(ui: &Ui) -> GraphView {
     let mut view = ui.graph_view.clone();
-    view.upstream = current(ui)
+    let tracked = current(ui)
         .and_then(|branch| ui.refs.branch(branch))
         .and_then(|item| item.upstream.as_ref())
         .map(|upstream| format!("{REMOTES}{upstream}"));
+    view.stale = stale(&ui.refs.items, view.stale_months, tracked.as_deref(), view::now());
+    view.upstream = tracked;
+    view.bodies = ui.bodies;
     view
 }
 
@@ -250,6 +289,10 @@ pub(crate) fn summary(ui: &Ui) -> Vec<String> {
     } else if !view.solo.is_empty() {
         let names: Vec<String> = view.solo.iter().map(|entry| short(entry)).collect();
         parts.push(format!("showing only {}", named(&names)));
+    }
+    if let (Some(months), false) = (view.stale_months, view.stale.is_empty()) {
+        let count = counted(view.stale.len(), "remote branch", "remote branches");
+        parts.push(format!("{count} with no commits in {} hidden", months_text(months)));
     }
     if view.hide_stashes {
         parts.push("stashes hidden".to_owned());
@@ -331,13 +374,14 @@ pub enum Action {
     StopSoloing,
     ToggleCurrent,
     ToggleStashes,
+    Stale(Option<u32>),
     OpenAuthors,
     CloseAuthors,
     Author(Option<Person>),
     Clear,
 }
 
-fn remember(tab: &Tab, cx: &mut Context<Tab>) {
+pub(crate) fn remember(tab: &Tab, cx: &mut Context<Tab>) {
     let Some(repo) = &tab.repo else { return };
     let common = repo.common_dir().to_owned();
     let stored = tab.ui.graph_view.stored();
@@ -362,7 +406,9 @@ pub(crate) fn place_stashes(ui: &mut Ui) {
 }
 
 pub(crate) fn follow_upstream(tab: &mut Tab, cx: &mut Context<Tab>) {
-    if tab.ui.graph_view.only_current && query(&tab.ui).upstream != tab.ui.graph_view.upstream {
+    let wanted = query(&tab.ui);
+    let view = &tab.ui.graph_view;
+    if (view.only_current && wanted.upstream != view.upstream) || wanted.stale != view.stale {
         tab.load_history(true, cx);
     }
 }
@@ -370,6 +416,7 @@ pub(crate) fn follow_upstream(tab: &mut Tab, cx: &mut Context<Tab>) {
 fn change(tab: &mut Tab, widened: bool, window: &mut Window, cx: &mut Context<Tab>, edit: impl FnOnce(&mut GraphView)) {
     let before = tab.ui.graph_view.clone();
     edit(&mut tab.ui.graph_view);
+    tab.ui.graph_view.stale = query(&tab.ui).stale;
     let view = &tab.ui.graph_view;
     if *view == before {
         return;
@@ -456,6 +503,14 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             });
         }
         Action::ToggleStashes => change(tab, false, window, cx, |view| view.hide_stashes = !view.hide_stashes),
+        Action::Stale(months) => {
+            if months.is_some_and(|months| !STALE_MONTHS.contains(&months)) {
+                tab.error("FastKraken hides remote branches idle for 1, 3, 6 or 12 months.".to_owned(), cx);
+                return;
+            }
+            let widened = months.is_none_or(|months| tab.ui.graph_view.stale_months.is_some_and(|was| months > was));
+            change(tab, widened, window, cx, |view| view.stale_months = months);
+        }
         Action::OpenAuthors => {
             let picker = &mut tab.ui.author_picker;
             if picker.open {
@@ -483,7 +538,7 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             if !tab.ui.graph_view.active() {
                 return;
             }
-            change(tab, true, window, cx, |view| *view = GraphView::default());
+            change(tab, true, window, cx, |view| *view = GraphView { pin: view.pin.clone(), ..GraphView::default() });
         }
     }
     cx.notify();
@@ -671,7 +726,54 @@ fn section_title(section: Section, show: bool) -> String {
     format!("{} all {what}", if show { "Show" } else { "Hide" })
 }
 
+fn stale_here(ui: &Ui, target: &Target) -> bool {
+    !ui.repo.is_empty() && (*target == Target::Repo || *target == Target::Section(Section::Remotes))
+}
+
+const STALE_MENU: crate::commands::Submenu = crate::commands::Submenu {
+    id: "graph.stale-menu",
+    title: |_, _| "Hide remote branches with no commits in the last…".into(),
+    icon: "eye-off",
+};
+
+fn stale_title<const N: usize>(_: &Ui, _: &Target) -> String {
+    let months = STALE_MONTHS[N];
+    if months == 1 { "Month".to_owned() } else { format!("{months} months") }
+}
+
+fn stale_when<const N: usize>(ui: &Ui, target: &Target, _: &App) -> Availability {
+    if stale_here(ui, target) { Availability::Enabled } else { Availability::Hidden }
+}
+
+fn stale_run<const N: usize>(ui: &Ui, _: &Target) -> Option<view::Action> {
+    let months = STALE_MONTHS[N];
+    let chosen = (ui.graph_view.stale_months != Some(months)).then_some(months);
+    Some(view::Action::GraphView(Action::Stale(chosen)))
+}
+
+fn stale_tick<const N: usize>(ui: &Ui, _: &Target) -> bool {
+    ui.graph_view.stale_months == Some(STALE_MONTHS[N])
+}
+
+const STALE_WORDS: &[&str] = &["stale", "old", "idle", "remote branches", "hide", "graph"];
+
 pub(crate) const COMMANDS: &[Command] = &[
+    Command::new("graph.stale-month", Group::View, stale_title::<0>, stale_when::<0>, stale_run::<0>)
+        .under(&STALE_MENU)
+        .tick(stale_tick::<0>)
+        .words(STALE_WORDS),
+    Command::new("graph.stale-quarter", Group::View, stale_title::<1>, stale_when::<1>, stale_run::<1>)
+        .under(&STALE_MENU)
+        .tick(stale_tick::<1>)
+        .words(STALE_WORDS),
+    Command::new("graph.stale-half-year", Group::View, stale_title::<2>, stale_when::<2>, stale_run::<2>)
+        .under(&STALE_MENU)
+        .tick(stale_tick::<2>)
+        .words(STALE_WORDS),
+    Command::new("graph.stale-year", Group::View, stale_title::<3>, stale_when::<3>, stale_run::<3>)
+        .under(&STALE_MENU)
+        .tick(stale_tick::<3>)
+        .words(STALE_WORDS),
     Command::new(
         "graph.hide",
         Group::View,
@@ -944,15 +1046,24 @@ mod tests {
             only_current: true,
             hide_stashes: true,
             author: Some(Person { name: "Dana".into(), email: "dana@example.invalid".into() }),
+            pin: crate::pin::Pin::Ref("refs/heads/a".into()),
+            stale_months: Some(3),
             upstream: Some("refs/remotes/origin/main".into()),
+            stale: set(&["refs/remotes/origin/old"]),
+            bodies: true,
         };
         let json = serde_json::to_value(view.stored().unwrap()).unwrap();
-        assert!(json.get("upstream").is_none());
+        assert!(json.get("upstream").is_none() && json.get("stale").is_none() && json.get("bodies").is_none());
         let back: GraphView = serde_json::from_value(json).unwrap();
         let clean = back.sanitized();
         assert_eq!(clean.hidden, set(&["refs/heads/a"]));
         assert_eq!(clean.solo, set(&["refs/heads/b"]));
         assert!(clean.only_current && clean.hide_stashes && clean.author.is_some() && clean.upstream.is_none());
+        assert_eq!(clean.pin, crate::pin::Pin::Ref("refs/heads/a".into()));
+        assert_eq!(clean.stale_months, Some(3));
+        assert!(clean.stale.is_empty() && !clean.bodies);
+        let odd_pin: GraphView = serde_json::from_value(serde_json::json!({"pin": {"ref": "refs/tags/v1"}})).unwrap();
+        assert_eq!(odd_pin.sanitized().pin, crate::pin::Pin::Head);
         let odd: GraphView = serde_json::from_value(serde_json::json!({"hidden": 3, "author": "x", "only_current": true})).unwrap();
         assert!(odd.hidden.is_empty() && odd.author.is_none() && odd.only_current);
         assert_eq!(GraphView::default().stored(), None);
@@ -1086,5 +1197,55 @@ mod tests {
         assert_eq!(short("refs/remotes/origin/"), "origin");
         assert_eq!(short("refs/heads/feature/x"), "feature/x");
         assert_eq!(short("refs/tags/v1"), "v1");
+    }
+
+    #[test]
+    fn remote_branches_idle_for_the_chosen_months_leave_the_graph_but_the_tracked_one_stays() {
+        let f = Fixture::new();
+        f.git(&["commit", "--allow-empty", "-qm", "Base"]);
+        let old = |message: &str| {
+            let made = crate::repository::checked(
+                f.repo
+                    .command()
+                    .env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+                    .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+                    .args(["commit-tree", "-p", "HEAD", "-m", message, "HEAD^{tree}"]),
+            )
+            .unwrap();
+            String::from_utf8(made).unwrap().trim().to_owned()
+        };
+        let ancient = old("Ancient");
+        let tracked = old("Tracked");
+        f.git(&["update-ref", "refs/remotes/origin/ancient", &ancient]);
+        f.git(&["update-ref", "refs/remotes/origin/tracked", &tracked]);
+        f.git(&["update-ref", "refs/heads/local-old", &ancient]);
+        f.git(&["commit", "--allow-empty", "-qm", "Fresh"]);
+        f.git(&["update-ref", "refs/remotes/origin/fresh", "HEAD"]);
+        let refs = crate::refs::list(&f.repo).unwrap();
+        let ancient_ref = refs.iter().find(|item| item.kind == Kind::Remote && item.name == "origin/ancient").unwrap();
+        assert_eq!(ancient_ref.time, 978_307_200);
+        let now = view::now();
+        assert!(stale(&refs, None, None, now).is_empty());
+        let idle = stale(&refs, Some(6), Some("refs/remotes/origin/tracked"), now);
+        assert_eq!(idle, set(&["refs/remotes/origin/ancient"]));
+        assert_eq!(stale(&refs, Some(12), None, now), set(&["refs/remotes/origin/ancient", "refs/remotes/origin/tracked"]));
+        assert!(stale(&refs, Some(1), None, ancient_ref.time + MONTH / 2).is_empty());
+
+        let subjects = |view: &GraphView| -> BTreeSet<String> {
+            f.repo.history_in(view, 0, 10).unwrap().into_iter().map(|row| row.subject).collect()
+        };
+        let view = GraphView { stale_months: Some(6), stale: idle, ..GraphView::default() };
+        assert!(view.filtered() && view.active());
+        assert!(!view.shows("refs/remotes/origin/ancient", Some("main")));
+        assert!(view.shows("refs/remotes/origin/tracked", Some("main")));
+        assert_eq!(subjects(&GraphView { hidden: set(&["refs/heads/local-old"]), ..GraphView::default() }).len(), 4);
+        let hidden = GraphView { hidden: set(&["refs/heads/local-old"]), ..view.clone() };
+        assert_eq!(subjects(&hidden), set(&["Base", "Tracked", "Fresh"]));
+        assert_eq!(view.stored().map(|kept| kept.stale.len()), Some(0));
+        assert_eq!(view.stored().and_then(|kept| kept.stale_months), Some(6));
+        assert_eq!(months_text(1), "a month");
+        assert_eq!(months_text(6), "6 months");
+        let stored: GraphView = serde_json::from_str(r#"{"stale_months": 5}"#).unwrap();
+        assert_eq!(stored.sanitized().stale_months, None);
     }
 }

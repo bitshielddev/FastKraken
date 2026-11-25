@@ -57,7 +57,7 @@ struct Engine {
     bin: PathBuf,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Commit {
     pub oid: String,
     pub parents: Vec<String>,
@@ -67,6 +67,11 @@ pub struct Commit {
     pub date: String,
     pub time: i64,
     pub refs: String,
+    pub body: String,
+}
+
+pub(crate) fn first_line(body: &str) -> String {
+    body.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned()
 }
 
 #[derive(Clone, Debug)]
@@ -485,7 +490,7 @@ impl Repository {
             return Ok(Vec::new());
         }
         Self::read_log(
-            self.log_command()
+            self.log_command(false)
                 .args(view.history_args())
                 .arg(format!("--skip={offset}"))
                 .arg(format!("--max-count={limit}")),
@@ -583,7 +588,7 @@ impl Repository {
         }
         let matching = |pattern: String| {
             Self::read_log(
-                self.log_command()
+                self.log_command(false)
                     .args(["--exclude=refs/stash", "--all", "--regexp-ignore-case", "--fixed-strings"])
                     .arg(pattern)
                     .arg(format!("--max-count={limit}")),
@@ -599,7 +604,7 @@ impl Repository {
         if (4..=64).contains(&query.len()) && query.bytes().all(|b| b.is_ascii_hexdigit()) {
             let prefix = query.to_ascii_lowercase();
             let mut exact = Self::read_log(
-                self.log_command().arg("--max-count=1").arg(format!("{prefix}^{{commit}}")),
+                self.log_command(false).arg("--max-count=1").arg(format!("{prefix}^{{commit}}")),
             ).unwrap_or_default();
             if let Some(commit) = exact.pop().filter(|commit| commit.oid.starts_with(&prefix)) {
                 commits.retain(|row| row.oid != commit.oid);
@@ -657,13 +662,13 @@ impl Repository {
             return Ok(Vec::new());
         }
         Self::read_log(
-            self.log_command()
+            self.log_command(false)
                 .arg(format!("--max-count={limit}"))
                 .args(revisions.args()?),
         )
     }
 
-    pub(crate) fn log_command(&self) -> Command {
+    pub(crate) fn log_command(&self, bodies: bool) -> Command {
         let mut cmd = self.read_command();
         cmd.args([
             "log",
@@ -673,7 +678,11 @@ impl Repository {
             "--no-show-signature",
             "--no-patch",
             "-z",
-            "--format=%H%x00%P%x00%an%x00%ae%x00%as%x00%at%x00%D%x00%s",
+            if bodies {
+                "--format=%H%x00%P%x00%an%x00%ae%x00%as%x00%at%x00%D%x00%s%x00%b"
+            } else {
+                "--format=%H%x00%P%x00%an%x00%ae%x00%as%x00%at%x00%D%x00%s%x00"
+            },
         ]);
         cmd
     }
@@ -702,6 +711,7 @@ impl Repository {
                 time: field()?.parse().unwrap_or(0),
                 refs: field()?,
                 subject: field()?,
+                body: first_line(&field()?),
             });
         }
         Ok(commits)
@@ -1384,6 +1394,21 @@ pub(crate) fn nul_separated(paths: &[PathBuf], prefix: &[u8]) -> Result<Vec<u8>>
         input.push(0);
     }
     Ok(input)
+}
+
+impl Repository {
+    pub(crate) fn commit_sizes(&self, ids: &[String]) -> Result<String> {
+        let mut input = Vec::new();
+        for id in ids {
+            validate_oid(id)?;
+            input.extend_from_slice(id.as_bytes());
+            input.push(b'\n');
+        }
+        let mut command = self.read_command();
+        command.args(["diff-tree", "--stdin", "--shortstat", "--root", "--always", "--diff-merges=first-parent", "--no-color"]);
+        let output = run_with_input(&mut command, input).map_err(|e| format!("Run bundled Git: {e}"))?;
+        Ok(String::from_utf8_lossy(&successful(output)?).into_owned())
+    }
 }
 
 pub(crate) fn validate_oid(oid: &str) -> Result<()> {

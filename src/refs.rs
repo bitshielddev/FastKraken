@@ -219,6 +219,7 @@ pub struct NamedRef {
     pub behind: usize,
     pub upstream: Option<String>,
     pub gone: bool,
+    pub time: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -531,7 +532,7 @@ pub(crate) fn list(repo: &Repository) -> Result<Vec<NamedRef>, String> {
     let records = checked(repo.read_command().args([
         "for-each-ref",
         "--sort=refname",
-        "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(upstream:remotename)%00%(contents:subject)%00%(taggername)%00%(taggerdate:short)",
+        "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(upstream:remotename)%00%(contents:subject)%00%(taggername)%00%(taggerdate:short)%00%(committerdate:unix)",
         "refs/heads",
         "refs/remotes",
         "refs/tags",
@@ -560,6 +561,7 @@ pub(crate) fn list(repo: &Repository) -> Result<Vec<NamedRef>, String> {
             .map(|short| String::from_utf8_lossy(short).into_owned());
         let mut text = || String::from_utf8_lossy(fields.next().unwrap_or_default()).into_owned();
         let (subject, tagger, date) = (text(), text(), text());
+        let time = text().parse().unwrap_or(0);
         let annotation = (ty == b"tag").then_some(Annotation { subject, tagger, date });
         let (kind, short) = if let Some(short) = full.strip_prefix(b"refs/heads/") {
             (Kind::Branch, short)
@@ -608,6 +610,7 @@ pub(crate) fn list(repo: &Repository) -> Result<Vec<NamedRef>, String> {
             behind: distance("behind"),
             gone: upstream.is_some() && track == "gone",
             upstream,
+            time,
         });
     }
     Ok(items)
@@ -642,6 +645,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
                     tab.ui.refs.remotes = remotes;
                     tab.ui.refs.github = github;
                     tab.ui.refs.addresses = addresses;
+                    crate::pin::refs_loaded(&mut tab.ui);
                     crate::graph_view::follow_upstream(tab, cx);
                 }
                 Err(error) => tab.error(error, cx),

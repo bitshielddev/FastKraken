@@ -145,6 +145,10 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
                 at: gpui::point(px(520.), px(150.)),
             })
         }),
+        "pin" => Some(Action::Pin(crate::pin::Action::Pin(format!("refs/heads/{argument}")))),
+        "changescolumn" => Some(Action::Columns(crate::columns::Action::Toggle(crate::columns::Column::Changes))),
+        "bodies" => Some(Action::Columns(crate::columns::Action::Bodies)),
+        "highlight" => tab.ui.history.get(index).map(|row| Action::Highlight(crate::highlight::Action::Show(row.oid.clone()))),
         "pickbranch" => Some(Action::Sidebar(crate::sidebar::Action::Pick {
             name: argument.into(),
             how: Some(crate::picked::How::Toggle),

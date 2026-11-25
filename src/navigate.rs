@@ -490,6 +490,7 @@ mod tests {
             date: String::new(),
             time: 0,
             refs: String::new(),
+            body: String::new(),
         }
     }
 

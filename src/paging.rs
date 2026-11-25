@@ -18,7 +18,7 @@ use std::{
 
 pub(crate) const KEPT: usize = 5_000;
 pub(crate) const LOADING: &str = "Loading more commits…";
-const FIELDS: usize = 8;
+const FIELDS: usize = 9;
 
 pub(crate) struct HistoryStream {
     command: Command,
@@ -34,7 +34,7 @@ pub(crate) struct HistoryStream {
 
 impl HistoryStream {
     pub(crate) fn open(repo: &Repository, view: &GraphView) -> Result<Self, String> {
-        let mut command = repo.log_command();
+        let mut command = repo.log_command(view.bodies);
         command
             .args(view.history_args())
             .arg("--")
@@ -118,7 +118,7 @@ impl HistoryStream {
             }
             *field = String::from_utf8_lossy(&bytes).into_owned();
         }
-        let [oid, parents, author, email, date, time, refs, subject] = fields;
+        let [oid, parents, author, email, date, time, refs, subject, body] = fields;
         Ok(Some(Commit {
             oid,
             parents: parents.split_whitespace().map(String::from).collect(),
@@ -128,6 +128,7 @@ impl HistoryStream {
             time: time.parse().unwrap_or(0),
             refs,
             subject,
+            body: crate::repository::first_line(&body),
         }))
     }
 
@@ -402,6 +403,25 @@ mod tests {
         assert!(paged[0].refs.contains("tag: v1"));
         assert_eq!(paged[0].parents.len(), 2);
         assert!(stream.next(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_first_line_of_each_body_is_read_only_when_body_preview_is_on() {
+        let f = Fixture::new();
+        commit(&f, "a.txt", "Root");
+        f.git(&["commit", "--allow-empty", "-q", "-m", "Explained", "-m", "\n  Why it changed\nMore detail", "-m", "Later"]);
+        f.git(&["commit", "--allow-empty", "-qm", "Plain"]);
+        let mut quiet = HistoryStream::open(&f.repo, &GraphView::default()).unwrap();
+        let rows = quiet.next(10).unwrap();
+        assert_eq!(subjects(&rows), ["Plain", "Explained", "Root"]);
+        assert!(rows.iter().all(|row| row.body.is_empty()));
+        assert_eq!(rows, f.repo.history(0, 10).unwrap());
+        let mut shown = HistoryStream::open(&f.repo, &GraphView { bodies: true, ..GraphView::default() }).unwrap();
+        let rows = shown.next(10).unwrap();
+        assert_eq!(subjects(&rows), ["Plain", "Explained", "Root"]);
+        assert_eq!(rows.iter().map(|row| row.body.as_str()).collect::<Vec<_>>(), ["", "Why it changed", ""]);
+        assert!(!shown.more());
+        assert_eq!(crate::repository::first_line("\n \n  First \nSecond\n"), "First");
     }
 
     #[test]

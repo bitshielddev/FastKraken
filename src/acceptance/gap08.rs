@@ -259,9 +259,12 @@ impl Replay<'_> {
             ("columns.labels", "Branch and tag labels", Some(true), false),
             ("columns.graph", "Graph", Some(true), false),
             ("columns.description", "Description", Some(true), true),
+            ("columns.bodies", "Commit body preview", Some(false), false),
             ("columns.author", "Author", Some(true), false),
+            ("columns.changes", "Changes", Some(false), false),
             ("columns.date", "Date", Some(true), false),
             ("columns.sha", "SHA", Some(true), false),
+            ("graph.jump-pinned", "Jump to the pinned branch", None, false),
             ("columns.reset", "Reset columns", None, false),
         ]
         .into_iter()

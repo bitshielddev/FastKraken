@@ -7,6 +7,7 @@ mod auth;
 mod autofetch;
 mod autostash;
 mod branch;
+mod changes;
 mod cli;
 mod cleanup;
 mod clone;
@@ -32,6 +33,7 @@ mod graph_view;
 mod guard;
 mod handoff;
 mod help;
+mod highlight;
 mod hooks;
 mod identity;
 mod ignore;
@@ -52,6 +54,7 @@ mod palette;
 mod perf;
 mod pick;
 mod picked;
+mod pin;
 mod preferences;
 mod rebase;
 mod recover;
@@ -395,6 +398,7 @@ impl Tab {
         let epoch = self.epoch;
         let view = graph_view::query(&self.ui);
         self.ui.graph_view.upstream = view.upstream.clone();
+        self.ui.graph_view.stale = view.stale.clone();
         let (stream, skip, rows, kept, anchor, place) = match reload {
             Some(reload) => {
                 self.stream = None;
@@ -1603,6 +1607,9 @@ impl Tab {
             Action::Reveal(action) => reveal::dispatch(self, action, window, cx),
             Action::Containing(action) => containing::dispatch(self, action, window, cx),
             Action::GraphView(action) => graph_view::dispatch(self, action, window, cx),
+            Action::Pin(action) => pin::dispatch(self, action, window, cx),
+            Action::Highlight(action) => highlight::dispatch(self, action, window, cx),
+            Action::Changes(action) => changes::dispatch(self, action, window, cx),
             Action::Columns(action) => columns::dispatch(self, action, window, cx),
             Action::Sidebar(action) => sidebar::dispatch(self, action, window, cx),
             Action::Cleanup(action) => cleanup::dispatch(self, action, window, cx),

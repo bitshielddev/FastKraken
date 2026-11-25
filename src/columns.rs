@@ -28,18 +28,26 @@ pub(crate) enum Column {
     Graph,
     Description,
     Author,
+    Changes,
     Date,
     Sha,
 }
 
+const FIXED: [Column; 5] = [Column::Graph, Column::Author, Column::Changes, Column::Date, Column::Sha];
+
 impl Column {
-    pub(crate) const RIGHT: [Column; 3] = [Column::Author, Column::Date, Column::Sha];
+    pub(crate) const RIGHT: [Column; 4] = [Column::Author, Column::Changes, Column::Date, Column::Sha];
+
+    pub(crate) fn optional(self) -> bool {
+        self == Column::Changes
+    }
 
     pub(crate) fn title(self) -> &'static str {
         match self {
             Column::Graph => "Graph",
             Column::Description => "Description",
             Column::Author => "Author",
+            Column::Changes => "Changes",
             Column::Date => "Date",
             Column::Sha => "SHA",
         }
@@ -50,6 +58,7 @@ impl Column {
             Column::Graph => (GRAPH_MIN, GRAPH_MAX),
             Column::Description => (DESCRIPTION_MIN, f32::MAX),
             Column::Author => (28., 400.),
+            Column::Changes => (48., 240.),
             Column::Date => (56., 240.),
             Column::Sha => (52., 200.),
         }
@@ -58,6 +67,7 @@ impl Column {
     fn standard(self) -> f32 {
         match self {
             Column::Author => 140.,
+            Column::Changes => 90.,
             Column::Date => 84.,
             Column::Sha => 66.,
             Column::Graph | Column::Description => 0.,
@@ -70,9 +80,12 @@ impl Column {
 pub(crate) struct Layout {
     #[serde(deserialize_with = "storage::lenient_list")]
     pub(crate) hidden: Vec<Column>,
+    #[serde(deserialize_with = "storage::lenient_list")]
+    pub(crate) shown: Vec<Column>,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) graph: Option<f32>,
     pub(crate) author: f32,
+    pub(crate) changes: f32,
     pub(crate) date: f32,
     pub(crate) sha: f32,
 }
@@ -81,8 +94,10 @@ impl Default for Layout {
     fn default() -> Self {
         Self {
             hidden: Vec::new(),
+            shown: Vec::new(),
             graph: None,
             author: Column::Author.standard(),
+            changes: Column::Changes.standard(),
             date: Column::Date.standard(),
             sha: Column::Sha.standard(),
         }
@@ -94,6 +109,7 @@ pub(crate) struct Widths {
     pub(crate) graph: f32,
     pub(crate) description: f32,
     pub(crate) author: f32,
+    pub(crate) changes: f32,
     pub(crate) date: f32,
     pub(crate) sha: f32,
 }
@@ -104,6 +120,7 @@ impl Widths {
             Column::Graph => self.graph,
             Column::Description => self.description,
             Column::Author => self.author,
+            Column::Changes => self.changes,
             Column::Date => self.date,
             Column::Sha => self.sha,
         }
@@ -114,6 +131,7 @@ impl Widths {
             Column::Graph => self.graph = width,
             Column::Description => self.description = width,
             Column::Author => self.author = width,
+            Column::Changes => self.changes = width,
             Column::Date => self.date = width,
             Column::Sha => self.sha = width,
         }
@@ -122,6 +140,9 @@ impl Widths {
 
 impl Layout {
     pub(crate) fn shows(&self, column: Column) -> bool {
+        if column.optional() {
+            return self.shown.contains(&column);
+        }
         column == Column::Description || !self.hidden.contains(&column)
     }
 
@@ -132,11 +153,15 @@ impl Layout {
             if value.is_finite() { value.clamp(min, max) } else { default }
         };
         self.author = clamp(self.author, Column::Author, fallback.author);
+        self.changes = clamp(self.changes, Column::Changes, fallback.changes);
         self.date = clamp(self.date, Column::Date, fallback.date);
         self.sha = clamp(self.sha, Column::Sha, fallback.sha);
         self.graph = self.graph.filter(|width| width.is_finite()).map(|width| clamp(width, Column::Graph, width));
-        let hidden: BTreeSet<Column> = self.hidden.into_iter().filter(|column| *column != Column::Description).collect();
+        let hidden: BTreeSet<Column> =
+            self.hidden.into_iter().filter(|column| *column != Column::Description && !column.optional()).collect();
         self.hidden = hidden.into_iter().collect();
+        let shown: BTreeSet<Column> = self.shown.into_iter().filter(|column| column.optional()).collect();
+        self.shown = shown.into_iter().collect();
         self
     }
 
@@ -147,6 +172,7 @@ impl Layout {
         match column {
             Column::Graph => self.graph.unwrap_or(graph_auto),
             Column::Author => self.author,
+            Column::Changes => self.changes,
             Column::Date => self.date,
             Column::Sha => self.sha,
             Column::Description => 0.,
@@ -154,7 +180,7 @@ impl Layout {
     }
 
     pub(crate) fn resolve(&self, available: f32, graph_auto: f32) -> Widths {
-        let fixed = [Column::Graph, Column::Author, Column::Date, Column::Sha];
+        let fixed = FIXED;
         let mut widths = Widths::default();
         for column in fixed {
             widths.set(column, self.chosen(column, graph_auto));
@@ -181,6 +207,7 @@ impl Layout {
         match column {
             Column::Graph => self.graph = Some(width),
             Column::Author => self.author = width,
+            Column::Changes => self.changes = width,
             Column::Date => self.date = width,
             Column::Sha => self.sha = width,
             Column::Description => {}
@@ -203,7 +230,7 @@ impl Layout {
                 available + ROW_EDGE - after - x
             }
         };
-        let others: f32 = [Column::Graph, Column::Author, Column::Date, Column::Sha]
+        let others: f32 = FIXED
             .iter()
             .filter(|other| **other != column)
             .map(|other| widths.of(*other))
@@ -216,6 +243,15 @@ impl Layout {
     pub(crate) fn toggled(&self, column: Column) -> Self {
         let mut next = self.clone();
         if column == Column::Description {
+            return next;
+        }
+        if column.optional() {
+            if next.shows(column) {
+                next.shown.retain(|shown| *shown != column);
+            } else {
+                next.shown.push(column);
+                next.shown.sort();
+            }
             return next;
         }
         if next.shows(column) {
@@ -264,6 +300,7 @@ pub enum Action {
     Fit(Column),
     Reset,
     Pan(f32),
+    Bodies,
 }
 
 pub(crate) fn available(centre: f32) -> f32 {
@@ -389,6 +426,7 @@ fn fitted(ui: &Ui, column: Column, window: &Window) -> Option<f32> {
             Some(widest(window, dates, TEXT_SMALL, false) + CELL_PAD + SLACK)
         }
         Column::Sha => Some(widest(window, ["0123456".to_owned()].into(), SHA_TEXT, true) + CELL_PAD + SLACK),
+        Column::Changes => Some(Column::Changes.standard()),
     }
 }
 
@@ -406,11 +444,17 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             Some(width) => layout.clone().with_width(column, width),
             None => return,
         },
+        Action::Bodies => {
+            show_bodies(tab, !tab.ui.bodies, cx);
+            cx.notify();
+            return;
+        }
         Action::Reset => {
             if !tab.ui.refs.show_labels {
                 tab.ui.refs.show_labels = true;
                 Settings::update(cx, |settings| settings.show_ref_labels = true);
             }
+            show_bodies(tab, false, cx);
             tab.ui.graph_columns.offset = 0.;
             Layout::default()
         }
@@ -426,6 +470,15 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
         tab.ui.graph_columns.layout = next;
     }
     cx.notify();
+}
+
+fn show_bodies(tab: &mut Tab, show: bool, cx: &mut Context<Tab>) {
+    if tab.ui.bodies == show {
+        return;
+    }
+    tab.ui.bodies = show;
+    Settings::update(cx, |settings| settings.commit_bodies = show);
+    tab.load_history(true, cx);
 }
 
 fn on_header(target: &Target) -> bool {
@@ -470,6 +523,15 @@ pub(crate) const COMMANDS: &[Command] = &[
     )
     .tick(|_, _| true),
     Command::new(
+        "columns.bodies",
+        Group::View,
+        |_, _| "Commit body preview".into(),
+        shown_here,
+        |_, _| Some(view::Action::Columns(Action::Bodies)),
+    )
+    .words(&["description", "message", "body", "graph"])
+    .tick(|ui, _| ui.bodies),
+    Command::new(
         "columns.author",
         Group::View,
         |_, _| Column::Author.title().into(),
@@ -477,6 +539,15 @@ pub(crate) const COMMANDS: &[Command] = &[
         |_, _| Some(view::Action::Columns(Action::Toggle(Column::Author))),
     )
     .tick(|ui, _| ui.graph_columns.layout.shows(Column::Author)),
+    Command::new(
+        "columns.changes",
+        Group::View,
+        |_, _| Column::Changes.title().into(),
+        shown_here,
+        |_, _| Some(view::Action::Columns(Action::Toggle(Column::Changes))),
+    )
+    .words(&["size", "lines", "additions", "deletions", "stat"])
+    .tick(|ui, _| ui.graph_columns.layout.shows(Column::Changes)),
     Command::new(
         "columns.date",
         Group::View,
@@ -581,6 +652,28 @@ mod tests {
         assert_eq!((clean.author, clean.date, clean.sha), (28., 100., 66.));
         let saved = serde_json::to_value(&clean).unwrap();
         assert_eq!(saved["hidden"], serde_json::json!(["sha"]));
+    }
+
+    #[test]
+    fn the_changes_column_is_off_until_chosen_and_sits_between_author_and_date() {
+        assert!(!layout().shows(Column::Changes));
+        let before: Layout = serde_json::from_str(r#"{"hidden": [], "author": 150}"#).unwrap();
+        assert!(!before.sanitized().shows(Column::Changes));
+        let chosen = layout().toggled(Column::Changes);
+        assert_eq!(chosen.shown, [Column::Changes]);
+        assert!(chosen.hidden.is_empty() && chosen.shows(Column::Changes));
+        let widths = chosen.resolve(1000., AUTO);
+        assert_eq!(widths.changes, 90.);
+        assert_eq!(widths.description, 1000. - AUTO - 140. - 90. - 84. - 66.);
+        assert_eq!(layout().resolve(1000., AUTO).changes, 0.);
+        let date_left = 1000. + ROW_EDGE - widths.sha - widths.date;
+        let changes_left = date_left - widths.changes;
+        assert_eq!(chosen.dragged(Column::Changes, changes_left - 20., 1000., AUTO).changes, 110.);
+        assert_eq!(Column::RIGHT, [Column::Author, Column::Changes, Column::Date, Column::Sha]);
+        assert!(!chosen.toggled(Column::Changes).shows(Column::Changes));
+        let odd: Layout = serde_json::from_str(r#"{"shown": ["sha", "changes", "changes"], "changes": 9}"#).unwrap();
+        let clean = odd.sanitized();
+        assert_eq!((clean.shown.as_slice(), clean.changes), ([Column::Changes].as_slice(), 48.));
     }
 
     #[test]

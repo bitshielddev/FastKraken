@@ -497,6 +497,7 @@ impl Replay<'_> {
             ("branch.delete", "Delete main…".to_owned(), Some("Switch to another branch first".to_owned())),
             ("graph.hide", "Hide in the graph".to_owned(), None),
             ("graph.solo", "Solo".to_owned(), None),
+            ("graph.unpin", "Unpin from the left".to_owned(), None),
             ("ref.copy-name", "Copy branch name".to_owned(), None),
         ];
         if rows != expected {
@@ -515,6 +516,7 @@ impl Replay<'_> {
             ("branch.delete", "Delete feature/map…".to_owned(), None),
             ("graph.hide", "Hide in the graph".to_owned(), None),
             ("graph.solo", "Solo".to_owned(), None),
+            ("graph.pin", "Pin to the left".to_owned(), None),
             ("ref.copy-name", "Copy branch name".to_owned(), None),
         ];
         if rows != expected {
@@ -547,6 +549,7 @@ impl Replay<'_> {
             ("branch.delete", "Delete feature/map…".to_owned(), reason.clone()),
             ("graph.hide", "Hide in the graph".to_owned(), None),
             ("graph.solo", "Solo".to_owned(), None),
+            ("graph.pin", "Pin to the left".to_owned(), None),
             ("ref.copy-name", "Copy branch name".to_owned(), None),
         ];
         if rows != expected {
@@ -714,6 +717,7 @@ impl Replay<'_> {
             ("branch.delete", format!("Delete {first}…")),
             ("graph.hide", "Hide in the graph".to_owned()),
             ("graph.solo", "Solo".to_owned()),
+            ("graph.pin", "Pin to the left".to_owned()),
             ("ref.copy-name", "Copy branch name".to_owned()),
         ];
         if rows != expected {
@@ -732,22 +736,25 @@ impl Replay<'_> {
             ("tag.delete", "Delete v1…".to_owned()),
             ("tag.delete-remote", "Delete v1 from origin…".to_owned()),
         ];
-        for (target, own, merge, rebase, more, copy) in [
+        let pin = vec![("graph.pin", "Pin to the left".to_owned())];
+        for (target, own, merge, rebase, more, pinned, copy) in [
             (
                 Target::RemoteBranch("origin/feature/map".into()),
                 check_out,
                 merge_remote,
                 rebase_remote,
                 vec![("branch.delete-remote", "Delete origin/feature/map…".to_owned())],
+                pin,
                 "Copy branch name",
             ),
-            (Target::Tag("v1".into()), tag_check_out, merge_tag, rebase_tag, tag_rows, "Copy tag name"),
+            (Target::Tag("v1".into()), tag_check_out, merge_tag, rebase_tag, tag_rows, Vec::new(), "Copy tag name"),
         ] {
             let rows: Vec<_> = self.menu_rows(&target)?.into_iter().map(|row| (row.0, row.1)).collect();
             let expected: Vec<_> = std::iter::once(("ref.branch", "Create branch here…".to_owned()))
                 .chain([own, merge, rebase])
                 .chain(more)
                 .chain([("graph.hide", "Hide in the graph".to_owned()), ("graph.solo", "Solo".to_owned())])
+                .chain(pinned)
                 .chain([("ref.copy-name", copy.to_owned())])
                 .collect();
             if rows != expected {

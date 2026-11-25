@@ -44,6 +44,7 @@ icons!(
     "minus",
     "more",
     "ok",
+    "pin",
     "plus",
     "search",
     "spinner",

@@ -556,6 +556,9 @@ pub enum Action {
     Reveal(crate::reveal::Action),
     Containing(crate::containing::Action),
     GraphView(crate::graph_view::Action),
+    Pin(crate::pin::Action),
+    Highlight(crate::highlight::Action),
+    Changes(crate::changes::Action),
     Columns(crate::columns::Action),
     Sidebar(crate::sidebar::Action),
     Cleanup(crate::cleanup::Action),
@@ -730,6 +733,9 @@ pub struct Ui {
     pub(crate) containing: crate::containing::State,
     pub(crate) graph_view: crate::graph_view::GraphView,
     pub(crate) author_picker: crate::graph_view::Picker,
+    pub(crate) highlight: crate::highlight::State,
+    pub(crate) bodies: bool,
+    pub(crate) changes: crate::changes::State,
     pub has_more: bool,
     pub(crate) history_complete: bool,
     pub input: Entity<CommitInput>,
@@ -830,6 +836,9 @@ impl Ui {
             containing: Default::default(),
             graph_view: Default::default(),
             author_picker: crate::graph_view::Picker::new(cx),
+            highlight: Default::default(),
+            bodies: settings.commit_bodies,
+            changes: Default::default(),
             has_more: false,
             history_complete: false,
             input,
@@ -859,14 +868,33 @@ impl Ui {
 
     pub fn replace_history(&mut self, rows: Vec<HistoryRow>) {
         self.requested_at = None;
-        self.graph = Graph::default();
+        self.graph = Graph::pinned(crate::pin::active(self));
+        self.highlight.clear();
         self.history.clear();
         self.append_history(rows);
     }
 
+    fn lane(&mut self, row: &HistoryRow) {
+        let starts = self.graph.awaiting_pin() && crate::pin::starts(self, &row.refs);
+        self.graph.push(&row.oid, &row.parents, starts);
+    }
+
+    pub(crate) fn relane(&mut self) {
+        let rows = std::mem::take(&mut self.history);
+        self.graph = Graph::pinned(crate::pin::active(self));
+        for row in &rows {
+            self.lane(row);
+        }
+        self.history = rows;
+    }
+
+    pub(crate) fn graph_reserved(&self) -> bool {
+        self.graph.reserved()
+    }
+
     pub fn append_history(&mut self, rows: Vec<HistoryRow>) {
         for row in &rows {
-            self.graph.push(&row.oid, &row.parents);
+            self.lane(row);
         }
         if !self.graph_view.hide_stashes {
             self.stash.place(&rows, self.history.len());
@@ -1763,6 +1791,7 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
         .gap(px(6.))
         .children(labels.into_iter().take(SHOWN_LABELS).enumerate().map(|(i, label)| {
             let tip = label_tip(&ui.refs.items, &label);
+            let pinned = crate::pin::marked(ui, &label);
             let branch = match &label.target {
                 Some(crate::commands::Target::Branch(_)) => ui.refs.branch(&label.name),
                 _ => None,
@@ -1776,8 +1805,22 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
                 Some(distance) => format!("{} {distance}", label.name),
                 None => label.name,
             };
-            let mark = label.remote.is_some().then_some("cloud");
-            let chip = kit::chip_marked(label.chip, text, mark).id(("label", i)).tooltip(kit::tip(tip));
+            let marks: &[&'static str] = match (pinned, label.remote.is_some()) {
+                (true, true) => &["cloud", "pin"],
+                (true, false) => &["pin"],
+                (false, true) => &["cloud"],
+                (false, false) => &[],
+            };
+            let tip = if pinned { format!("{tip}\nPinned to the left of the graph") } else { tip };
+            let hovered = oid.to_owned();
+            let chip = kit::chip_marked(label.chip, text, marks)
+                .id(("label", i))
+                .tooltip(kit::tip(tip))
+                .on_hover(cx.listener(move |app, hovered_now: &bool, w, cx| {
+                    let oid = hovered.clone();
+                    let action = if *hovered_now { crate::highlight::Action::Enter(oid) } else { crate::highlight::Action::Leave(oid) };
+                    app.dispatch(Action::Highlight(action), w, cx);
+                }));
             match (label.target, carried) {
                 (Some(target), Some(carried)) => live_label(chip, oid.to_owned(), carried, target, label.remote, cx).into_any_element(),
                 _ => chip.into_any_element(),
@@ -1819,7 +1862,42 @@ pub(crate) fn author_tip(author: &str, email: &str) -> String {
     if email.is_empty() { author.to_owned() } else { format!("{author} <{email}>") }
 }
 
-fn history_metadata(written: Written, now: i64, widths: crate::columns::Widths, selected: bool) -> Div {
+const CHANGE_COUNT: f32 = 22.;
+
+fn change_bar(size: crate::changes::Size, most: u32, room: f32) -> Div {
+    let length = room * size.lines() as f32 / most.max(1) as f32;
+    let added = if size.lines() == 0 { 0. } else { length * size.added as f32 / size.lines() as f32 };
+    div()
+        .h(px(6.))
+        .w(px(length.max(if size.lines() > 0 { 2. } else { 0. })))
+        .flex_shrink_0()
+        .flex()
+        .rounded(px(2.))
+        .overflow_hidden()
+        .child(div().h_full().w(px(added)).bg(rgb(ADDED)))
+        .child(div().h_full().flex_1().bg(rgb(DELETED)))
+}
+
+fn changes_cell(width: f32, size: Option<(crate::changes::Size, u32)>, color: u32) -> gpui::Stateful<Div> {
+    let cell = div().id("changes").w(px(width)).flex().items_center().flex_shrink_0().overflow_hidden().pr_2().gap(px(4.));
+    match size {
+        Some((size, most)) => {
+            let room = (width - 8. - 4. - CHANGE_COUNT).max(0.);
+            cell.child(div().w(px(CHANGE_COUNT)).flex_shrink_0().child(kit::fit(size.files.to_string()).size(TEXT_SMALL).color(color)))
+                .child(change_bar(size, most, room))
+                .tooltip(kit::tip(size.tip()))
+        }
+        None => cell,
+    }
+}
+
+fn history_metadata(
+    written: Written,
+    now: i64,
+    widths: crate::columns::Widths,
+    selected: bool,
+    size: Option<(crate::changes::Size, u32)>,
+) -> Div {
     let Written { author, email, date, time, oid } = written;
     let color = if selected { TEXT_2 } else { TEXT_3 };
     let named = widths.author >= crate::columns::NAMED_AUTHOR;
@@ -1848,6 +1926,7 @@ fn history_metadata(written: Written, now: i64, widths: crate::columns::Widths, 
                     .when(!named || !email.is_empty(), |d| d.tooltip(kit::tip(tip))),
             )
         })
+        .when(widths.changes > 0., |d| d.child(changes_cell(widths.changes, size, color)))
         .when(widths.date > 0., |d| {
             d.child(
                 div()
@@ -1878,15 +1957,18 @@ fn history_metadata(written: Written, now: i64, widths: crate::columns::Widths, 
         })
 }
 
-fn subject_cell(id: &'static str, subject: &str, color: u32) -> gpui::Stateful<Div> {
+fn subject_cell(id: &'static str, subject: &str, body: Option<&str>, color: u32) -> gpui::Stateful<Div> {
     let clipped = kit::Clipped::default();
+    let body = body.filter(|body| !body.is_empty());
+    let text = kit::fit(subject.to_owned()).color(color).clipped(&clipped);
     div()
         .id(id)
         .flex_1()
         .min_w_0()
         .flex()
         .items_center()
-        .child(kit::fit(subject.to_owned()).color(color).grow().clipped(&clipped))
+        .child(if body.is_some() { text } else { text.grow() })
+        .when_some(body, |d, body| d.child(kit::fit(format!("   {body}")).color(TEXT_3).grow()))
         .tooltip(kit::tip_when_clipped(subject.to_owned(), &clipped))
 }
 
@@ -2032,6 +2114,36 @@ fn author_heading<T: Desk>(ui: &Ui, title: Option<&'static str>, cx: &Context<T>
         .into_any_element()
 }
 
+fn graph_heading<T: Desk>(ui: &Ui, cx: &Context<T>) -> gpui::AnyElement {
+    let pinned = crate::pin::tip(ui).is_some() && crate::pin::active(ui);
+    div()
+        .min_w_0()
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .when(pinned, |d| {
+            d.child(
+                div()
+                    .id("jump-to-pinned")
+                    .size(px(18.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .child(kit::icon("pin").size(px(11.)).text_color(rgb(TEXT_3)))
+                    .hover(|s| s.bg(rgb(RAISED)))
+                    .tooltip(kit::tip("Jump to the pinned branch".to_owned()))
+                    .on_click(cx.listener(|app, _, w, cx| {
+                        cx.stop_propagation();
+                        app.dispatch(Action::Pin(crate::pin::Action::Jump), w, cx);
+                    })),
+            )
+        })
+        .into_any_element()
+}
+
 pub(crate) fn history_columns(ui: &Ui, centre_width: f32) -> crate::columns::Widths {
     crate::columns::drawn(ui, centre_width)
 }
@@ -2068,7 +2180,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
             let x = f32::from(event.event.position.x - event.bounds.left());
             crate::columns::drag(app, column, x, f32::from(event.bounds.size.width), cx);
         }))
-        .when(shown_graph, |d| d.child(heading_cell(Column::Graph, widths.graph, heading_title(None), cx)))
+        .when(shown_graph, |d| d.child(heading_cell(Column::Graph, widths.graph, graph_heading(ui, cx), cx)))
         .child(div().flex_1().min_w_0().overflow_hidden().child(kit::label("Description")))
         .children(Column::RIGHT.into_iter().filter(|column| widths.of(*column) > 0.).map(|column| {
             let width = widths.of(column);
@@ -2095,6 +2207,21 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                 cx.defer_in(window, |app, w, cx| app.dispatch(Action::More, w, cx));
             }
             let ui = app.ui();
+            let shown_commits = || {
+                range.clone().filter(|index| *index < ui.history_items()).filter_map(|index| match ui.stash.item(index) {
+                    HistoryItem::Commit(i) => ui.history.get(i),
+                    HistoryItem::Stash { .. } => None,
+                })
+            };
+            let most = if widths.changes > 0. {
+                let wanted = ui.changes.unknown(shown_commits().map(|row| row.oid.as_str()));
+                if !wanted.is_empty() {
+                    cx.defer_in(window, move |app, w, cx| app.dispatch(Action::Changes(crate::changes::Action::Load(wanted)), w, cx));
+                }
+                shown_commits().filter_map(|row| ui.changes.of(&row.oid)).map(|size| size.lines()).max().unwrap_or(0)
+            } else {
+                0
+            };
             range
                 .map(|index| {
                     if index >= ui.history_items() {
@@ -2121,13 +2248,14 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                         .items_center()
                                         .gap(px(6.))
                                         .child(kit::chip(kit::Chip::Stash, "stash"))
-                                        .child(subject_cell("subject", &entry.title, TEXT_2)),
+                                        .child(subject_cell("subject", &entry.title, None, TEXT_2)),
                                 )
                                 .child(history_metadata(
                                     Written { author: &entry.author, email: "", date: &entry.date, time: entry.time, oid: &entry.oid },
                                     moment,
                                     widths,
                                     active,
+                                    None,
                                 ))
                                 .on_click(cx.listener({
                                     let oid = oid.clone();
@@ -2157,7 +2285,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     let merge = row.parents.len() > 1;
                     let marking = ui.search.in_graph();
                     let marked = ui.search.marks(&row.oid);
-                    let dimmed = ui.graph_view.dims(&row.author, &row.email);
+                    let dimmed = ui.graph_view.dims(&row.author, &row.email) || ui.highlight.fades(&row.oid);
                     let dropped_on = crate::commands::Target::Commit(row.oid.clone());
                     crate::drag::target(kit::row(("commit", i), active), dropped_on, None, crate::drag::Look::Row, cx)
                         .h(px(ROW))
@@ -2198,6 +2326,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                 .child(subject_cell(
                                     "subject",
                                     &row.subject,
+                                    ui.bodies.then_some(row.body.as_str()),
                                     if marking && !marked {
                                         TEXT_3
                                     } else if merge {
@@ -2213,6 +2342,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                 moment,
                                 widths,
                                 active,
+                                ui.changes.of(&row.oid).map(|size| (size, most)),
                             )
                             .when(dimmed, |d| d.opacity(DIMMED)),
                         )
@@ -3276,6 +3406,7 @@ mod tests {
             behind,
             upstream: upstream.map(str::to_owned),
             gone: false,
+            time: 0,
         };
         let items = vec![
             named(crate::refs::Kind::Branch, "feature/x", Some("origin/feature/x"), 2, 1),

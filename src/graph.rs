@@ -17,11 +17,21 @@ pub struct Lanes {
     pub offset: f32,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum Pin {
+    #[default]
+    Off,
+    Waiting,
+    Following(String),
+}
+
 #[derive(Default)]
 pub struct Graph {
     lanes: Vec<Option<String>>,
     rows: Vec<LaneRow>,
     columns: usize,
+    pin: Pin,
+    pinned: bool,
 }
 
 #[derive(Clone)]
@@ -30,12 +40,30 @@ struct LaneRow {
     incoming: bool,
     through: Vec<usize>,
     outgoing: Vec<usize>,
+    joining: Vec<usize>,
 }
 
 impl Graph {
+    pub fn pinned(reserve: bool) -> Self {
+        let pin = if reserve { Pin::Waiting } else { Pin::Off };
+        Self { pin, pinned: reserve, ..Self::default() }
+    }
+
+    pub fn reserved(&self) -> bool {
+        self.pinned
+    }
+
+    pub fn awaiting_pin(&self) -> bool {
+        self.pin == Pin::Waiting
+    }
+
     fn vacant_lane(&mut self) -> usize {
-        if let Some(index) = self.lanes.iter().position(Option::is_none) {
-            index
+        let first = usize::from(self.pin != Pin::Off);
+        while self.lanes.len() < first {
+            self.lanes.push(None);
+        }
+        if let Some(index) = self.lanes.iter().skip(first).position(Option::is_none) {
+            index + first
         } else {
             self.lanes.push(None);
             self.lanes.len() - 1
@@ -48,10 +76,28 @@ impl Graph {
             .position(|slot| slot.as_deref() == Some(oid))
     }
 
-    pub fn push(&mut self, oid: &str, parents: &[String]) {
-        let pending = self.find(oid);
-        let node = pending.unwrap_or_else(|| self.vacant_lane());
+    pub fn push(&mut self, oid: &str, parents: &[String], starts_pin: bool) {
+        let on_pin = match &self.pin {
+            Pin::Off => false,
+            Pin::Waiting => starts_pin,
+            Pin::Following(next) => next == oid,
+        };
+        let holding: Vec<usize> = self
+            .lanes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| (slot.as_deref() == Some(oid)).then_some(i))
+            .collect();
+        let node = if on_pin { 0 } else { holding.first().copied().unwrap_or_else(|| self.vacant_lane()) };
+        while self.lanes.len() <= node {
+            self.lanes.push(None);
+        }
+        for lane in &holding {
+            self.lanes[*lane] = None;
+        }
         self.lanes[node] = None;
+        let incoming = holding.contains(&node);
+        let joining = holding.into_iter().filter(|lane| *lane != node).collect();
         let through = self
             .lanes
             .iter()
@@ -61,6 +107,7 @@ impl Graph {
         let mut outgoing = Vec::with_capacity(parents.len());
         for (i, parent) in parents.iter().enumerate() {
             let lane = match self.find(parent) {
+                _ if i == 0 && on_pin => node,
                 Some(existing) => existing,
                 None if i == 0 => node,
                 None => self.vacant_lane(),
@@ -68,12 +115,16 @@ impl Graph {
             self.lanes[lane] = Some(parent.clone());
             outgoing.push(lane);
         }
+        if on_pin {
+            self.pin = parents.first().map_or(Pin::Off, |parent| Pin::Following(parent.clone()));
+        }
         self.columns = self.columns.max(self.lanes.len());
         self.rows.push(LaneRow {
             node,
-            incoming: pending.is_some(),
+            incoming,
             through,
             outgoing,
+            joining,
         });
         while self.lanes.last() == Some(&None) {
             self.lanes.pop();
@@ -117,6 +168,16 @@ impl Graph {
                 };
                 for lane in &row.through {
                     window.paint_quad(straight(*lane, b.top(), b.bottom()));
+                }
+                for lane in &row.joining {
+                    let (from, to) = (point(x(*lane), b.top()), point(x(row.node), mid));
+                    let bend = (mid - b.top()) * 0.7;
+                    let mut path = PathBuilder::stroke(px(2.));
+                    path.move_to(from);
+                    path.cubic_bezier_to(to, point(from.x, from.y + bend), point(to.x, to.y - bend));
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, color(*lane));
+                    }
                 }
                 if row.incoming {
                     window.paint_quad(straight(row.node, b.top(), mid));
@@ -179,7 +240,7 @@ impl Graph {
                 let marker = bounds.right() - px(10.);
                 let stem = x(row.node);
                 dashes(window, point(stem + px(1.), mid - px(1.)), marker - stem - px(4.), true, TEXT_3);
-                for lane in row.through.iter().copied().chain(row.incoming.then_some(row.node)) {
+                for lane in row.through.iter().copied().chain(row.joining.iter().copied()).chain(row.incoming.then_some(row.node)) {
                     window.paint_quad(fill(
                         Bounds::new(point(x(lane) - px(1.), bounds.top()), size(px(2.), bounds.size.height)),
                         rgb(LANES[lane % LANES.len()]),
@@ -245,11 +306,11 @@ mod tests {
     fn fanned(lanes: usize) -> Graph {
         let mut graph = Graph::default();
         let tips: Vec<String> = (0..lanes).map(|lane| format!("tip{lane}")).collect();
-        graph.push("gather", &tips);
+        graph.push("gather", &tips, false);
         for tip in &tips {
-            graph.push(tip, &["base".into()]);
+            graph.push(tip, &["base".into()], false);
         }
-        graph.push("base", &[]);
+        graph.push("base", &[], false);
         graph
     }
 
@@ -280,15 +341,53 @@ mod tests {
     #[test]
     fn lanes_fork_at_a_merge_and_join_at_the_common_ancestor() {
         let mut graph = Graph::default();
-        graph.push("merge", &["left".into(), "right".into()]);
-        graph.push("left", &["base".into()]);
-        graph.push("right", &["base".into()]);
-        graph.push("base", &[]);
+        graph.push("merge", &["left".into(), "right".into()], false);
+        graph.push("left", &["base".into()], false);
+        graph.push("right", &["base".into()], false);
+        graph.push("base", &[], false);
         assert_eq!(graph.rows[0].outgoing, [0, 1]);
         assert_eq!(graph.rows[1].through, [1]);
         assert_eq!(graph.rows[2].node, 1);
         assert_eq!(graph.rows[2].outgoing, [0]);
         assert_eq!(graph.rows[3].node, 0);
         assert!(graph.rows[3].incoming && graph.lanes.is_empty());
+    }
+
+    fn history(graph: &mut Graph, tip: &str) {
+        for (oid, parents) in [("f2", "f1"), ("f1", "b"), ("c", "b"), ("b", "a"), ("a", "")] {
+            let parents: Vec<String> = parents.split_whitespace().map(String::from).collect();
+            graph.push(oid, &parents, oid == tip);
+        }
+    }
+
+    #[test]
+    fn a_pinned_branch_keeps_the_first_lane_and_a_branch_off_it_joins_from_the_side() {
+        let mut free = Graph::default();
+        history(&mut free, "c");
+        assert_eq!(free.rows.iter().map(|row| row.node).collect::<Vec<_>>(), [0, 0, 1, 0, 0]);
+
+        let mut pinned = Graph::pinned(true);
+        assert!(pinned.awaiting_pin() && pinned.reserved());
+        history(&mut pinned, "c");
+        assert_eq!(pinned.rows.iter().map(|row| row.node).collect::<Vec<_>>(), [1, 1, 0, 0, 0]);
+        assert!(!pinned.rows[2].incoming);
+        assert_eq!(pinned.rows[2].through, [1]);
+        assert_eq!(pinned.rows[2].outgoing, [0]);
+        assert!(pinned.rows[3].incoming);
+        assert_eq!(pinned.rows[3].joining, [1]);
+        assert!(pinned.rows[3].through.is_empty());
+        assert!(!pinned.awaiting_pin());
+        assert_eq!(pinned.pin, super::Pin::Off);
+        assert!(pinned.lanes.is_empty());
+        assert_eq!(pinned.node_x(0), Some(LEFT + LANE));
+    }
+
+    #[test]
+    fn a_pin_whose_branch_never_arrives_keeps_the_first_lane_empty() {
+        let mut graph = Graph::pinned(true);
+        history(&mut graph, "none");
+        assert_eq!(graph.rows.iter().map(|row| row.node).collect::<Vec<_>>(), [1, 1, 2, 1, 1]);
+        assert!(graph.awaiting_pin());
+        assert!(graph.rows.iter().all(|row| row.joining.is_empty()));
     }
 }

@@ -609,10 +609,10 @@ pub enum Chip {
 }
 
 pub fn chip(kind: Chip, text: impl Into<SharedString>) -> Div {
-    chip_marked(kind, text, None)
+    chip_marked(kind, text, &[])
 }
 
-pub fn chip_marked(kind: Chip, text: impl Into<SharedString>, mark: Option<&'static str>) -> Div {
+pub fn chip_marked(kind: Chip, text: impl Into<SharedString>, marks: &[&'static str]) -> Div {
     let (fg, bg, lead) = match kind {
         Chip::Head => (ACCENT_INK, rgb(ACCENT), Some("check")),
         Chip::Local => (ACCENT, soft(ACCENT, 0x24), None),
@@ -647,9 +647,7 @@ pub fn chip_marked(kind: Chip, text: impl Into<SharedString>, mark: Option<&'sta
                     FontWeight::MEDIUM
                 }),
         )
-        .when_some(mark, |d, name| {
-            d.child(icon(name).flex_shrink_0().size(px(10.)).text_color(rgb(fg)))
-        })
+        .children(marks.iter().map(|name| icon(*name).flex_shrink_0().size(px(10.)).text_color(rgb(fg))))
 }
 
 pub fn badge(status: &str) -> Div {

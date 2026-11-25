@@ -1008,6 +1008,7 @@ mod tests {
             behind,
             upstream: upstream.map(str::to_owned),
             gone,
+            time: 0,
         }
     }
 
