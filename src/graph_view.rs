@@ -646,6 +646,14 @@ fn picked_names(target: &Target) -> Option<Vec<String>> {
     names.iter().all(|name| hideable(name)).then_some(names)
 }
 
+fn hide_picked_title(target: &Target) -> String {
+    picked_names(target).map_or_else(String::new, |names| format!("Hide {} in the graph", crate::cleanup::branches_counted(names.len())))
+}
+
+fn solo_picked_title(target: &Target) -> String {
+    picked_names(target).map_or_else(String::new, |names| format!("Solo {}", crate::cleanup::branches_counted(names.len())))
+}
+
 fn on_section(target: &Target) -> Option<Section> {
     match target {
         Target::Section(section) => Some(*section),
@@ -700,7 +708,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     Command::new(
         "graph.hide-picked",
         Group::View,
-        |_, target| picked_names(target).map_or_else(String::new, |names| format!("Hide {} branches in the graph", names.len())),
+        |_, target| hide_picked_title(target),
         |ui, target, _| match picked_names(target) {
             Some(names) if !ui.repo.is_empty() && names.iter().any(|name| ui.graph_view.hidden_by(name).is_none()) => {
                 Availability::Enabled
@@ -713,7 +721,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     Command::new(
         "graph.solo-picked",
         Group::View,
-        |_, target| picked_names(target).map_or_else(String::new, |names| format!("Solo {} branches", names.len())),
+        |_, target| solo_picked_title(target),
         |ui, target, _| match picked_names(target) {
             Some(names) if !ui.repo.is_empty() && names.iter().any(|name| !ui.graph_view.solo.contains(name)) => {
                 Availability::Enabled
@@ -1058,6 +1066,16 @@ mod tests {
         assert_eq!(subjects(&view), set(&["Mine only", "Other only", "Base"]));
         view.upstream = Some("refs/remotes/origin/gone".into());
         assert_eq!(subjects(&view), set(&["Mine only", "Base"]));
+    }
+
+    #[test]
+    fn picked_branch_titles_count_one_branch_in_the_singular() {
+        let picked = |names: &[&str]| Target::Branches(names.iter().map(std::ffi::OsString::from).collect());
+        assert_eq!(hide_picked_title(&picked(&["feature/map"])), "Hide 1 branch in the graph");
+        assert_eq!(solo_picked_title(&picked(&["feature/map"])), "Solo 1 branch");
+        assert_eq!(hide_picked_title(&picked(&["a", "b", "c"])), "Hide 3 branches in the graph");
+        assert_eq!(solo_picked_title(&picked(&["a", "b"])), "Solo 2 branches");
+        assert_eq!(hide_picked_title(&Target::Repo), "");
     }
 
     #[test]

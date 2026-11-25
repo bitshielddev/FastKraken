@@ -60,7 +60,7 @@ pub(crate) fn listing(names: &[String]) -> String {
     }
 }
 
-fn branches_counted(count: usize) -> String {
+pub(crate) fn branches_counted(count: usize) -> String {
     match count {
         1 => "1 branch".to_owned(),
         n => format!("{n} branches"),
@@ -386,6 +386,11 @@ fn picked(target: &Target) -> Option<&Vec<OsString>> {
     }
 }
 
+fn delete_picked_title((deletable, picked): (usize, usize)) -> String {
+    let count = if deletable == 0 { picked } else { deletable };
+    format!("Delete {}…", branches_counted(count))
+}
+
 fn merged_here(ui: &Ui, target: &Target) -> bool {
     matches!(target, Target::Section(crate::refs::Section::Branches)) && !ui.repo.is_empty() || on_repo(ui, target)
 }
@@ -394,10 +399,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     Command::new(
         "branch.delete-picked",
         Group::Manage,
-        |ui, target| {
-            let count = picked(target).map_or(0, |names| deletable(ui, names).0.len());
-            format!("Delete {}…", branches_counted(count))
-        },
+        |ui, target| delete_picked_title(picked(target).map_or((0, 0), |names| (deletable(ui, names).0.len(), names.len()))),
         |ui, target, _| {
             let Some(names) = picked(target) else { return Availability::Hidden };
             Availability::unless(busy(ui).or_else(|| operating(ui)).or_else(|| {
@@ -596,6 +598,9 @@ mod tests {
                 "Restore all, in the notice that follows, brings them back.",
             ]
         );
+        assert_eq!(delete_picked_title((2, 3)), "Delete 2 branches…");
+        assert_eq!(delete_picked_title((0, 1)), "Delete 1 branch…");
+        assert_eq!(delete_picked_title((1, 1)), "Delete 1 branch…");
         let spec = delete_spec(&branches[..2], 0, None);
         assert_eq!(spec.lines[2], "Their commits are also on other branches or tags.");
         assert_eq!(listing(&["a".into()]), "a");
