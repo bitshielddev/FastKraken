@@ -730,6 +730,36 @@ fn stopped_commit(repo: &Repository, kind: Kind) -> Result<Option<Named>> {
     oid.map(|oid| described(repo, oid)).transpose()
 }
 
+fn picking_step(repo: &Repository, head: Option<&str>) -> Result<Option<(usize, usize)>> {
+    let git_dir = repo.git_dir();
+    let Some(todo) = read(git_dir, "sequencer/todo")? else {
+        return Ok(None);
+    };
+    let left = String::from_utf8_lossy(&todo)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .count();
+    let (Some(head), Some(start)) = (head, marked_commit(repo, read_line(git_dir, "sequencer/head")?)?) else {
+        return Ok(None);
+    };
+    if left == 0 {
+        return Ok(None);
+    }
+    validate_oid(head)?;
+    let Ok(counted) = checked(repo.read_command().args(["rev-list", "--count", "--first-parent", &format!("{start}..{head}"), "--"]))
+    else {
+        return Ok(None);
+    };
+    let Ok(picked) = String::from_utf8_lossy(&counted).trim().parse::<usize>() else {
+        return Ok(None);
+    };
+    let safe = read_line(git_dir, "sequencer/abort-safety")?;
+    let current_committed = !exists(git_dir, "CHERRY_PICK_HEAD")? && safe.as_deref().is_some_and(|safe| safe != head);
+    let before = picked.saturating_sub(usize::from(current_committed));
+    Ok(Some((before + 1, before + left)))
+}
+
 fn number(git_dir: &Path, name: &str) -> Result<Option<usize>> {
     Ok(read_line(git_dir, name)?.and_then(|line| line.parse().ok()))
 }
@@ -778,6 +808,7 @@ pub(crate) fn snapshot(repo: &Repository) -> Result<Option<Snapshot>> {
             let start = read_line(git_dir, "BISECT_START")?.unwrap_or_default();
             (if start.is_empty() { current } else { start }, None, None)
         }
+        Kind::CherryPick => (current, None, picking_step(repo, id.head.as_deref())?),
         _ => (current, None, None),
     };
     let conflicts = conflicts(repo)?;

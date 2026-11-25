@@ -42,8 +42,59 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         |_, _| Some(view::Action::Pick(Action::Start)),
     )
     .words(&["cherry pick", "pick commit", "copy commit", "backport", "apply commit"])
+    .icon("commit"),
+    Command::new(
+        "commits.cherry-pick",
+        Group::Switch,
+        |ui, target| {
+            let count = crate::compare::commits_of(target).map_or(0, |oids| wanted(ui, oids).len());
+            match on_branch(ui) {
+                true => format!("Cherry-pick {} onto {}…", commits(count), ui.branch),
+                false => format!("Cherry-pick {}…", commits(count)),
+            }
+        },
+        |ui, target, _| {
+            let Some(oids) = crate::compare::commits_of(target) else {
+                return Availability::Hidden;
+            };
+            if wanted(ui, oids).is_empty() {
+                return Availability::Hidden;
+            }
+            Availability::unless(
+                busy(ui)
+                    .or_else(|| operating(ui))
+                    .or_else(|| (!on_branch(ui)).then(|| "Check out a branch first".to_owned()))
+                    .or_else(|| holds_merge(ui, oids).then(|| MERGE_ALONE.to_owned())),
+            )
+        },
+        |_, target| crate::compare::commits_of(target).map(|oids| view::Action::Pick(Action::Several(oids.to_vec()))),
+    )
+    .words(&["cherry pick", "pick commits", "copy commits", "backport", "several"])
     .icon("commit")]
 };
+
+pub(crate) const MERGE_ALONE: &str = "Cherry-pick a merge on its own";
+const LISTED: usize = 12;
+
+fn commits(count: usize) -> String {
+    match count {
+        1 => "1 commit".to_owned(),
+        n => format!("{n} commits"),
+    }
+}
+
+fn wanted<'a>(ui: &Ui, oids: &'a [String]) -> Vec<&'a String> {
+    oids.iter().filter(|oid| contains(ui, oid) != Some(true)).collect()
+}
+
+fn holds_merge(ui: &Ui, oids: &[String]) -> bool {
+    oids.iter().any(|oid| ui.history.iter().any(|row| &row.oid == oid && row.parents.len() > 1))
+}
+
+pub(crate) fn offered(ui: &Ui, oids: &[String], cx: &gpui::App) -> Option<crate::commands::Entry> {
+    let command = crate::commands::find("commits.cherry-pick")?;
+    crate::commands::entry(command, ui, &crate::commands::Target::Commits(oids.to_vec()), cx)
+}
 
 fn on_branch(ui: &Ui) -> bool {
     !ui.detached && ui.head.is_some()
@@ -75,9 +126,10 @@ fn reaches(history: &[view::HistoryRow], head: &str, oid: &str) -> Option<bool> 
     Some(false)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Action {
     Start,
+    Several(Vec<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -236,6 +288,324 @@ impl Ask {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Listed {
+    pub oid: String,
+    pub subject: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Series {
+    branch: String,
+    seen: Seen,
+    head: String,
+    commits: Vec<Listed>,
+    left_out: usize,
+    message: String,
+}
+
+impl Series {
+    pub(crate) fn commits(&self) -> &[Listed] {
+        &self.commits
+    }
+
+    fn oids(&self) -> Vec<&str> {
+        self.commits.iter().map(|commit| commit.oid.as_str()).collect()
+    }
+
+    fn single(&self) -> Option<Ask> {
+        let [only] = self.commits.as_slice() else {
+            return None;
+        };
+        Some(Ask {
+            branch: self.branch.clone(),
+            seen: self.seen.clone(),
+            head: self.head.clone(),
+            target: only.oid.clone(),
+            subject: only.subject.clone(),
+            message: self.message.clone(),
+            parents: Vec::new(),
+            commit_now: true,
+            mainline: None,
+        })
+    }
+
+    pub(crate) fn pick(&self, repo: &Repository) -> Result<Outcome, Failure> {
+        validate_oid(&self.head)?;
+        for commit in &self.commits {
+            validate_oid(&commit.oid)?;
+        }
+        if self.commits.is_empty() {
+            return Err(Failure::from("There is nothing to cherry-pick.".to_owned()));
+        }
+        if self.seen.head_ref.is_none() || self.seen.head.as_deref() != Some(self.head.as_str()) {
+            return Err(Failure::from("Check out a branch first.".to_owned()));
+        }
+        repo.expect_no_operation()?;
+        repo.expect_checkout(&self.seen)?;
+        let oids = self.oids();
+        if !merges_among(repo, &oids)?.is_empty() {
+            return Err(Failure::from(format!("{MERGE_ALONE}.")));
+        }
+        overwritten(repo, &oids)?;
+        let mut command = repo.command();
+        command.env("GIT_EDITOR", "true").env("GIT_MERGE_AUTOEDIT", "no").stdin(Stdio::null());
+        command.args(["cherry-pick", "--no-edit", "--empty=drop"]).args(&oids);
+        let output = command.run().map_err(|e| Failure::from(format!("Run bundled Git: {e}")))?;
+        let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        let gits_words = || {
+            let text = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            let text = if text.is_empty() { printed.trim().to_owned() } else { text };
+            if text.is_empty() { format!("Git exited with {}", output.status) } else { text }
+        };
+        let head = head_of(repo)?;
+        match operation::snapshot(repo)? {
+            Some(now) if now.kind == Operation::CherryPick => {
+                let at = now.step.map(|(at, of)| format!(" at commit {at} of {of}")).unwrap_or_default();
+                if !now.conflicts.is_empty() {
+                    return Err(Failure::from(format!(
+                        "The cherry-pick stopped on a conflict{at}. {} resolving before it can go on.",
+                        needing(now.conflicts.len())
+                    ))
+                    .output(printed));
+                }
+                if now.empty {
+                    let commit = now.commit.as_ref().map_or("The next commit", |c| c.label.as_str());
+                    return Err(Failure::from(format!("{commit} is now empty. Skip it, or keep it as an empty commit.")).output(printed));
+                }
+                if head == self.head && !repo.git_dir().join("CHERRY_PICK_HEAD").exists() {
+                    operation::backend::quit_pick(repo)?;
+                    return Err(Failure::from(gits_words()).output(printed));
+                }
+                Err(Failure::from(format!("The cherry-pick stopped{at}. Continue it or abort it once you have dealt with this:\n{}", gits_words()))
+                    .output(printed))
+            }
+            Some(_) => Err(Failure::from(gits_words()).output(printed)),
+            None if !output.status.success() => Err(Failure::from(gits_words()).output(printed)),
+            None => self.landed(repo, &head),
+        }
+    }
+
+    fn landed(&self, repo: &Repository, head: &str) -> Result<Outcome, Failure> {
+        let branch = &self.branch;
+        let range = format!("{}..{head}", self.head);
+        let added = checked(repo.read_command().args(["rev-list", "--count", "--first-parent", &range, "--"]))?;
+        let added: usize = String::from_utf8_lossy(&added).trim().parse().unwrap_or(0);
+        if added == 0 {
+            return Ok(Outcome::titled(
+                format!("{branch} already has these changes"),
+                format!("Picking {} would change nothing on {branch}, so nothing was picked.", commits(self.commits.len())),
+            ));
+        }
+        let mut detail = format!("{branch} is at {}.", notice::short(head));
+        match self.commits.len().saturating_sub(added) {
+            0 => {}
+            1 => detail.push_str(&format!(" 1 commit was left out because {branch} already has its changes.")),
+            n => detail.push_str(&format!(" {n} commits were left out because {branch} already has their changes.")),
+        }
+        Ok(Outcome::titled(format!("Cherry-picked {} onto {branch}", commits(added)), detail))
+    }
+
+    pub(crate) fn attempt(&self, repo: &Repository, stash: bool, kept: &crate::autostash::Kept) -> Result<Outcome, Failure> {
+        let how = crate::autostash::Around { doing: format!("cherry-picking {}", commits(self.commits.len())), stash, kept };
+        let midway = std::cell::RefCell::new(None);
+        let result = crate::autostash::around(
+            repo,
+            how,
+            || crate::autostash::Retry::Picks(Box::new(self.clone())),
+            |repo| {
+                let picked = self.pick(repo);
+                if let Err(failure) = &picked
+                    && crate::autostash::in_the_way(failure)
+                    && repo.expect_no_operation().is_err()
+                {
+                    *midway.borrow_mut() = Some((failure.text.clone(), failure.output.clone()));
+                }
+                picked
+            },
+            |outcome| outcome.title.starts_with("Cherry-picked").then(|| crate::autostash::lowered(&outcome.title)),
+        );
+        match (result, midway.into_inner()) {
+            (Err(_), Some((text, output))) => {
+                let mut failure = Failure::from(text);
+                failure.output = output;
+                Err(failure)
+            }
+            (result, _) => result,
+        }
+    }
+}
+
+fn oldest_first(newest_first: &[String], subject: impl Fn(&str) -> String) -> Vec<Listed> {
+    newest_first.iter().rev().map(|oid| Listed { oid: oid.clone(), subject: subject(oid) }).collect()
+}
+
+fn head_of(repo: &Repository) -> Result<String, Failure> {
+    let head = checked(repo.read_command().args(["rev-parse", "--verify", "HEAD^{commit}"]))?;
+    Ok(String::from_utf8_lossy(&head).trim().to_owned())
+}
+
+fn merges_among(repo: &Repository, oids: &[&str]) -> Result<Vec<u8>, String> {
+    checked(repo.read_command().args(["rev-list", "--no-walk=unsorted", "--min-parents=2"]).args(oids).arg("--"))
+}
+
+fn overwritten(repo: &Repository, oids: &[&str]) -> Result<(), Failure> {
+    let status = checked(repo.read_command().args(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]))?;
+    let changed: HashSet<&[u8]> =
+        status.split(|&b| b == 0).filter_map(|record| record.get(3..)).filter(|path| !path.is_empty()).collect();
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let mut clashing = std::collections::BTreeSet::new();
+    for oid in oids {
+        let touched = checked(
+            repo.read_command().args(["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", oid, "--"]),
+        )?;
+        for path in touched.split(|&b| b == 0).filter(|path| changed.contains(path)) {
+            clashing.insert(String::from_utf8_lossy(path).into_owned());
+        }
+    }
+    if clashing.is_empty() {
+        return Ok(());
+    }
+    let listed: Vec<String> = clashing.iter().map(|path| format!("\t{path}")).collect();
+    Err(Failure::from(format!(
+        "Your local changes to the following files would be overwritten by cherry-pick:\n{}\nCommit or stash them first.",
+        listed.join("\n")
+    )))
+}
+
+fn left_out_line(series: &Series) -> Option<String> {
+    let branch = &series.branch;
+    match series.left_out {
+        0 => None,
+        1 => Some(format!("1 picked commit is already part of {branch}, so it is left out.")),
+        n => Some(format!("{n} picked commits are already part of {branch}, so they are left out.")),
+    }
+}
+
+pub(crate) fn describe_series(series: &Series, _: &Ui) -> Spec {
+    series_spec(series)
+}
+
+fn series_spec(series: &Series) -> Spec {
+    if let Some(ask) = series.single() {
+        let mut spec = spec(&ask);
+        if let Some(line) = left_out_line(series) {
+            spec = spec.line(line);
+        }
+        return spec;
+    }
+    let (branch, count) = (&series.branch, series.commits.len());
+    let mut spec = Spec::new(format!("Cherry-pick {count} commits onto {branch}?"), format!("Cherry-pick {count} commits"))
+        .line("Oldest first:");
+    for commit in series.commits.iter().take(LISTED) {
+        spec = spec.line(match commit.subject.as_str() {
+            "" => notice::short(&commit.oid).to_owned(),
+            subject => format!("{}  {subject}", notice::short(&commit.oid)),
+        });
+    }
+    if count > LISTED {
+        spec = spec.line(format!("…and {} more", count - LISTED));
+    }
+    if let Some(line) = left_out_line(series) {
+        spec = spec.line(line);
+    }
+    spec = spec.line(format!(
+        "Each becomes a new commit on {branch}. If one conflicts, the cherry-pick stops there for you to resolve, skip or abort. Several commits are always committed straight away; pick one at a time to edit the changes first."
+    ));
+    spec.tick = Some(("Commit straight away".into(), true));
+    spec.fixed_tick = true;
+    spec
+}
+
+pub(crate) fn confirm_series(tab: &mut Tab, series: Series, answer: Answer, cx: &mut Context<Tab>) {
+    let stash = tab.ui.autostash.always;
+    match series.single() {
+        Some(mut ask) => {
+            ask.commit_now = answer.tick;
+            run(tab, ask, stash, cx);
+        }
+        None => run_series(tab, series, stash, cx),
+    }
+}
+
+pub(crate) fn run_series(tab: &mut Tab, series: Series, stash: bool, cx: &mut Context<Tab>) {
+    let restored = crate::autostash::Kept::default();
+    let left = restored.clone();
+    tab.run_operation_or(
+        cx,
+        "Cherry-picking the commits…",
+        "Cherry-picked",
+        true,
+        move |repo| series.attempt(&repo, stash, &restored),
+        |_, _| {},
+        move |tab, _| left.remember(&mut tab.ui),
+    );
+}
+
+fn check_series(tab: &mut Tab, mut series: Series, picked: Vec<String>, cx: &mut Context<Tab>) {
+    let Some(repo) = tab.repo.clone() else { return };
+    let epoch = tab.epoch;
+    let (head, listed) = (series.head.clone(), series.commits.clone());
+    Tab::work(
+        cx,
+        move || {
+            validate_oid(&head)?;
+            let oids: Vec<&str> = listed.iter().map(|commit| commit.oid.as_str()).collect();
+            for oid in &oids {
+                validate_oid(oid)?;
+            }
+            if !merges_among(&repo, &oids)?.is_empty() {
+                return Err(format!("{MERGE_ALONE}."));
+            }
+            let mut kept = Vec::new();
+            let mut left_out = 0;
+            for commit in listed {
+                if repo.is_ancestor(&commit.oid, &head)? {
+                    left_out += 1;
+                } else {
+                    kept.push(commit);
+                }
+            }
+            let message = match kept.as_slice() {
+                [only] => message_of(&repo, &only.oid)?,
+                _ => String::new(),
+            };
+            Ok::<_, String>((kept, left_out, message))
+        },
+        move |tab, checked, cx| {
+            let ui = &tab.ui;
+            if tab.epoch != epoch
+                || Seen::of(ui) != series.seen
+                || crate::compare::picked_commits(ui) != picked
+                || ui.busy()
+                || ui.dialog_open()
+            {
+                return;
+            }
+            match checked {
+                Ok((kept, _, _)) if kept.is_empty() => {
+                    let branch = &series.branch;
+                    tab.ui.notices.show(Notice::new(
+                        Tone::Info,
+                        format!("{branch} already has these commits"),
+                        format!("They are all part of {branch}'s history, so there is nothing to pick."),
+                    ));
+                    cx.notify();
+                }
+                Ok((kept, left_out, message)) => {
+                    series.commits = kept;
+                    series.left_out = left_out;
+                    series.message = message;
+                    prompt::ask(&mut tab.ui, prompt::Kind::Picks(series), cx);
+                }
+                Err(error) => tab.error(error, cx),
+            }
+        },
+    );
+}
+
 pub(crate) fn describe(ask: &Ask, _: &Ui) -> Spec {
     spec(ask)
 }
@@ -392,6 +762,28 @@ pub fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<
             };
             check_then_ask(tab, ask, cx);
         }
+        Action::Several(oids) => {
+            let Some(head) = tab.ui.head.clone() else { return };
+            if oids.len() < 2 {
+                return;
+            }
+            if !on_branch(&tab.ui) {
+                tab.ui.notices.show(Notice::new(Tone::Info, "Check out a branch first", ""));
+                cx.notify();
+                return;
+            }
+            let ui = &tab.ui;
+            let commits = oldest_first(&oids, |oid| reverse::subject_of(ui, oid));
+            let series = Series {
+                branch: ui.branch.clone(),
+                seen: Seen::of(ui),
+                head,
+                commits,
+                left_out: 0,
+                message: String::new(),
+            };
+            check_series(tab, series, oids, cx);
+        }
     }
 }
 
@@ -442,6 +834,255 @@ mod tests {
             .into_iter()
             .filter(|name| f.repo.git_dir().join(name).exists())
             .collect()
+    }
+
+    fn trail() -> (Fixture, String, [String; 3]) {
+        let f = Fixture::new();
+        commit(&f, "trail.txt", "Start\nFord\nSummit\n", "Base");
+        f.git(&["switch", "-qc", "side"]);
+        let ferry = commit(&f, "ferry.txt", "Hourly crossings\n", "Add the ferry");
+        let camp = commit(&f, "trail.txt", "Start\nFord\nSummit camp\n", "Camp at the summit");
+        commit(&f, "lake.txt", "Cold water\n", "Map the lake");
+        let amended = f.repo.command().env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00").args(["commit", "-q", "--amend", "--no-edit"]).output().unwrap();
+        assert!(amended.status.success());
+        let lake = oid(&f, "HEAD");
+        f.git(&["switch", "-q", "main"]);
+        let head = commit(&f, "bridge.txt", "Stone bridge\n", "Build the bridge");
+        (f, head, [ferry, camp, lake])
+    }
+
+    fn series(f: &Fixture, head: &str, newest_first: &[String]) -> Series {
+        let subject = |oid: &str| String::from_utf8(f.git(&["log", "-1", "--format=%s", oid])).unwrap().trim().to_owned();
+        Series {
+            branch: "main".into(),
+            seen: Seen { head_ref: Some("refs/heads/main".into()), head: Some(head.into()) },
+            head: head.into(),
+            commits: oldest_first(newest_first, subject),
+            left_out: 0,
+            message: String::new(),
+        }
+    }
+
+    fn landed(f: &Fixture, since: &str) -> Vec<String> {
+        String::from_utf8(f.git(&["log", "--reverse", "--format=%s", &format!("{since}..HEAD")])).unwrap().lines().map(str::to_owned).collect()
+    }
+
+    fn patch_of(f: &Fixture, oid: &str) -> Vec<u8> {
+        f.git(&["diff", &format!("{oid}^"), oid])
+    }
+
+    #[test]
+    fn several_commits_land_oldest_first_in_one_pick_whatever_their_dates() {
+        let (f, head, [ferry, camp, lake]) = trail();
+        assert_eq!(f.git(&["log", "-1", "--format=%cd", "--date=format:%Y", &lake]), b"2001\n");
+        let picks = series(&f, &head, &[lake.clone(), camp.clone(), ferry.clone()]);
+        assert_eq!(picks.oids(), [ferry.as_str(), camp.as_str(), lake.as_str()]);
+        let outcome = picks.pick(&f.repo).ok().expect("the commits apply");
+        let new = oid(&f, "HEAD");
+        assert_eq!(outcome.title, "Cherry-picked 3 commits onto main");
+        assert_eq!(outcome.detail, format!("main is at {}.", &new[..7]));
+        assert_eq!(landed(&f, &head), ["Add the ferry", "Camp at the summit", "Map the lake"]);
+        assert_eq!(oid(&f, "HEAD~3"), head);
+        for (at, picked) in [(2, &ferry), (1, &camp), (0, &lake)] {
+            let landed = oid(&f, &format!("HEAD~{at}"));
+            assert_eq!(patch_of(&f, &landed), patch_of(&f, picked));
+            assert_eq!(f.git(&["log", "-1", "--format=%an <%ae>%n%B", &landed]), f.git(&["log", "-1", "--format=%an <%ae>%n%B", picked]));
+        }
+        assert_eq!(f.git(&["symbolic-ref", "HEAD"]), b"refs/heads/main\n");
+        assert_eq!(status(&f), "");
+        assert!(leftovers(&f).is_empty() || leftovers(&f) == ["AUTO_MERGE"], "{:?}", leftovers(&f));
+        assert!(operation::snapshot(&f.repo).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_series_leaves_out_changes_the_branch_already_has() {
+        let (f, _, [ferry, camp, lake]) = trail();
+        let head = commit(&f, "ferry.txt", "Hourly crossings\n", "Copy the ferry");
+        let outcome = series(&f, &head, &[lake.clone(), camp.clone(), ferry.clone()]).pick(&f.repo).ok().expect("picked");
+        assert_eq!(outcome.title, "Cherry-picked 2 commits onto main");
+        assert!(outcome.detail.ends_with(" 1 commit was left out because main already has its changes."), "{}", outcome.detail);
+        assert_eq!(landed(&f, &head), ["Camp at the summit", "Map the lake"]);
+
+        let tip = oid(&f, "HEAD");
+        let outcome = series(&f, &tip, &[lake, camp]).pick(&f.repo).ok().expect("reported");
+        assert_eq!(outcome.title, "main already has these changes");
+        assert_eq!(outcome.detail, "Picking 2 commits would change nothing on main, so nothing was picked.");
+        assert_eq!(oid(&f, "HEAD"), tip);
+        assert_eq!(status(&f), "");
+        assert!(leftovers(&f).is_empty() || leftovers(&f) == ["AUTO_MERGE"], "{:?}", leftovers(&f));
+        assert!(operation::snapshot(&f.repo).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_series_stops_at_each_conflict_with_its_step_and_goes_on_from_the_panel() {
+        let f = Fixture::new();
+        commit(&f, "trail.txt", "Trail\n", "Base");
+        f.git(&["switch", "-qc", "side"]);
+        let ferry = commit(&f, "ferry.txt", "Hourly crossings\n", "Add the ferry");
+        let east = commit(&f, "trail.txt", "Trail east\n", "Head east");
+        let north = commit(&f, "trail.txt", "Trail east, then north\n", "Turn north");
+        let lake = commit(&f, "lake.txt", "Cold water\n", "Map the lake");
+        f.git(&["switch", "-q", "main"]);
+        let head = commit(&f, "trail.txt", "Trail west\n", "Head west");
+        let picks = series(&f, &head, &[lake.clone(), north.clone(), east.clone(), ferry.clone()]);
+        let err = picks.pick(&f.repo).err().expect("the second commit conflicts");
+        assert_eq!(err.text, "The cherry-pick stopped on a conflict at commit 2 of 4. 1 file needs resolving before it can go on.");
+        assert!(err.output.as_deref().is_some_and(|output| output.contains("CONFLICT")));
+        let shown = operation::snapshot(&f.repo).unwrap().unwrap();
+        assert_eq!((shown.kind, shown.step, shown.queued), (Operation::CherryPick, Some((2, 4)), true));
+        assert_eq!(shown.summary(), format!("Cherry-picking {} Head east onto main · commit 2 of 4 · 1 file needs resolving", &east[..7]));
+
+        fs::write(f.dir.join("trail.txt"), "Trail west and east\n").unwrap();
+        f.git(&["add", "--", "trail.txt"]);
+        f.git(&["commit", "-q", "--no-edit"]);
+        let between = operation::snapshot(&f.repo).unwrap().unwrap();
+        assert_eq!((between.kind, between.step), (Operation::CherryPick, Some((2, 4))));
+        let err = operation::backend::finish(&f.repo, &between, between.message.clone()).err().expect("the third commit conflicts");
+        assert!(err.text.starts_with("The cherry-pick stopped on a conflict at commit 3 of 4."), "{}", err.text);
+        let third = operation::snapshot(&f.repo).unwrap().unwrap();
+        assert_eq!(third.step, Some((3, 4)));
+        assert_eq!(third.commit.as_ref().map(|c| c.oid.as_str()), Some(north.as_str()));
+        let outcome = operation::backend::skip(&f.repo, &third).unwrap();
+        assert_eq!(outcome.title, "Cherry-picked onto main");
+        assert_eq!(landed(&f, &head), ["Add the ferry", "Head east", "Map the lake"]);
+        assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "Trail west and east\n");
+        assert!(operation::snapshot(&f.repo).unwrap().is_none());
+        assert!(!f.repo.git_dir().join("sequencer").exists());
+    }
+
+    #[test]
+    fn a_series_refuses_changes_in_its_way_before_touching_anything_and_stashes_them_when_asked() {
+        let (f, head, [ferry, camp, lake]) = trail();
+        let newest_first = [lake.clone(), camp.clone(), ferry.clone()];
+        fs::write(f.dir.join("trail.txt"), "Start here\nFord\nSummit\n").unwrap();
+        fs::write(f.dir.join("lake.txt"), "My own lake notes\n").unwrap();
+        let before = (status(&f), f.git(&["ls-files", "--stage"]));
+        let refused = series(&f, &head, &newest_first).pick(&f.repo).err().expect("refused");
+        assert_eq!(
+            refused.text,
+            "Your local changes to the following files would be overwritten by cherry-pick:\n\tlake.txt\n\ttrail.txt\nCommit or stash them first."
+        );
+        assert!(crate::autostash::in_the_way(&refused));
+        assert_eq!(oid(&f, "HEAD"), head);
+        assert_eq!((status(&f), f.git(&["ls-files", "--stage"])), before);
+        assert!(leftovers(&f).is_empty(), "{:?}", leftovers(&f));
+
+        let kept = crate::autostash::Kept::default();
+        let offered = series(&f, &head, &newest_first).attempt(&f.repo, false, &kept).err().expect("offered a stash");
+        let [(label, view::Action::Autostash(crate::autostash::Action::Retry(crate::autostash::Retry::Picks(again))))] =
+            offered.actions.as_slice()
+        else {
+            panic!("The refusal offered {:?}", offered.actions);
+        };
+        assert_eq!((label.as_ref(), again.oids()), (crate::autostash::RETRY, vec![ferry.as_str(), camp.as_str(), lake.as_str()]));
+        fs::remove_file(f.dir.join("lake.txt")).unwrap();
+        let done = again.attempt(&f.repo, true, &kept).ok().expect("picked after stashing");
+        assert_eq!(done.title, "Stashed your changes, cherry-picked 3 commits onto main and restored them");
+        assert_eq!(landed(&f, &head), ["Add the ferry", "Camp at the summit", "Map the lake"]);
+        assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "Start here\nFord\nSummit camp\n");
+        assert_eq!(status(&f), " M trail.txt\n");
+        assert_eq!(f.git(&["stash", "list"]), b"");
+    }
+
+    #[test]
+    fn changes_git_finds_in_the_way_halfway_leave_the_series_stopped_for_the_panel() {
+        let f = Fixture::new();
+        commit(&f, "route.txt", "Start\nFord\nSummit\n", "Plan the route");
+        f.git(&["switch", "-qc", "side"]);
+        let ferry = commit(&f, "ferry.txt", "Hourly crossings\n", "Add the ferry");
+        let north = commit(&f, "route.txt", "Start north\nFord\nSummit\n", "Start north");
+        f.git(&["switch", "-q", "main"]);
+        f.git(&["mv", "route.txt", "trail.txt"]);
+        f.git(&["commit", "-qm", "Rename the route"]);
+        let head = oid(&f, "HEAD");
+        fs::write(f.dir.join("trail.txt"), "Start\nFord\nSummit east\n").unwrap();
+        for stash in [false, true] {
+            let kept = crate::autostash::Kept::default();
+            let stopped = series(&f, &head, &[north.clone(), ferry.clone()]).attempt(&f.repo, stash, &kept).err().expect("stopped");
+            assert!(stopped.text.starts_with("The cherry-pick stopped at commit 2 of 2. Continue it or abort it"), "{stash}: {}", stopped.text);
+            assert!(crate::autostash::in_the_way(&stopped) && stopped.text.contains("trail.txt"), "{}", stopped.text);
+            assert!(stopped.actions.is_empty(), "{:?}", stopped.actions);
+            assert_eq!(f.git(&["stash", "list"]), b"");
+            let shown = operation::snapshot(&f.repo).unwrap().expect("the sequence waits");
+            assert_eq!((shown.kind, shown.step, shown.queued), (Operation::CherryPick, Some((2, 2)), true));
+            assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "Start\nFord\nSummit east\n");
+            assert_eq!(landed(&f, &head), ["Add the ferry"]);
+            let outcome = operation::backend::abort(&f.repo, &shown).unwrap();
+            assert!(outcome.title.contains("aborted"), "{}", outcome.title);
+            assert_eq!(oid(&f, "HEAD"), head);
+            assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "Start\nFord\nSummit east\n");
+        }
+    }
+
+    #[test]
+    fn a_series_refuses_staged_work_a_changed_checkout_a_merge_and_an_operation_in_progress() {
+        let (f, head, [ferry, camp, lake]) = trail();
+        let newest_first = [lake.clone(), camp.clone(), ferry.clone()];
+        fs::write(f.dir.join("bridge.txt"), "Iron bridge\n").unwrap();
+        f.git(&["add", "--", "bridge.txt"]);
+        let index = f.git(&["ls-files", "--stage"]);
+        let refused = series(&f, &head, &newest_first).pick(&f.repo).err().expect("Git refuses staged work");
+        assert!(crate::autostash::in_the_way(&refused), "{}", refused.text);
+        assert_eq!(oid(&f, "HEAD"), head);
+        assert_eq!(f.git(&["ls-files", "--stage"]), index);
+        assert!(leftovers(&f).is_empty(), "{:?}", leftovers(&f));
+        assert!(operation::snapshot(&f.repo).unwrap().is_none());
+        f.git(&["reset", "-q", "--hard"]);
+
+        let picks = series(&f, &head, &newest_first);
+        f.git(&["switch", "-qc", "other"]);
+        assert!(picks.pick(&f.repo).err().unwrap().text.contains("tip changed"));
+        f.git(&["switch", "-q", "main"]);
+        let tip = commit(&f, "later.txt", "Later\n", "Later work");
+        assert!(picks.pick(&f.repo).err().unwrap().text.contains("tip changed"));
+        assert_eq!(oid(&f, "HEAD"), tip);
+
+        f.git(&["switch", "-qc", "joined", &head]);
+        f.git(&["merge", "-q", "--no-ff", "--no-edit", "side"]);
+        let merge = oid(&f, "HEAD");
+        f.git(&["switch", "-q", "main"]);
+        let err = series(&f, &tip, &[merge, ferry.clone()]).pick(&f.repo).err().unwrap();
+        assert_eq!(err.text, format!("{MERGE_ALONE}."));
+        assert_eq!(oid(&f, "HEAD"), tip);
+
+        let clash = commit(&f, "trail.txt", "Start\nFord\nSummit ridge\n", "Mark the ridge");
+        crate::operation::tests::stops(&f, &["cherry-pick", &camp]);
+        let err = series(&f, &clash, &[lake, ferry]).pick(&f.repo).err().unwrap();
+        assert_eq!(err.text, "Finish or abort the cherry-pick first.");
+        assert!(!f.dir.join("ferry.txt").exists());
+    }
+
+    #[test]
+    fn the_prompt_lists_several_commits_oldest_first_and_keeps_committing_on() {
+        let (f, head, [ferry, camp, lake]) = trail();
+        let mut picks = series(&f, &head, &[lake.clone(), camp.clone(), ferry.clone()]);
+        picks.left_out = 1;
+        let shown = series_spec(&picks);
+        assert_eq!(shown.title, "Cherry-pick 3 commits onto main?");
+        assert_eq!(shown.confirm.as_ref(), "Cherry-pick 3 commits");
+        assert_eq!(
+            shown.lines[..5],
+            [
+                "Oldest first:".to_owned(),
+                format!("{}  Add the ferry", &ferry[..7]),
+                format!("{}  Camp at the summit", &camp[..7]),
+                format!("{}  Map the lake", &lake[..7]),
+                "1 picked commit is already part of main, so it is left out.".to_owned(),
+            ]
+        );
+        assert_eq!(shown.tick.as_ref().map(|(label, on)| (label.to_string(), *on)), Some(("Commit straight away".into(), true)));
+        assert!(shown.fixed_tick);
+        assert!(!prompt::stops(&shown, true).contains(&prompt::Stop::Tick));
+
+        picks.commits = (0..15).map(|n| Listed { oid: format!("{n:040x}"), subject: format!("Step {n}") }).collect();
+        let shown = series_spec(&picks);
+        assert_eq!(shown.lines.iter().filter(|line| line.contains("  Step ")).count(), LISTED);
+        assert!(shown.lines.contains(&"…and 3 more".to_owned()));
+
+        picks.commits.truncate(1);
+        let shown = series_spec(&picks);
+        assert_eq!(shown.title, "Cherry-pick this commit onto main?");
+        assert!(!shown.fixed_tick && shown.tick.is_some());
     }
 
     #[test]

@@ -35,6 +35,7 @@ pub(crate) struct Spec {
     pub second: Option<Field>,
     pub note: Option<Note>,
     pub tick: Option<(SharedString, bool)>,
+    pub fixed_tick: bool,
     pub items: Vec<Item>,
     pub choices: Vec<Choice>,
     pub unblocked: bool,
@@ -68,6 +69,7 @@ impl Spec {
             second: None,
             note: None,
             tick: None,
+            fixed_tick: false,
             items: Vec::new(),
             choices: Vec::new(),
             unblocked: false,
@@ -119,6 +121,7 @@ pub(crate) enum Kind {
     Branch(branch::Ask),
     Reverse(reverse::Ask),
     Pick(pick::Ask),
+    Picks(pick::Series),
     Rebase(crate::rebase::Ask),
     Tag(tag::Ask),
     Tracking(tracking::Ask),
@@ -145,6 +148,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Publish(ask) => publish::describe(ask),
         Kind::Reverse(ask) => reverse::describe(ask, ui),
         Kind::Pick(ask) => pick::describe(ask, ui),
+        Kind::Picks(series) => pick::describe_series(series, ui),
         Kind::Rebase(ask) => crate::rebase::describe(ask, ui),
         Kind::Tag(ask) => tag::describe(ask, ui),
         Kind::Tracking(ask) => tracking::describe(ask, ui),
@@ -172,6 +176,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Branch(ask) => branch::confirm(tab, ask, answer, cx),
         Kind::Reverse(ask) => reverse::confirm(tab, ask, answer, cx),
         Kind::Pick(ask) => pick::confirm(tab, ask, answer, cx),
+        Kind::Picks(series) => pick::confirm_series(tab, series, answer, cx),
         Kind::Rebase(ask) => crate::rebase::confirm(tab, ask, answer, cx),
         Kind::Tag(ask) => tag::confirm(tab, ask, answer, cx),
         Kind::Tracking(ask) => tracking::confirm(tab, ask, answer, cx),
@@ -378,7 +383,7 @@ pub(crate) fn stops(spec: &Spec, can_confirm: bool) -> Vec<Stop> {
     if spec.second.is_some() {
         stops.push(Stop::Second);
     }
-    if spec.tick.is_some() {
+    if spec.tick.is_some() && !spec.fixed_tick {
         stops.push(Stop::Tick);
     }
     stops.extend((0..spec.items.len()).map(Stop::Item));
@@ -487,7 +492,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::Confirm if can_confirm => answer(tab, text, second, None, window, cx),
         Action::Choose(i) if free && i < spec.choices.len() => answer(tab, text, second, Some(i), window, cx),
         Action::Confirm | Action::Return | Action::Choose(_) => {}
-        Action::Toggle if spec.tick.is_some() => tab.ui.prompt.tick = !tab.ui.prompt.tick,
+        Action::Toggle if spec.tick.is_some() && !spec.fixed_tick => tab.ui.prompt.tick = !tab.ui.prompt.tick,
         Action::Toggle => {}
         Action::ToggleItem(i) => {
             if let Some(ticked) = tab.ui.prompt.items.get_mut(i) {
@@ -571,7 +576,20 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
         }
         body = body.child(line);
     }
-    if let Some((label, _)) = &spec.tick {
+    if let (Some((label, _)), true) = (&spec.tick, spec.fixed_tick) {
+        body = body.child(
+            div()
+                .id("prompt-tick")
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_1()
+                .opacity(0.55)
+                .text_size(px(12.5))
+                .child(kit::checkbox(state.tick))
+                .child(label.clone()),
+        );
+    } else if let Some((label, _)) = &spec.tick {
         let toggle = act(Action::Toggle);
         body = body.child(
             div()

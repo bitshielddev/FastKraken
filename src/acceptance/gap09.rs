@@ -218,7 +218,8 @@ impl Replay<'_> {
         self.browse_an_old_commit(dir).await?;
         self.history_by_name(dir).await?;
         self.save_and_apply_a_patch(dir).await?;
-        self.refuse_a_patch(dir).await
+        self.refuse_a_patch(dir).await?;
+        self.pick_three_out_of_order(dir).await
     }
 
     fn pick_commit(&mut self, oid: &str, how: How) -> Result<()> {
@@ -1756,6 +1757,154 @@ impl Replay<'_> {
         }
         if untouched(&source)? != before {
             return Err("An already applied patch changed a ref, the index or a file".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    fn picks_asked(&mut self) -> Result<Option<(String, Vec<String>, Vec<String>, Option<(String, bool)>, bool)>> {
+        Ok(self.tab.read_with(self.cx, |tab, _| {
+            let Some(crate::prompt::Kind::Picks(series)) = tab.ui.prompt.asked() else { return None };
+            let spec = crate::prompt::shown(&tab.ui)?;
+            Some((
+                spec.title,
+                series.commits().iter().map(|commit| commit.oid.clone()).collect(),
+                spec.lines,
+                spec.tick.map(|(label, on)| (label.to_string(), on)),
+                spec.fixed_tick && tab.ui.prompt.ticked(),
+            ))
+        })?)
+    }
+
+    async fn pick_three_out_of_order(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0915");
+        let root = init(dir, "Pick-trio")?;
+        record(&root, "trail.txt", "Start\nFord\nSummit\n", "Mark the trail")?;
+        git(&root, &["switch", "-qc", "feature/trail"])?;
+        record(&root, "ferry.txt", "Hourly crossings\n", "Add the ferry")?;
+        let ferry = oid(&root, "HEAD")?;
+        record(&root, "ford.txt", "Stepping stones\n", "Mark the ford")?;
+        record(&root, "trail.txt", "Start\nFord\nSummit camp\n", "Camp at the summit")?;
+        let camp = oid(&root, "HEAD")?;
+        record(&root, "lake.txt", "Cold water\n", "Map the lake")?;
+        let amended = repository::bundled_command(&root)?
+            .env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00")
+            .args(["commit", "-q", "--amend", "--no-edit"])
+            .output()?;
+        if !amended.status.success() {
+            return Err("Could not back-date Map the lake".into());
+        }
+        let lake = oid(&root, "HEAD")?;
+        git(&root, &["switch", "-q", "main"])?;
+        record(&root, "bridge.txt", "Stone bridge\n", "Build the bridge")?;
+        let tip = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Pick-trio open on main", |tab| {
+            tab.ui.repo == "Pick-trio" && tab.ui.head.as_deref() == Some(tip.as_str()) && tab.ui.history.len() == 6
+        })
+        .await?;
+
+        self.select_only(&camp).await?;
+        self.pick_commit(&lake, How::Toggle)?;
+        self.pick_commit(&ferry, How::Toggle)?;
+        self.until("three commits picked", |tab| tab.ui.compare.count() == 3 && tab.ui.selection == Some(Selection::Commits)).await?;
+        let picked = Target::Commits(vec![lake.clone(), camp.clone(), ferry.clone()]);
+        let rows = self.menu_rows(&picked)?;
+        let offered = rows.iter().find(|row| row.0 == "commits.cherry-pick");
+        if offered != Some(&("commits.cherry-pick", "Cherry-pick 3 commits onto main…".to_owned(), None)) {
+            return Err(format!("The picked commits' menu lists {rows:?}").into());
+        }
+        let button = self.tab.read_with(self.cx, |tab, cx| {
+            crate::pick::offered(&tab.ui, &compare::picked_commits(&tab.ui), cx).map(|entry| (entry.disabled, entry.action.is_some()))
+        })?;
+        if button != Some((None, true)) {
+            return Err(format!("The panel's Cherry-pick button is {button:?}").into());
+        }
+
+        self.choose(&picked, "commits.cherry-pick")?;
+        self.until("the prompt for three commits", |tab| matches!(tab.ui.prompt.asked(), Some(crate::prompt::Kind::Picks(_)))).await?;
+        self.action(Action::Prompt(crate::prompt::Action::Toggle))?;
+        let asked = self.picks_asked()?.ok_or("The prompt for three commits closed")?;
+        let expected = (
+            "Cherry-pick 3 commits onto main?".to_owned(),
+            vec![ferry.clone(), camp.clone(), lake.clone()],
+            vec![
+                "Oldest first:".to_owned(),
+                format!("{}  Add the ferry", short(&ferry)),
+                format!("{}  Camp at the summit", short(&camp)),
+                format!("{}  Map the lake", short(&lake)),
+            ],
+        );
+        if (asked.0.clone(), asked.1.clone(), asked.2[..asked.2.len().min(4)].to_vec()) != expected
+            || asked.3 != Some(("Commit straight away".to_owned(), true))
+            || !asked.4
+        {
+            return Err(format!("The cherry-pick prompt reads {asked:?}").into());
+        }
+        self.action(Action::Prompt(crate::prompt::Action::Confirm))?;
+        self.until("the three commits picked onto main", |tab| {
+            !tab.ui.busy() && tab.ui.notices.newest().is_some_and(|notice| notice.title == "Cherry-picked 3 commits onto main")
+        })
+        .await?;
+        let landed = git(&root, &["log", "--reverse", "--format=%s", &format!("{tip}..main")])?;
+        if landed != "Add the ferry\nCamp at the summit\nMap the lake\n" {
+            return Err(format!("main gained {landed:?}").into());
+        }
+        git_is(&root, &["rev-parse", "main~3"], &format!("{tip}\n"))?;
+        for (back, picked) in [(2, &ferry), (1, &camp), (0, &lake)] {
+            let landed = oid(&root, &format!("main~{back}"))?;
+            let change = |oid: &str| git(&root, &["diff", "--no-color", &format!("{oid}^"), oid]);
+            if change(&landed)? != change(picked)? {
+                return Err(format!("main~{back} does not carry the change of {}", short(picked)).into());
+            }
+        }
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        if root.join(".git/sequencer").exists() || root.join(".git/CHERRY_PICK_HEAD").exists() {
+            return Err("The cherry-pick left its state behind".into());
+        }
+
+        git(&root, &["reset", "-q", "--hard", &tip])?;
+        record(&root, "trail.txt", "Start\nFord\nSummit hut\n", "Build the summit hut")?;
+        let hut = oid(&root, "HEAD")?;
+        self.action(Action::Refresh)?;
+        self.until("main back at the summit hut", |tab| tab.ui.head.as_deref() == Some(hut.as_str()) && tab.ui.history.len() == 7).await?;
+        self.select_only(&camp).await?;
+        self.pick_commit(&ferry, How::Toggle)?;
+        self.pick_commit(&lake, How::Toggle)?;
+        self.until("three commits picked again", |tab| tab.ui.compare.count() == 3).await?;
+        self.choose(&picked, "commits.cherry-pick")?;
+        self.until("the prompt for three commits again", |tab| matches!(tab.ui.prompt.asked(), Some(crate::prompt::Kind::Picks(_)))).await?;
+        self.action(Action::Prompt(crate::prompt::Action::Confirm))?;
+        let banner = format!("Cherry-picking {} Camp at the summit onto main · commit 2 of 3 · 1 file needs resolving", short(&camp));
+        self.until("the pick stopped at commit 2 of 3", |tab| {
+            !tab.ui.busy()
+                && tab.ui.operation.summary().as_deref() == Some(banner.as_str())
+                && tab.ui.notices.newest().is_some_and(|notice| {
+                    notice.title.starts_with("The cherry-pick stopped on a conflict at commit 2 of 3.")
+                })
+        })
+        .await?;
+        git_is(&root, &["log", "-1", "--format=%s", "HEAD"], "Add the ferry\n")?;
+        fs::write(root.join("trail.txt"), "Start\nFord\nSummit hut and camp\n")?;
+        git(&root, &["add", "--", "trail.txt"])?;
+        self.action(Action::Refresh)?;
+        self.until("the conflict resolved and the pick ready", |tab| {
+            tab.ui.operation.conflicted().is_empty() && tab.ui.operation.can_finish()
+        })
+        .await?;
+        self.action(Action::Operation(crate::operation::Action::Continue))?;
+        self.until("the rest of the pick finished", |tab| {
+            !tab.ui.busy() && !tab.ui.operation.active() && tab.ui.notices.newest().is_some_and(|notice| notice.title == "Cherry-picked onto main")
+        })
+        .await?;
+        let landed = git(&root, &["log", "--reverse", "--format=%s", &format!("{hut}..main")])?;
+        if landed != "Add the ferry\nCamp at the summit\nMap the lake\n" {
+            return Err(format!("After Continue main gained {landed:?}").into());
+        }
+        git_is(&root, &["show", "main:trail.txt"], "Start\nFord\nSummit hut and camp\n")?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        if root.join(".git/sequencer").exists() {
+            return Err("The sequencer is left after Continue".into());
         }
         self.pass();
         Ok(())

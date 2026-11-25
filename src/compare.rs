@@ -680,14 +680,24 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .when(state.names.is_some() && comparing.as_ref().is_some_and(|(_, to, _)| *to != Rev::WorkingTree), |d| {
             d.child(fork_switch(comparing.as_ref().is_some_and(|(_, _, since)| *since), cx))
         })
-        .when(comparing.is_none() && state.count() > 1, |d| {
+        .when(state.count() > 1, |d| {
             let oids = picked_commits(ui);
             let merges = oids.iter().any(|oid| ui.history.iter().any(|row| &row.oid == oid && row.parents.len() > 1));
+            let pick = crate::pick::offered(ui, &oids, cx);
             d.child(
                 div()
                     .pt(px(2.))
                     .flex()
+                    .flex_wrap()
                     .gap(px(6.))
+                    .when_some(pick, |d, entry| {
+                        let button = kit::btn("cherry-pick-picked", "Cherry-pick…")
+                            .small()
+                            .icon("commit")
+                            .enabled(entry.disabled.is_none())
+                            .tip(entry.disabled.clone().unwrap_or(entry.title));
+                        d.child(button.on(entry.action.unwrap_or(view::Action::Dismiss), cx))
+                    })
                     .child(
                         kit::btn("copy-picked-shas", format!("Copy {} SHAs", oids.len()))
                             .small()
