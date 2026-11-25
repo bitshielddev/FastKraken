@@ -9,6 +9,7 @@ mod autostash;
 mod branch;
 mod cli;
 mod clone;
+mod columns;
 mod commands;
 mod commit_options;
 mod conflict;
@@ -1592,6 +1593,7 @@ impl Tab {
             Action::Search(action) => search::dispatch(self, action, window, cx),
             Action::Reveal(action) => reveal::dispatch(self, action, window, cx),
             Action::GraphView(action) => graph_view::dispatch(self, action, window, cx),
+            Action::Columns(action) => columns::dispatch(self, action, window, cx),
             Action::ViewChanges => {
                 if let Some(first) = self.ui.files.first() {
                     self.follow = Follow::Nothing;

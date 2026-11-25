@@ -381,6 +381,7 @@ pub(crate) fn fan_out(ui: &Ui, entries: &mut Vec<Entry>, flat: bool) {
             action: Some(action),
             children: Vec::new(),
             mark: None,
+            check: None,
         };
         if flat {
             for (_, label, chosen) in choices {

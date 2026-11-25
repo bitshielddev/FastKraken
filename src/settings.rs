@@ -61,6 +61,8 @@ pub(crate) struct Settings {
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) tab_width: Option<u32>,
     pub(crate) line_numbers: bool,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) graph_columns: crate::columns::Layout,
 }
 
 impl Settings {
@@ -108,6 +110,7 @@ impl Default for Settings {
             diff_font_size: None,
             tab_width: None,
             line_numbers: true,
+            graph_columns: crate::columns::Layout::default(),
         }
     }
 }
@@ -361,7 +364,8 @@ pub(crate) fn load(dir: Option<PathBuf>, cx: &mut App) {
 }
 
 fn read(dir: &Path) -> (Settings, Memory, Option<String>) {
-    let (settings, first) = storage::load_or_set_aside::<Settings>(dir, SETTINGS);
+    let (mut settings, first) = storage::load_or_set_aside::<Settings>(dir, SETTINGS);
+    settings.graph_columns = settings.graph_columns.sanitized();
     let (mut memory, second) = storage::load_or_set_aside::<Memory>(dir, MEMORY);
     memory.columns = memory.columns.map(ColumnWidths::sanitized);
     let notice = match (first, second) {
@@ -614,6 +618,13 @@ mod tests {
             diff_font_size: Some(15),
             tab_width: Some(2),
             line_numbers: false,
+            graph_columns: crate::columns::Layout {
+                hidden: vec![crate::columns::Column::Author],
+                graph: Some(210.),
+                author: 150.,
+                date: 96.,
+                sha: 70.,
+            },
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

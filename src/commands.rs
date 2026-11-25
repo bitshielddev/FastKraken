@@ -29,6 +29,7 @@ pub(crate) enum Target {
     Conflict(PathBuf),
     Code { path: Option<PathBuf>, line: Option<u32>, row: usize, hunk: Option<usize> },
     Lines { path: PathBuf, side: Side, count: usize },
+    Columns,
 }
 
 impl Target {
@@ -145,6 +146,7 @@ pub(crate) type TitleFn = fn(&Ui, &Target) -> String;
 pub(crate) type WhenFn = fn(&Ui, &Target, &App) -> Availability;
 pub(crate) type RunFn = fn(&Ui, &Target) -> Option<Action>;
 pub(crate) type MarkFn = fn(&Ui, &Target) -> Option<Mark>;
+pub(crate) type TickFn = fn(&Ui, &Target) -> bool;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Mark {
@@ -166,6 +168,7 @@ pub(crate) struct Command {
     pub run: RunFn,
     pub submenu: Option<&'static Submenu>,
     pub mark: Option<MarkFn>,
+    pub tick: Option<TickFn>,
 }
 
 pub(crate) struct Submenu {
@@ -190,7 +193,13 @@ impl Command {
             run,
             submenu: None,
             mark: None,
+            tick: None,
         }
+    }
+
+    pub(crate) const fn tick(mut self, tick: TickFn) -> Self {
+        self.tick = Some(tick);
+        self
     }
 
     pub(crate) const fn mark(mut self, mark: MarkFn) -> Self {
@@ -279,6 +288,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::identity::COMMANDS,
         crate::credentials::COMMANDS,
         crate::cli::COMMANDS,
+        crate::columns::COMMANDS,
     ]
     .into_iter()
     .flatten()
@@ -299,6 +309,7 @@ pub(crate) struct Entry {
     pub action: Option<Action>,
     pub children: Vec<Entry>,
     pub mark: Option<Mark>,
+    pub check: Option<bool>,
 }
 
 pub(crate) fn entry(command: &'static Command, ui: &Ui, target: &Target, cx: &App) -> Option<Entry> {
@@ -323,6 +334,7 @@ pub(crate) fn entry(command: &'static Command, ui: &Ui, target: &Target, cx: &Ap
         action,
         children: Vec::new(),
         mark: command.mark.and_then(|mark| mark(ui, target)),
+        check: command.tick.map(|tick| tick(ui, target)),
     })
 }
 
@@ -338,6 +350,7 @@ fn submenu(id: &'static str, title: String, icon: &'static str, group: Group, ch
         action: None,
         children,
         mark: None,
+        check: None,
     }
 }
 
@@ -636,6 +649,9 @@ fn row<T: Desk>(
     }
     if entry.mark.is_some() {
         item = item.check(matches!(entry.mark, Some(Mark::Default)));
+    }
+    if let Some(checked) = entry.check {
+        item = item.check(checked);
     }
     let (mark, name) = (entry.mark, entry.id);
     let drawn = if parent {

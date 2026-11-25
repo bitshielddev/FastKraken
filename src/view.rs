@@ -38,7 +38,6 @@ const SIDEBAR_MAX: f32 = 420.;
 const PANEL_MAX: f32 = 580.;
 const CENTRE_MIN: f32 = 290.;
 const DIVIDER_WIDTH: f32 = 5.;
-const WIDE_CENTRE: f32 = 640.;
 const HEADINGS: f32 = 24.;
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -547,6 +546,7 @@ pub enum Action {
     Search(crate::search::Action),
     Reveal(crate::reveal::Action),
     GraphView(crate::graph_view::Action),
+    Columns(crate::columns::Action),
     Stash(crate::stash::Action),
     Sync(crate::sync::Action),
     Publish(crate::publish::Action),
@@ -736,6 +736,7 @@ pub struct Ui {
     split_pan: ScrollHandle,
     requested_at: Option<usize>,
     graph: Graph,
+    pub(crate) graph_columns: crate::columns::State,
 }
 
 impl Ui {
@@ -819,6 +820,7 @@ impl Ui {
             focus: cx.focus_handle(),
             focus_on_open: true,
             graph: Graph::default(),
+            graph_columns: crate::columns::State::new(settings.graph_columns.clone()),
             diff_layout: DiffLayout::default(),
             diff_mode: settings.diff_mode,
             split_pan: ScrollHandle::new(),
@@ -848,6 +850,18 @@ impl Ui {
         }
         self.stash.place(&rows, self.history.len());
         self.history.extend(rows);
+    }
+
+    pub(crate) fn graph_auto_width(&self) -> f32 {
+        self.graph.auto_width()
+    }
+
+    pub(crate) fn graph_content_width(&self) -> f32 {
+        self.graph.content_width()
+    }
+
+    pub(crate) fn graph_node_x(&self, commit: usize) -> Option<f32> {
+        self.graph.node_x(commit)
     }
 
     pub(crate) fn history_items(&self) -> usize {
@@ -1610,42 +1624,86 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
         })
 }
 
-fn history_metadata(author: &str, date: &str, time: i64, oid: &str, now: i64, wide: bool, selected: bool) -> Div {
-    let color = rgb(if selected { TEXT_2 } else { TEXT_3 });
+fn history_metadata(
+    author: &str,
+    date: &str,
+    time: i64,
+    oid: &str,
+    now: i64,
+    widths: crate::columns::Widths,
+    selected: bool,
+) -> Div {
+    let color = if selected { TEXT_2 } else { TEXT_3 };
+    let named = widths.author >= crate::columns::NAMED_AUTHOR;
     div()
         .flex()
         .items_center()
         .flex_shrink_0()
-        .child(
-            div()
-                .w(px(if wide { 140. } else { 28. }))
-                .flex_shrink_0()
-                .pr_2()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(kit::avatar(author))
-                .when(wide, |d| d.child(kit::fit(author.to_owned()).size(12.5).color(TEXT_2).grow())),
-        )
-        .child(
-            div()
-                .w(px(84.))
-                .flex_shrink_0()
-                .text_size(px(TEXT_SMALL))
-                .text_color(color)
-                .whitespace_nowrap()
-                .child(when(time, date, now)),
-        )
-        .when(wide, |d| {
+        .when(widths.author > 0., |d| {
             d.child(
                 div()
-                    .w(px(66.))
+                    .w(px(widths.author))
                     .flex_shrink_0()
-                    .font_family(MONO)
-                    .text_size(px(11.5))
-                    .text_color(color)
-                    .child(oid.get(..7).unwrap_or(oid).to_owned()),
+                    .overflow_hidden()
+                    .pr_2()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(kit::avatar(author))
+                    .when(named, |d| d.child(kit::fit(author.to_owned()).size(12.5).color(TEXT_2).grow())),
             )
+        })
+        .when(widths.date > 0., |d| {
+            d.child(
+                div()
+                    .w(px(widths.date))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .pr_2()
+                    .child(kit::fit(when(time, date, now)).size(TEXT_SMALL).color(color).grow()),
+            )
+        })
+        .when(widths.sha > 0., |d| {
+            d.child(
+                div()
+                    .w(px(widths.sha))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .pr_2()
+                    .child(kit::fit(oid.get(..7).unwrap_or(oid).to_owned()).mono().size(11.5).color(color).grow()),
+            )
+        })
+}
+
+fn graph_cell<T: Desk>(
+    lane_art: impl IntoElement,
+    lanes: graph::Lanes,
+    limit: f32,
+    cx: &Context<T>,
+) -> gpui::Stateful<Div> {
+    let tab = cx.weak_entity();
+    div()
+        .id("lanes")
+        .w(px(lanes.width))
+        .h_full()
+        .flex_shrink_0()
+        .child(lane_art)
+        .when(limit > 0., |d| {
+            d.on_scroll_wheel(cx.listener(move |app, event: &gpui::ScrollWheelEvent, _, cx| {
+                let delta = event.delta.pixel_delta(px(ROW));
+                let (across, down) = (f32::from(delta.x), f32::from(delta.y));
+                if across == 0. {
+                    return;
+                }
+                crate::columns::pan(app, -across, limit, cx);
+                if across.abs() >= down.abs() {
+                    cx.stop_propagation();
+                }
+            }))
+            .on_drag(crate::columns::GraphPan { limit }, move |_, _, window, cx| {
+                let _ = tab.update(cx, |app, _| crate::columns::start_pan(app.ui_mut(), window.mouse_position().x));
+                cx.new(|_| DividerDrag)
+            })
         })
 }
 
@@ -1657,14 +1715,16 @@ fn history_tail(ui: &Ui, graph_width: Pixels) -> gpui::Stateful<Div> {
         .flex()
         .flex_shrink_0()
         .items_center()
-        .pl(px(2.))
-        .child(
-            div()
-                .w(graph_width)
-                .flex_shrink_0()
-                .pl(px(graph::LEFT - 7.))
-                .when(ui.has_more, |d| d.child(kit::spinner("history-loading"))),
-        )
+        .pl(px(crate::columns::ROW_EDGE))
+        .when(graph_width > px(0.), |d| {
+            d.child(
+                div()
+                    .w(graph_width)
+                    .flex_shrink_0()
+                    .pl(px(graph::LEFT - 7.))
+                    .when(ui.has_more, |d| d.child(kit::spinner("history-loading"))),
+            )
+        })
         .child(
             div()
                 .text_size(px(TEXT_SMALL))
@@ -1672,34 +1732,100 @@ fn history_tail(ui: &Ui, graph_width: Pixels) -> gpui::Stateful<Div> {
                 .whitespace_nowrap()
                 .child(crate::paging::tail(ui).unwrap_or_default()),
         )
+        .when(graph_width <= px(0.) && ui.has_more, |d| d.child(div().pl_2().child(kit::spinner("history-loading"))))
+}
+
+fn heading_divider<T: Desk>(column: crate::columns::Column, at_right: bool, cx: &Context<T>) -> impl IntoElement + use<T> {
+    let half = px(-(DIVIDER_WIDTH + 2.) / 2.);
+    div()
+        .id(gpui::SharedString::from(format!("column-divider-{}", column.title())))
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .w(px(DIVIDER_WIDTH + 2.))
+        .when(at_right, |d| d.right(half))
+        .when(!at_right, |d| d.left(half))
+        .flex()
+        .justify_center()
+        .cursor(CursorStyle::ResizeLeftRight)
+        .group("column-divider")
+        .child(
+            div()
+                .w(px(1.))
+                .h_full()
+                .bg(rgb(LINE))
+                .group_hover("column-divider", |style| style.bg(rgb(LINE_STRONG))),
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |app, event: &MouseDownEvent, w, cx| {
+                if event.click_count == 2 {
+                    app.dispatch(Action::Columns(crate::columns::Action::Fit(column)), w, cx);
+                }
+            }),
+        )
+        .on_drag(crate::columns::HeaderDrag(column), |_, _, _, cx| cx.new(|_| DividerDrag))
+}
+
+fn heading_cell<T: Desk>(
+    column: crate::columns::Column,
+    width: f32,
+    title: Option<&'static str>,
+    cx: &Context<T>,
+) -> Div {
+    div()
+        .w(px(width))
+        .h_full()
+        .flex_shrink_0()
+        .relative()
+        .flex()
+        .items_center()
+        .child(div().min_w_0().overflow_hidden().children(title.map(kit::label)))
+        .child(heading_divider(column, column == crate::columns::Column::Graph, cx))
+}
+
+pub(crate) fn history_columns(ui: &Ui, centre_width: f32) -> crate::columns::Widths {
+    crate::columns::drawn(ui, centre_width)
 }
 
 fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
+    use crate::columns::Column;
     let ui = app.ui();
-    let wide = centre_width >= WIDE_CENTRE;
-    let author_width = px(if wide { 140. } else { 28. });
-    let graph_width = px(ui.graph.width());
+    let widths = history_columns(ui, centre_width);
+    let graph_width = px(widths.graph);
+    let lanes = graph::Lanes { width: widths.graph, offset: ui.graph_columns.offset };
+    let limit = crate::columns::limit(ui, widths.graph);
+    let shown_graph = widths.graph > 0.;
     let moment = now();
     let headings = div()
+        .id("history-headings")
         .h(px(HEADINGS))
         .flex_shrink_0()
         .flex()
         .items_center()
+        .pl(px(crate::columns::ROW_EDGE))
         .bg(rgb(PANEL))
         .border_b_1()
         .border_color(rgb(LINE))
-        .child(div().w(graph_width).flex_shrink_0())
-        .child(div().flex_1().child(kit::label("Description")))
-        .child(
-            div()
-                .w(author_width)
-                .flex_shrink_0()
-                .when(wide, |d| d.child(kit::label("Author"))),
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|app, event: &MouseDownEvent, w, cx| {
+                let target = crate::commands::Target::Columns;
+                app.dispatch(Action::Menu(Some(Menu::Object { target, at: event.position })), w, cx);
+            }),
         )
-        .child(div().w(px(84.)).flex_shrink_0().child(kit::label("Date")))
-        .when(wide, |d| {
-            d.child(div().w(px(66.)).flex_shrink_0().child(kit::label("SHA")))
-        });
+        .on_drag_move(cx.listener(|app, event: &DragMoveEvent<crate::columns::HeaderDrag>, _, cx| {
+            let column = event.drag(cx).0;
+            let x = f32::from(event.event.position.x - event.bounds.left());
+            crate::columns::drag(app, column, x, f32::from(event.bounds.size.width), cx);
+        }))
+        .when(shown_graph, |d| d.child(heading_cell(Column::Graph, widths.graph, None, cx)))
+        .child(div().flex_1().min_w_0().overflow_hidden().child(kit::label("Description")))
+        .children(Column::RIGHT.into_iter().filter(|column| widths.of(*column) > 0.).map(|column| {
+            let width = widths.of(column);
+            let title = (column != Column::Author || width >= crate::columns::NAMED_AUTHOR).then(|| column.title());
+            heading_cell(column, width, title, cx)
+        }));
     let list = uniform_list(
         "history",
         crate::paging::items(ui),
@@ -1718,6 +1844,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     if index >= ui.history_items() {
                         return history_tail(ui, graph_width);
                     }
+                    let lanes_here = |art| graph_cell(art, lanes, limit, cx);
                     let i = match ui.stash.item(index) {
                         HistoryItem::Commit(i) => i,
                         HistoryItem::Stash { stash, base, first_at_base } => {
@@ -1726,7 +1853,9 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                             let active = matches!(&ui.selection, Some(Selection::Stash(id)) if id == &oid);
                             return kit::row(("stash-graph", stash), active)
                                 .h(px(ROW))
-                                .child(ui.graph.stash_element(base, first_at_base, active))
+                                .when(shown_graph, |d| {
+                                    d.child(lanes_here(kit::any(ui.graph.stash_element(base, first_at_base, active, lanes))))
+                                })
                                 .child(
                                     div()
                                         .flex_1()
@@ -1738,10 +1867,14 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                         .child(kit::chip(kit::Chip::Stash, "stash"))
                                         .child(kit::fit(entry.title.clone()).color(TEXT_2).grow()),
                                 )
-                                .child(history_metadata(&entry.author, &entry.date, entry.time, &entry.oid, moment, wide, active))
+                                .child(history_metadata(&entry.author, &entry.date, entry.time, &entry.oid, moment, widths, active))
                                 .on_click(cx.listener({
                                     let oid = oid.clone();
-                                    move |app, _, w, cx| select(app, Selection::Stash(oid.clone()), w, cx)
+                                    move |app, _, w, cx| {
+                                        if !cx.has_active_drag() {
+                                            select(app, Selection::Stash(oid.clone()), w, cx)
+                                        }
+                                    }
                                 }))
                                 .on_mouse_down(
                                     MouseButton::Right,
@@ -1767,7 +1900,9 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                         .h(px(ROW))
                         .when(marked && !active, |d| d.bg(soft(FIND_MATCH, 0x8c)).border_color(rgb(FIND_CURRENT)))
                         .on_click(cx.listener(move |app, _, w, cx| {
-                            select(app, Selection::Commit(oid.clone()), w, cx)
+                            if !cx.has_active_drag() {
+                                select(app, Selection::Commit(oid.clone()), w, cx)
+                            }
                         }))
                         .on_mouse_down(
                             MouseButton::Right,
@@ -1781,7 +1916,9 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                 );
                             }),
                         )
-                        .child(ui.graph.element(i, checked_out, active, ui.stash.at_commit(i)))
+                        .when(shown_graph, |d| {
+                            d.child(lanes_here(kit::any(ui.graph.element(i, checked_out, active, ui.stash.at_commit(i), lanes))))
+                        })
                         .child(
                             div()
                                 .flex_1()
@@ -1806,7 +1943,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                         .grow(),
                                 ),
                         )
-                        .child(history_metadata(&row.author, &row.date, row.time, &row.oid, moment, wide, active))
+                        .child(history_metadata(&row.author, &row.date, row.time, &row.oid, moment, widths, active))
                 })
                 .collect::<Vec<_>>()
         }),
@@ -1835,20 +1972,27 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
             });
             kit::row("working-directory-row", ui.working())
                     .h(px(ROW))
-                    .child(
-                        div()
-                            .w(graph_width)
-                            .flex_shrink_0()
-                            .pl(px(graph::LEFT - 6.5))
-                            .child(
-                                div()
-                                    .size(px(9.))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_dashed()
-                                    .border_color(rgb(if conflicted { CONFLICT } else { ACCENT })),
-                            ),
-                    )
+                    .when(shown_graph, |d| {
+                        d.child(
+                            div()
+                                .w(graph_width)
+                                .h_full()
+                                .flex_shrink_0()
+                                .relative()
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px((ROW - 9.) / 2.))
+                                        .left(px(graph::LEFT - 6.5 - lanes.offset))
+                                        .size(px(9.))
+                                        .rounded_full()
+                                        .border_1()
+                                        .border_dashed()
+                                        .border_color(rgb(if conflicted { CONFLICT } else { ACCENT })),
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -2292,6 +2436,7 @@ fn context_menu<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoElemen
                 Target::Commit(_) => 270.,
                 Target::Remote(_) => 186.,
                 Target::Stash(_) => 200.,
+                Target::Columns => 220.,
                 _ => 260.,
             },
         ),
@@ -2396,6 +2541,11 @@ pub fn render<T: Desk>(
     }
     crate::refs::rebuild_rows(app.ui_mut(), cx);
     crate::find::settle(app.ui_mut());
+    {
+        let viewport = f32::from(window.viewport_size().width);
+        let centre = app.ui().columns_drawn(viewport).1;
+        crate::columns::settle(app.ui_mut(), centre);
+    }
     crate::operation::prefill(app.ui_mut(), cx);
     sync_chrome(app, window, cx);
     {
@@ -2445,6 +2595,10 @@ pub fn render<T: Desk>(
         .on_drag_move(cx.listener(|app, event: &DragMoveEvent<Column>, w, cx| {
             let column = *event.drag(cx);
             resize_column(app, column, event.event.position.x, w, cx);
+        }))
+        .on_drag_move(cx.listener(|app, event: &DragMoveEvent<crate::columns::GraphPan>, _, cx| {
+            let limit = event.drag(cx).limit;
+            crate::columns::panned(app, event.event.position.x, limit, cx);
         }))
         .on_action(cx.listener(|app, run: &crate::commands::Run, w, cx| {
             app.dispatch(Action::Run(run.id), w, cx)

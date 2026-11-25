@@ -1,5 +1,13 @@
 use super::*;
-use crate::{PAGE, graph_view, notice, paging, refs::Kind, reveal, search, theme::ROW};
+use crate::{
+    PAGE,
+    columns::{self, Column, Layout, Widths},
+    commands::{self, Target},
+    graph_view, notice, paging,
+    refs::Kind,
+    reveal, search,
+    theme::ROW,
+};
 use gpui::{ScrollStrategy, point};
 use std::{io::Write, process::Stdio};
 
@@ -11,6 +19,9 @@ const KEPT_DEPTH: usize = 5_500;
 const TOP_DEPTH: usize = 3_000;
 const SHORT_COMMITS: usize = 1_200;
 const SPUR_COMMITS: usize = 30;
+const LANE_COUNT: usize = 16;
+const TWELVE_LANES: f32 = 16. + 11. * 14. + 22.;
+const SIXTEEN_LANES: f32 = 16. + 15. * 14. + 22.;
 
 fn import(root: &Path, stream: &[u8]) -> Result<()> {
     let mut child = repository::bundled_command(root)?
@@ -97,7 +108,186 @@ impl Replay<'_> {
         self.jump_to_a_hidden_commit(dir).await?;
         self.search_by_author(dir).await?;
         self.keep_the_place_deep_down(dir).await?;
-        self.mark_the_end_of_history(dir).await
+        self.mark_the_end_of_history(dir).await?;
+        self.hide_a_column(dir).await
+    }
+
+    fn drawn_columns(&mut self) -> Result<Widths> {
+        Ok(self.tab.update(self.cx, |tab, window, _| {
+            let viewport = f32::from(window.viewport_size().width);
+            view::history_columns(&tab.ui, tab.ui.columns_drawn(viewport).1)
+        })?)
+    }
+
+    fn column_menu(&mut self) -> Result<Vec<(&'static str, String, Option<bool>, bool, Option<Action>)>> {
+        self.action(Action::Menu(Some(view::Menu::Object { target: Target::Columns, at: point(px(400.), px(90.)) })))?;
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            let open = tab.ui.menu.clone();
+            match open {
+                Some(open @ view::Menu::Object { target: Target::Columns, .. }) => commands::entries_of(&tab.ui, &open, cx)
+                    .into_iter()
+                    .map(|entry| (entry.id, entry.title, entry.check, entry.disabled.is_some(), entry.action))
+                    .collect(),
+                _ => Vec::new(),
+            }
+        })?)
+    }
+
+    fn saved_columns(&mut self) -> Result<serde_json::Value> {
+        self.cx.update(|cx| settings::flush(cx))?;
+        let state = storage::override_directory().ok_or("No state folder for the replay")?;
+        let chosen: serde_json::Value = serde_json::from_slice(&fs::read(state.join("settings.json"))?)?;
+        Ok(chosen["graph_columns"].clone())
+    }
+
+    async fn hide_a_column(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0806");
+        let root = init(dir, "Column-camp")?;
+        record(&root, "camp.txt", "Base camp\n", "Clear the base camp")?;
+        let base = oid(&root, "HEAD")?;
+        let mut tips = Vec::new();
+        for lane in 1..=LANE_COUNT {
+            git(&root, &["switch", "-qc", &format!("lane-{lane}"), &base])?;
+            git(&root, &["commit", "--allow-empty", "-qm", &format!("Walk lane {lane}")])?;
+            tips.push(oid(&root, "HEAD")?);
+        }
+        git(&root, &["switch", "-q", "main"])?;
+        let tree = oid(&root, "HEAD^{tree}")?;
+        let mut args = vec!["commit-tree", tree.as_str(), "-m", "Gather every lane"];
+        for tip in &tips {
+            args.extend(["-p", tip.as_str()]);
+        }
+        let gathered = git(&root, &args)?.trim_end().to_owned();
+        git(&root, &["merge", "--ff-only", "-q", &gathered])?;
+        git_is(&root, &["rev-list", "--count", "--merges", "HEAD"], "1\n")?;
+        git_is(&root, &["rev-list", "--count", "HEAD^@"], &format!("{}\n", LANE_COUNT + 1))?;
+        let standard = serde_json::to_value(Layout::default())?;
+        self.open(&root)?;
+        self.until("Column-camp open with every commit", |tab| {
+            tab.ui.repo == "Column-camp" && tab.ui.history.len() == LANE_COUNT + 2
+        })
+        .await?;
+        let (content, layout) = self.tab.read_with(self.cx, |tab, _| {
+            (tab.ui.graph_content_width(), tab.ui.graph_columns.layout.clone())
+        })?;
+        if content != SIXTEEN_LANES || layout != Layout::default() {
+            return Err(format!("The graph is {content} px of lanes with the layout {layout:?}").into());
+        }
+        let widths = self.drawn_columns()?;
+        if (widths.graph, widths.author, widths.date, widths.sha) != (TWELVE_LANES, 140., 84., 66.) || widths.description < columns::DESCRIPTION_MIN {
+            return Err(format!("The columns are drawn as {widths:?}").into());
+        }
+
+        let rows = self.column_menu()?;
+        let ticks: Vec<(&str, String, Option<bool>, bool)> =
+            rows.iter().map(|(id, title, check, disabled, _)| (*id, title.clone(), *check, *disabled)).collect();
+        let expected: Vec<(&str, String, Option<bool>, bool)> = [
+            ("columns.labels", "Branch and tag labels", Some(true), false),
+            ("columns.graph", "Graph", Some(true), false),
+            ("columns.description", "Description", Some(true), true),
+            ("columns.author", "Author", Some(true), false),
+            ("columns.date", "Date", Some(true), false),
+            ("columns.sha", "SHA", Some(true), false),
+            ("columns.reset", "Reset columns", None, false),
+        ]
+        .into_iter()
+        .map(|(id, title, check, disabled)| (id, title.to_owned(), check, disabled))
+        .collect();
+        if ticks != expected {
+            return Err(format!("The header menu lists {ticks:?}").into());
+        }
+        let untick = rows
+            .into_iter()
+            .find(|row| row.0 == "columns.author")
+            .and_then(|row| row.4)
+            .ok_or("The Author row has no action")?;
+        self.action(untick)?;
+        self.action(Action::Columns(columns::Action::Resize(Column::Date, 120.)))?;
+        self.until("the Author column hidden and Date widened", |tab| {
+            tab.ui.menu.is_none()
+                && !tab.ui.graph_columns.layout.shows(Column::Author)
+                && tab.ui.graph_columns.layout.date == 120.
+        })
+        .await?;
+        let widths = self.drawn_columns()?;
+        if (widths.author, widths.date, widths.sha) != (0., 120., 66.) {
+            return Err(format!("With Author hidden the columns are drawn as {widths:?}").into());
+        }
+        let stored = self.saved_columns()?;
+        if stored["hidden"] != serde_json::json!(["author"]) || stored["date"] != 120. {
+            return Err(format!("settings.json holds the columns {stored}").into());
+        }
+
+        self.relaunch().await?;
+        self.until("Column-camp reopened with Author still hidden", |tab| {
+            tab.ui.repo == "Column-camp"
+                && tab.ui.history.len() == LANE_COUNT + 2
+                && !tab.ui.graph_columns.layout.shows(Column::Author)
+                && tab.ui.graph_columns.layout.date == 120.
+        })
+        .await?;
+        let widths = self.drawn_columns()?;
+        if (widths.graph, widths.author, widths.date, widths.sha) != (TWELVE_LANES, 0., 120., 66.) {
+            return Err(format!("After the relaunch the columns are drawn as {widths:?}").into());
+        }
+        let author = self.column_menu()?.into_iter().find(|row| row.0 == "columns.author").map(|row| row.2);
+        if author != Some(Some(false)) {
+            return Err(format!("After the relaunch the Author row is ticked {author:?}").into());
+        }
+        self.action(Action::Dismiss)?;
+
+        let rightmost = self.tab.read_with(self.cx, |tab, _| {
+            (0..tab.ui.history.len())
+                .filter_map(|index| tab.ui.graph_node_x(index).map(|x| (index, x)))
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(index, x)| (tab.ui.history[index].oid.clone(), x))
+        })?;
+        let (far, x) = rightmost.ok_or("No commit sits on a lane")?;
+        if x < TWELVE_LANES {
+            return Err(format!("The rightmost node is only {x} px across").into());
+        }
+        self.action(Action::Select(Selection::Commit(far.clone())))?;
+        self.until("the rightmost node scrolled into view", move |tab| {
+            let offset = tab.ui.graph_columns.offset;
+            tab.ui.selection == Some(Selection::Commit(far.clone())) && offset > 0. && x - offset > 0. && x - offset < TWELVE_LANES
+        })
+        .await?;
+        self.action(Action::Columns(columns::Action::Pan(-1_000.)))?;
+        self.until("the graph scrolled back to the first lane", |tab| tab.ui.graph_columns.offset == 0.).await?;
+        self.action(Action::Columns(columns::Action::Pan(1_000.)))?;
+        self.until("the graph scrolled to the last lane", |tab| {
+            tab.ui.graph_columns.offset == SIXTEEN_LANES - TWELVE_LANES
+        })
+        .await?;
+
+        self.action(Action::Columns(columns::Action::Fit(Column::Graph)))?;
+        self.until("the graph column fitted to every lane", |tab| {
+            tab.ui.graph_columns.layout.graph == Some(SIXTEEN_LANES) && tab.ui.graph_columns.offset == 0.
+        })
+        .await?;
+        let widths = self.drawn_columns()?;
+        if widths.graph != SIXTEEN_LANES {
+            return Err(format!("The fitted graph column is drawn {} px wide", widths.graph).into());
+        }
+
+        let reset = self
+            .column_menu()?
+            .into_iter()
+            .find(|row| row.0 == "columns.reset")
+            .and_then(|row| row.4)
+            .ok_or("Reset columns has no action")?;
+        self.action(reset)?;
+        self.until("the standard columns back", |tab| tab.ui.graph_columns.layout == Layout::default()).await?;
+        let widths = self.drawn_columns()?;
+        if (widths.graph, widths.author, widths.date, widths.sha) != (TWELVE_LANES, 140., 84., 66.) {
+            return Err(format!("After the reset the columns are drawn as {widths:?}").into());
+        }
+        let stored = self.saved_columns()?;
+        if stored != standard {
+            return Err(format!("After the reset settings.json holds the columns {stored}").into());
+        }
+        self.pass();
+        Ok(())
     }
 
     async fn keep_the_place_deep_down(&mut self, dir: &Path) -> Result<()> {

@@ -1,11 +1,21 @@
-use crate::theme::{CANVAS, LANES, SELECTED, TEXT_3};
+use crate::theme::{CANVAS, LANES, SELECTED, TEXT_3, soft};
 use gpui::{
-    BorderStyle, Bounds, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, fill,
-    point, px, quad, rgb, size,
+    BorderStyle, Bounds, ContentMask, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, fill,
+    linear_color_stop, linear_gradient, point, px, quad, rgb, size,
 };
 
 pub const LEFT: f32 = 16.;
-const LANE: f32 = 14.;
+pub const LANE: f32 = 14.;
+const RIGHT: f32 = 22.;
+const NARROWEST: f32 = 52.;
+pub const LANE_CAP: usize = 12;
+const FADE: f32 = 18.;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Lanes {
+    pub width: f32,
+    pub offset: f32,
+}
 
 #[derive(Default)]
 pub struct Graph {
@@ -70,12 +80,16 @@ impl Graph {
         }
     }
 
-    pub fn width(&self) -> f32 {
-        (LEFT + self.columns.saturating_sub(1) as f32 * LANE + 22.).clamp(52., 164.)
+    pub fn content_width(&self) -> f32 {
+        LEFT + self.columns.saturating_sub(1) as f32 * LANE + RIGHT
     }
 
-    fn spacing(&self) -> f32 {
-        ((self.width() - LEFT - 22.) / self.columns.saturating_sub(1).max(1) as f32).min(LANE)
+    pub fn auto_width(&self) -> f32 {
+        self.content_width().clamp(NARROWEST, LEFT + (LANE_CAP - 1) as f32 * LANE + RIGHT)
+    }
+
+    pub fn node_x(&self, row: usize) -> Option<f32> {
+        self.rows.get(row).map(|row| LEFT + row.node as f32 * LANE)
     }
 
     pub fn element(
@@ -84,14 +98,15 @@ impl Graph {
         checked_out: bool,
         selected: bool,
         stash_above: bool,
+        lanes: Lanes,
     ) -> impl IntoElement + use<> {
         let row = self.rows[row].clone();
-        let width = self.width();
-        let spacing = self.spacing();
+        let content = self.content_width();
+        let ground = if selected { SELECTED } else { CANVAS };
         canvas(
             |_, _, _| (),
-            move |b, _, window, _| {
-                let x = |lane: usize| b.left() + px(LEFT + lane as f32 * spacing);
+            move |b, _, window, _| window.with_content_mask(Some(ContentMask { bounds: b }), |window| {
+                let x = |lane: usize| b.left() + px(LEFT + lane as f32 * LANE - lanes.offset);
                 let mid = b.center().y;
                 let color = |lane: usize| rgb(LANES[lane % LANES.len()]);
                 let straight = |lane: usize, y1, y2| {
@@ -127,7 +142,6 @@ impl Graph {
                     }
                 }
                 let centre = point(x(row.node), mid);
-                let ground = rgb(if selected { SELECTED } else { CANVAS });
                 let disc = |radius: f32| {
                     Bounds::new(
                         centre - point(px(radius), px(radius)),
@@ -135,30 +149,32 @@ impl Graph {
                     )
                 };
                 let ink = color(row.node);
+                let disc_ground = rgb(ground);
                 if checked_out {
-                    window.paint_quad(quad(disc(6.5), px(6.5), ground, px(2.), ink, BorderStyle::Solid));
+                    window.paint_quad(quad(disc(6.5), px(6.5), disc_ground, px(2.), ink, BorderStyle::Solid));
                     window.paint_quad(fill(disc(2.5), ink).corner_radii(px(2.5)));
                 } else if row.outgoing.len() > 1 {
-                    window.paint_quad(quad(disc(4.5), px(4.5), ground, px(2.), ink, BorderStyle::Solid));
+                    window.paint_quad(quad(disc(4.5), px(4.5), disc_ground, px(2.), ink, BorderStyle::Solid));
                 } else {
-                    window.paint_quad(fill(disc(6.5), ground).corner_radii(px(6.5)));
+                    window.paint_quad(fill(disc(6.5), disc_ground).corner_radii(px(6.5)));
                     window.paint_quad(fill(disc(4.5), ink).corner_radii(px(4.5)));
                 }
-            },
+                fades(window, b, lanes, content, ground);
+            }),
         )
-        .w(px(width))
+        .w(px(lanes.width))
         .h_full()
         .flex_shrink_0()
     }
 
-    pub fn stash_element(&self, base: usize, first: bool, selected: bool) -> impl IntoElement + use<> {
+    pub fn stash_element(&self, base: usize, first: bool, selected: bool, lanes: Lanes) -> impl IntoElement + use<> {
         let row = self.rows[base].clone();
-        let width = self.width();
-        let spacing = self.spacing();
+        let content = self.content_width();
+        let ground = if selected { SELECTED } else { CANVAS };
         canvas(
             |_, _, _| (),
-            move |bounds, _, window, _| {
-                let x = |lane: usize| bounds.left() + px(LEFT + lane as f32 * spacing);
+            move |bounds, _, window, _| window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                let x = |lane: usize| bounds.left() + px(LEFT + lane as f32 * LANE - lanes.offset);
                 let mid = bounds.center().y;
                 let marker = bounds.right() - px(10.);
                 let stem = x(row.node);
@@ -176,16 +192,35 @@ impl Graph {
                 window.paint_quad(quad(
                     Bounds::new(point(marker - px(3.5), mid - px(3.5)), size(px(7.), px(7.))),
                     px(1.5),
-                    rgb(if selected { SELECTED } else { CANVAS }),
+                    rgb(ground),
                     px(1.),
                     rgb(TEXT_3),
                     BorderStyle::Solid,
                 ));
-            },
+                fades(window, bounds, lanes, content, ground);
+            }),
         )
-        .w(px(width))
+        .w(px(lanes.width))
         .h_full()
         .flex_shrink_0()
+    }
+}
+
+pub fn hidden_sides(lanes: Lanes, content: f32) -> (bool, bool) {
+    (lanes.offset > 0.5, lanes.offset + lanes.width < content - 0.5)
+}
+
+fn fades(window: &mut Window, bounds: Bounds<Pixels>, lanes: Lanes, content: f32, ground: u32) {
+    let (left, right) = hidden_sides(lanes, content);
+    let band = px(FADE.min(lanes.width / 3.));
+    let (solid, clear) = (rgb(ground), soft(ground, 0));
+    if left {
+        let area = Bounds::new(bounds.origin, size(band, bounds.size.height));
+        window.paint_quad(fill(area, linear_gradient(90., linear_color_stop(solid, 0.), linear_color_stop(clear, 1.))));
+    }
+    if right {
+        let area = Bounds::new(point(bounds.right() - band, bounds.top()), size(band, bounds.size.height));
+        window.paint_quad(fill(area, linear_gradient(90., linear_color_stop(clear, 0.), linear_color_stop(solid, 1.))));
     }
 }
 
@@ -205,7 +240,42 @@ fn dashes(window: &mut Window, start: Point<Pixels>, length: Pixels, horizontal:
 
 #[cfg(test)]
 mod tests {
-    use super::Graph;
+    use super::{Graph, LANE, LANE_CAP, LEFT, Lanes, hidden_sides};
+
+    fn fanned(lanes: usize) -> Graph {
+        let mut graph = Graph::default();
+        let tips: Vec<String> = (0..lanes).map(|lane| format!("tip{lane}")).collect();
+        graph.push("gather", &tips);
+        for tip in &tips {
+            graph.push(tip, &["base".into()]);
+        }
+        graph.push("base", &[]);
+        graph
+    }
+
+    #[test]
+    fn the_graph_column_fits_its_lanes_up_to_twelve_and_keeps_full_spacing() {
+        let narrow = fanned(1);
+        assert_eq!(narrow.auto_width(), 52.);
+        let five = fanned(5);
+        assert_eq!(five.content_width(), LEFT + 4. * LANE + 22.);
+        assert_eq!(five.auto_width(), five.content_width());
+        let wide = fanned(20);
+        assert_eq!(wide.content_width(), LEFT + 19. * LANE + 22.);
+        assert_eq!(wide.auto_width(), LEFT + (LANE_CAP - 1) as f32 * LANE + 22.);
+        assert_eq!(wide.node_x(0), Some(LEFT));
+        assert_eq!(wide.node_x(20), Some(LEFT + 19. * LANE));
+        assert_eq!(wide.node_x(99), None);
+    }
+
+    #[test]
+    fn a_faded_edge_marks_each_side_with_lanes_out_of_view() {
+        let content = 300.;
+        assert_eq!(hidden_sides(Lanes { width: 300., offset: 0. }, content), (false, false));
+        assert_eq!(hidden_sides(Lanes { width: 200., offset: 0. }, content), (false, true));
+        assert_eq!(hidden_sides(Lanes { width: 200., offset: 50. }, content), (true, true));
+        assert_eq!(hidden_sides(Lanes { width: 200., offset: 100. }, content), (true, false));
+    }
 
     #[test]
     fn lanes_fork_at_a_merge_and_join_at_the_common_ancestor() {

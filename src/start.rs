@@ -233,6 +233,7 @@ fn entry(title: String, path: PathBuf, icon: &'static str) -> Entry {
         action: Some(view::Action::Start(Action::Open(path))),
         children: Vec::new(),
         mark: None,
+        check: None,
     }
 }
 
