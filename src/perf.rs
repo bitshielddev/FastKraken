@@ -164,7 +164,7 @@ impl Painted {
         Self {
             history: tab.ui.history.len(),
             status: tab.repo.is_some() && !tab.loading_status && !tab.ui.branch.is_empty(),
-            diff: tab.diff.is_some() && !tab.ui.loading_diff,
+            diff: tab.diff.is_some() && !tab.ui.loading_diff(),
             external: tab
                 .ui
                 .files

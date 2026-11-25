@@ -464,7 +464,7 @@ fn kind_word(shape: Shape) -> Option<&'static str> {
     })
 }
 
-fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     match bytes {
         0 => "Empty".to_owned(),
         1 => "1 byte".to_owned(),

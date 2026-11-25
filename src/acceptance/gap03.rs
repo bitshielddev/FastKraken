@@ -116,7 +116,7 @@ impl Replay<'_> {
         self.action(Action::Inspect(crate::inspection::Action::OpenFile("trail.txt".into())))?;
         self.until("the ferry commit's trail.txt open", |tab| {
             crate::view::centre(&tab.ui) == Centre::Diff
-                && tab.ui.diff.iter().any(|line| line.text.contains("Waypoint: Ferry landing"))
+                && tab.ui.diff.lines.iter().any(|line| tab.ui.diff.text(line).contains("Waypoint: Ferry landing"))
         })
         .await?;
         self.focus_desk()?;

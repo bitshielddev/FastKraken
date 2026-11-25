@@ -17,7 +17,7 @@ CORE_SCENARIOS = {
     *(f"OBS{n:02}" for n in range(1, 24)),
     *(f"EXT{n:02}" for n in (1, 2, 5, 6, 7, 8, 10, 11, 12, 14, 15)),
 }
-ADDITIONAL_SUITE_SIZES = (15, 21, 21, 13, 14, 15)
+ADDITIONAL_SUITE_SIZES = (15, 21, 21, 13, 14, 15, (5, 6))
 
 
 def waves():
@@ -32,7 +32,7 @@ def check(output):
     expected = CORE_SCENARIOS | {
         f"GAP{phase:02}{n:02}"
         for phase, size in enumerate(ADDITIONAL_SUITE_SIZES, start=1)
-        for n in range(1, size + 1)
+        for n in (range(1, size + 1) if isinstance(size, int) else size)
     }
     executable = APP / "MacOS/fastkraken"
     results = []

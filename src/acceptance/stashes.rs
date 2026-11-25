@@ -11,7 +11,7 @@ impl Replay<'_> {
         self.until("selected stash details and patch", |tab| {
             matches!(&tab.ui.selection, Some(Selection::Stash(s)) if s == saved)
                 && !tab.ui.stash.files.is_empty()
-                && !tab.ui.loading_diff
+                && !tab.ui.loading_diff()
                 && tab.diff.is_some()
         })
         .await

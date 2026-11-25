@@ -14,6 +14,7 @@ mod commit_options;
 mod conflict;
 mod connect;
 mod credentials;
+mod diff_doc;
 mod discard;
 mod environment;
 mod explain;
@@ -71,7 +72,7 @@ use gpui::{
 };
 use repository::{Diff, Repository};
 use view::{
-    Action, Desk, DiffLayout, DiffLine, Discard, DiscardAsk, FileRow, Selection, Tone, Ui,
+    Action, Desk, DiffLayout, Discard, DiscardAsk, FileRow, Selection, Tone, Ui,
 };
 
 const PAGE: usize = 250;
@@ -528,9 +529,8 @@ impl Tab {
     fn clear_diff(&mut self) {
         self.diff_ticket += 1;
         self.diff = None;
-        self.ui.replace_diff(Vec::new(), DiffLayout::default());
+        self.ui.replace_diff(diff_doc::DiffDoc::default(), DiffLayout::default());
         self.ui.diff_title.clear();
-        self.ui.loading_diff = false;
     }
 
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
@@ -593,7 +593,7 @@ impl Tab {
             Selection::Stash(oid) => self.ui.stash.title(oid).unwrap_or(oid).to_owned(),
             Selection::Changes => return,
         };
-        self.ui.loading_diff = true;
+        self.ui.diff.state = diff_doc::PatchState::Loading;
         cx.notify();
         let ticket = self.diff_ticket;
         let epoch = self.epoch;
@@ -616,47 +616,44 @@ impl Tab {
                     },
                     Selection::Changes => return Err("Select a file to see its changes.".into()),
                 }?;
-                const LINE_LIMIT: usize = 4096;
-                let limited = diff.text.lines().any(|s| s.len() > LINE_LIMIT);
-                let stageable = !limited && diff.stageable() && matches!(selection, Selection::File { .. });
-                let mut headers = diff.hunks.iter().enumerate().peekable();
-                let lines: Vec<_> = diff
-                    .text
-                    .lines()
-                    .enumerate()
-                    .map(|(i, text)| {
-                        let hunk = if stageable
-                            && headers.peek().is_some_and(|(_, h)| h.start_line == i)
-                        {
-                            headers.next().map(|(index, _)| index)
-                        } else {
-                            None
-                        };
-                        DiffLine {
-                            text: if text.len() > LINE_LIMIT {
-                                let end = text.floor_char_boundary(LINE_LIMIT);
-                                format!("{}… [line preview limited]", &text[..end])
-                            } else {
-                                text.to_owned()
-                            },
-                            hunk,
-                        }
-                    })
-                    .collect();
-                let layout = DiffLayout::new(&lines);
-                Ok::<_, String>((Arc::new(diff), lines, layout))
+                let blobs = diff_doc::binary_blobs(&diff.text);
+                let (sizes, working_size) = if blobs.is_empty() {
+                    Default::default()
+                } else {
+                    let working_size = match &selection {
+                        Selection::File { path, staged: false } => std::fs::symlink_metadata(repo.root.join(path))
+                            .ok()
+                            .filter(|metadata| !metadata.is_dir())
+                            .map(|metadata| metadata.len()),
+                        _ => None,
+                    };
+                    (repo.object_sizes(&blobs).unwrap_or_default(), working_size)
+                };
+                let doc = diff_doc::DiffDoc::build(&diff_doc::Source {
+                    text: &diff.text,
+                    stageable: diff.stageable() && matches!(selection, Selection::File { .. }),
+                    truncated: diff.truncated,
+                    sizes: &sizes,
+                    working_size,
+                });
+                let layout = DiffLayout::new(&doc);
+                Ok::<_, String>((Arc::new(diff), doc, layout))
             },
             move |tab, result, cx| {
                 if tab.epoch != epoch || tab.diff_ticket != ticket {
                     return;
                 }
-                tab.ui.loading_diff = false;
                 match result {
-                    Ok((diff, lines, layout)) => {
+                    Ok((diff, doc, layout)) => {
                         tab.diff = Some(diff);
-                        tab.ui.replace_diff(lines, layout);
+                        tab.ui.replace_diff(doc, layout);
                     }
-                    Err(err) => tab.error(err, cx),
+                    Err(err) => {
+                        tab.ui.diff.state = diff_doc::PatchState::Unreadable(err.clone());
+                        if !tab.ui.diff_open {
+                            tab.error(err, cx);
+                        }
+                    }
                 }
                 cx.notify();
             },

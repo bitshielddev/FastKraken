@@ -177,6 +177,7 @@ fn status_label(code: u8) -> &'static str {
 pub struct Diff {
     pub text: String,
     pub hunks: Vec<Hunk>,
+    pub truncated: bool,
     source: Option<(PathBuf, PathBuf)>,
     staged: bool,
     bytes: Vec<u8>,
@@ -690,6 +691,28 @@ impl Repository {
         let mut diff = read_diff(cmd, None, false)?;
         diff.staged = true;
         Ok(diff)
+    }
+
+    pub(crate) fn object_sizes(&self, ids: &[String]) -> Result<std::collections::HashMap<String, u64>> {
+        let mut input = Vec::new();
+        for id in ids {
+            validate_oid(id)?;
+            input.extend_from_slice(id.as_bytes());
+            input.push(b'\n');
+        }
+        let output = run_with_input(
+            self.read_command().args(["cat-file", "--batch-check=%(objectname) %(objectsize)"]),
+            input,
+        )
+        .map_err(|e| e.to_string())?;
+        let output = successful(output)?;
+        Ok(String::from_utf8_lossy(&output)
+            .lines()
+            .filter_map(|line| {
+                let (id, size) = line.split_once(' ')?;
+                Some((id.to_owned(), size.parse().ok()?))
+            })
+            .collect())
     }
 
     pub fn stage_hunk(&self, diff: &Diff, index: usize) -> Result<()> {
@@ -1418,12 +1441,13 @@ pub(crate) fn read_diff(
     read.map_err(|e| e.to_string())?;
     if truncated {
         bytes.truncate(MAX_DIFF_BYTES);
+        if let Some(end) = bytes.iter().rposition(|&b| b == b'\n') {
+            bytes.truncate(end + 1);
+        }
         return Ok(Diff {
-            text: format!(
-                "{}\n\n[Preview limited to 1 MiB]",
-                String::from_utf8_lossy(&bytes)
-            ),
+            text: String::from_utf8_lossy(&bytes).into_owned(),
             hunks: vec![],
+            truncated: true,
             source: None,
             staged: false,
             bytes: vec![],
@@ -1472,6 +1496,7 @@ fn parse_diff(bytes: Vec<u8>, source: Option<(PathBuf, PathBuf)>) -> Diff {
     Diff {
         text: String::from_utf8_lossy(&bytes).into_owned(),
         hunks,
+        truncated: false,
         source,
         staged: false,
         bytes,
@@ -2109,12 +2134,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn object_sizes_reads_each_blob_and_leaves_out_missing_ones() {
+        let f = Fixture::new();
+        fs::write(f.dir.join("chart.bin"), [0u8, 1, 2, 3, 4]).unwrap();
+        f.repo.stage_file(Path::new("chart.bin")).unwrap();
+        let staged = String::from_utf8(f.git(&["rev-parse", ":chart.bin"])).unwrap().trim().to_owned();
+        let missing = "1".repeat(40);
+        let sizes = f.repo.object_sizes(&[staged.clone(), missing.clone()]).unwrap();
+        assert_eq!(sizes.get(&staged), Some(&5));
+        assert!(!sizes.contains_key(&missing));
+        assert!(f.repo.object_sizes(&[]).unwrap().is_empty());
+        assert!(f.repo.object_sizes(&["--batch".into()]).is_err());
+        assert_eq!(f.git(&["status", "--porcelain=v1"]), b"A  chart.bin\n");
+    }
+
+    #[test]
     fn oversized_untracked_preview_is_bounded_and_read_only() {
         let f = Fixture::new();
         let name = Path::new("large.txt");
         fs::write(f.dir.join(name), "line\n".repeat(MAX_DIFF_BYTES / 4)).unwrap();
         let diff = f.repo.file_diff(name, false).unwrap();
-        assert!(diff.text.contains("Preview limited"));
+        assert!(diff.truncated);
+        assert!(diff.text.len() <= MAX_DIFF_BYTES && diff.text.ends_with("line\n"));
         assert!(diff.hunks.is_empty());
         assert!(f.repo.stage_hunk(&diff, 0).is_err());
         assert!(f.repo.status().unwrap().staged.is_empty());

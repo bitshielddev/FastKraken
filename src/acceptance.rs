@@ -4,6 +4,7 @@ mod gap03;
 mod gap04;
 mod gap05;
 mod gap06;
+mod gap07;
 mod merges;
 #[cfg(feature = "publish-replay")]
 mod publishing;
@@ -51,6 +52,7 @@ const GAP_WAVES: &[(u8, &[&str])] =
         (4, &["GAP0401", "GAP0402", "GAP0403", "GAP0404", "GAP0405", "GAP0406", "GAP0407", "GAP0408", "GAP0409", "GAP0410", "GAP0411", "GAP0412", "GAP0413"]),
         (5, &["GAP0501", "GAP0502", "GAP0503", "GAP0504", "GAP0505", "GAP0506", "GAP0507", "GAP0508", "GAP0509", "GAP0510", "GAP0511", "GAP0514", "GAP0512", "GAP0513"]),
         (6, &["GAP0601", "GAP0602", "GAP0603", "GAP0604", "GAP0605", "GAP0606", "GAP0607", "GAP0608", "GAP0609", "GAP0610", "GAP0611", "GAP0612", "GAP0613", "GAP0614", "GAP0615"]),
+        (7, &["GAP0705", "GAP0706"]),
     ];
 
 #[derive(Clone, Copy)]
@@ -174,7 +176,7 @@ fn files(tab: &Tab, staged: &[&str], unstaged: &[&str]) -> bool {
 }
 
 fn patch(tab: &Tab, line: &str) -> bool {
-    !tab.ui.loading_diff && tab.diff.is_some() && tab.ui.diff.iter().any(|row| row.text == line)
+    !tab.ui.loading_diff() && tab.diff.is_some() && tab.ui.diff.has(line)
 }
 
 fn committed_file(tab: &Tab, name: &str, status: &str) -> bool {
@@ -306,6 +308,7 @@ impl Replay<'_> {
             4 => self.gap04(dir).await,
             5 => self.gap05(dir).await,
             6 => self.gap06(dir).await,
+            7 => self.gap07(dir).await,
             _ => Err(format!("No replay is registered for gap phase {phase}.").into()),
         }
     }
@@ -337,7 +340,7 @@ impl Replay<'_> {
         self.action(Action::Select(Selection::Commit(hash.to_owned())))?;
         self.until("selected commit patch", |tab| {
             tab.ui.selection == Some(Selection::Commit(hash.to_owned()))
-                && !tab.ui.loading_diff
+                && !tab.ui.loading_diff()
                 && tab.diff.is_some()
         })
         .await
@@ -355,7 +358,7 @@ impl Replay<'_> {
         self.action(Action::Inspect(inspection::Action::OpenFile(name.into())))?;
         self.until("committed file patch", |tab| {
             tab.ui.inspection.path.as_deref() == Some(Path::new(name))
-                && !tab.ui.loading_diff
+                && !tab.ui.loading_diff()
                 && tab.diff.is_some()
         })
         .await
@@ -658,22 +661,16 @@ impl Replay<'_> {
 
         self.start("OBS23");
         self.until("two independently stageable hunks", |tab| {
-            tab.ui.diff.iter().filter(|r| r.hunk.is_some()).count() == 2
+            tab.ui.diff.stageable_hunks() == 2
         })
         .await?;
         let north_hunk = self
             .tab
             .read_with(self.cx, |tab, _| {
-                let mut hunk = None;
-                for line in &tab.ui.diff {
-                    if line.hunk.is_some() {
-                        hunk = line.hunk;
-                    }
-                    if line.text == "+North: River gate" {
-                        return hunk;
-                    }
-                }
-                None
+                let doc = &tab.ui.diff;
+                doc.hunks
+                    .iter()
+                    .position(|rows| doc.lines[rows.clone()].iter().any(|line| doc.text(line) == "+North: River gate"))
             })?
             .ok_or("North edit did not have a stageable patch header")?;
         self.action(Action::StageHunk(north_hunk))?;

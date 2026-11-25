@@ -7,7 +7,8 @@ mod graph;
 
 use crate::{kit, navigate::Action as Move, stash::HistoryItem, theme::*};
 pub use commit_input::CommitInput;
-pub(crate) use diff_view::{DiffLine, Layout as DiffLayout, Mode as DiffMode};
+pub(crate) use diff_view::{Layout as DiffLayout, Mode as DiffMode, placeholder_text as diff_placeholder};
+use crate::diff_doc::{DiffDoc, PatchState};
 use gpui::{
     App, ClipboardItem, Context, CursorStyle, Div, DragMoveEvent, Entity, FocusHandle, Focusable,
     FontWeight, KeyBinding, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, ScrollStrategy,
@@ -641,11 +642,10 @@ pub struct Ui {
     pub merge: crate::merge::State,
     pub conflict: crate::conflict::State,
     pub diff_title: String,
-    pub diff: Vec<DiffLine>,
+    pub(crate) diff: DiffDoc,
     pub diff_open: bool,
     pub notices: crate::notice::State,
     pub opening: Option<String>,
-    pub loading_diff: bool,
     pub menu: Option<Menu>,
     pub menu_cursor: crate::commands::Cursor,
     pub prompt: crate::prompt::State,
@@ -725,11 +725,10 @@ impl Ui {
             merge: Default::default(),
             conflict: Default::default(),
             diff_title: String::new(),
-            diff: vec![],
+            diff: DiffDoc::default(),
             diff_open: false,
             notices: Default::default(),
             opening: None,
-            loading_diff: false,
             menu: None,
             menu_cursor: Default::default(),
             prompt: crate::prompt::State::new(cx),
@@ -808,8 +807,12 @@ impl Ui {
         }
     }
 
-    pub fn replace_diff(&mut self, lines: Vec<DiffLine>, layout: DiffLayout) {
-        self.diff = lines;
+    pub(crate) fn loading_diff(&self) -> bool {
+        self.diff.state == PatchState::Loading
+    }
+
+    pub(crate) fn replace_diff(&mut self, doc: DiffDoc, layout: DiffLayout) {
+        self.diff = doc;
         self.diff_layout = layout;
         self.split_pan = ScrollHandle::new();
         self.diff_scroll = UniformListScrollHandle::new();

@@ -298,7 +298,7 @@ pub fn drive(handle: crate::tabs::Front, scene: String, cx: &App) {
         let settled = |tab: &Tab| {
             tab.repo.is_some()
                 && tab.settled()
-                && !tab.ui.loading_diff
+                && !tab.ui.loading_diff()
                 && !tab.loading_status
                 && !tab.loading_page
                 && !tab.ui.search.loading()

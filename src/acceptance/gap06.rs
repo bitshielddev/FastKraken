@@ -20,12 +20,11 @@ const SURVEY: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\
 const NAMES: [&str; 5] = ["alder.txt", "birch bark.txt", "cedar é.txt", "dogwood.txt", "elm.txt"];
 
 fn changed_lines(tab: &Tab) -> Vec<String> {
-    tab.ui
-        .diff
+    let doc = &tab.ui.diff;
+    doc.lines
         .iter()
-        .map(|line| line.text.as_str())
-        .filter(|text| (text.starts_with('+') || text.starts_with('-')) && !text.starts_with("+++") && !text.starts_with("---"))
-        .map(str::to_owned)
+        .filter(|line| matches!(line.kind, crate::diff_doc::Kind::Added | crate::diff_doc::Kind::Deleted))
+        .map(|line| doc.text(line).to_owned())
         .collect()
 }
 
@@ -447,7 +446,7 @@ impl Replay<'_> {
         .await?;
         let (from, hunks) = self.tab.read_with(self.cx, |tab, _| {
             let selection = tab.ui.selection.clone().unwrap_or(Selection::Changes);
-            (tab.ui.renamed_from(&selection, None), tab.ui.diff.iter().filter(|line| line.hunk.is_some()).count())
+            (tab.ui.renamed_from(&selection, None), tab.ui.diff.stageable_hunks())
         })?;
         if from.as_deref() != Some(Path::new(old)) {
             return Err(format!("The diff header names {from:?} as where the file came from").into());
