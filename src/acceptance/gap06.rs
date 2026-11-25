@@ -105,7 +105,7 @@ impl Replay<'_> {
         Ok(self.tab.read_with(self.cx, |tab, _| crate::discard::summary(&tab.ui))?)
     }
 
-    fn titles(&mut self, target: Target) -> Result<Vec<String>> {
+    pub(super) fn titles(&mut self, target: Target) -> Result<Vec<String>> {
         Ok(self
             .tab
             .read_with(self.cx, |tab, cx| commands::menu(&tab.ui, &target, cx).into_iter().map(|entry| entry.title).collect())?)

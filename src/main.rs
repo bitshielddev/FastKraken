@@ -30,6 +30,8 @@ mod instance;
 mod inspection;
 mod jobs;
 mod kit;
+mod line_patch;
+mod lines;
 mod merge;
 mod navigate;
 mod notice;
@@ -647,6 +649,7 @@ impl Tab {
                     Ok((diff, doc, layout)) => {
                         tab.diff = Some(diff);
                         tab.ui.replace_diff(doc, layout);
+                        lines::reloaded(&mut tab.ui);
                     }
                     Err(err) => {
                         tab.ui.diff.state = diff_doc::PatchState::Unreadable(err.clone());
@@ -726,6 +729,14 @@ impl Tab {
                 Some("Hunk discarded"),
                 false,
                 move |repo| repo.discard_hunk(&diff, index),
+                |_, _| {},
+            ),
+            DiscardAsk::Lines { lines, diff, .. } => self.apply_operation(
+                cx,
+                "Discarding lines…",
+                Some("Lines discarded"),
+                false,
+                move |repo| repo.discard_lines(&diff, &lines),
                 |_, _| {},
             ),
         }
@@ -1486,6 +1497,7 @@ impl Tab {
             Action::Reverse(action) => reverse::dispatch(self, action, window, cx),
             Action::Pick(action) => pick::dispatch(self, action, window, cx),
             Action::Picked(action) => picked::dispatch(self, action, window, cx),
+            Action::Lines(action) => lines::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),

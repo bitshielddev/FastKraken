@@ -406,6 +406,14 @@ impl DiffDoc {
         }
     }
 
+    pub(crate) fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.text.hash(&mut hasher);
+        self.lines.len().hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub(crate) fn has(&self, patch_line: &str) -> bool {
         self.lines.iter().any(|line| self.text(line) == patch_line)
     }

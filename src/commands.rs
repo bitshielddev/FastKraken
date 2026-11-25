@@ -28,6 +28,7 @@ pub(crate) enum Target {
     Files { paths: Vec<PathBuf>, side: Side },
     Conflict(PathBuf),
     Line { path: PathBuf, line: u32 },
+    Lines { path: PathBuf, side: Side, count: usize },
 }
 
 impl Target {
@@ -734,6 +735,7 @@ fn run_on<T: Desk>(app: &mut T, id: &str, targets: &[Target], window: &mut Windo
 pub(crate) fn targets(ui: &Ui) -> Vec<Target> {
     let current = Target::current(ui);
     let mut targets = Vec::new();
+    targets.extend(crate::lines::target(ui));
     if let Some((paths, side)) = crate::picked::files(ui) {
         targets.push(Target::Files { paths, side });
     }

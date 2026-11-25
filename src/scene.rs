@@ -65,6 +65,8 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             .get(index)
             .map(|file| Action::Stash(crate::stash::Action::OpenFile(file.path.clone()))),
         "opendiff" => Some(Action::OpenDiff),
+        "linepick" => Some(Action::Lines(crate::lines::Action::Press { row: index, how: crate::lines::How::One })),
+        "linerange" => Some(Action::Lines(crate::lines::Action::Press { row: index, how: crate::lines::How::Range })),
         "split" => Some(Action::DiffMode(crate::view::DiffMode::Split)),
         "unified" => Some(Action::DiffMode(crate::view::DiffMode::Unified)),
         "branches" => Some(Action::Refs(refs::Action::ToggleList)),

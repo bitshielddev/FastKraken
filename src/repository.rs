@@ -10,7 +10,7 @@ use std::{
     thread,
 };
 
-use crate::{hooks::Committed, notice::Failure};
+use crate::{hooks::Committed, line_patch::Direction, notice::Failure};
 
 type Result<T> = std::result::Result<T, String>;
 const MAX_DIFF_BYTES: usize = 1024 * 1024;
@@ -191,6 +191,35 @@ impl Diff {
 
     pub(crate) fn hunks_stageable(&self) -> bool {
         self.stageable() && !self.hunks.is_empty()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Part {
+    Hunk,
+    Lines,
+}
+
+impl Part {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Hunk => "hunk",
+            Self::Lines => "lines",
+        }
+    }
+
+    fn belongs(self) -> &'static str {
+        match self {
+            Self::Hunk => "hunk belongs",
+            Self::Lines => "lines belong",
+        }
+    }
+
+    fn some(self) -> &'static str {
+        match self {
+            Self::Hunk => "a hunk",
+            Self::Lines => "lines",
+        }
     }
 }
 
@@ -731,38 +760,67 @@ impl Repository {
         self.apply_hunk(diff, index, false, &["--reverse"])
     }
 
+    pub(crate) fn stage_lines(&self, diff: &Diff, lines: &[(usize, usize)]) -> Result<()> {
+        self.apply_lines(diff, lines, false, Direction::Forward, &["--cached"])
+    }
+
+    pub(crate) fn unstage_lines(&self, diff: &Diff, lines: &[(usize, usize)]) -> Result<()> {
+        self.apply_lines(diff, lines, true, Direction::Reverse, &["--cached", "--reverse"])
+    }
+
+    pub(crate) fn discard_lines(&self, diff: &Diff, lines: &[(usize, usize)]) -> Result<()> {
+        self.apply_lines(diff, lines, false, Direction::Reverse, &["--reverse"])
+    }
+
+    fn apply_lines(&self, diff: &Diff, lines: &[(usize, usize)], staged: bool, direction: Direction, mode: &[&str]) -> Result<()> {
+        self.apply_part(diff, staged, Part::Lines, mode, |diff| {
+            let hunks: Vec<&[u8]> = diff.hunks.iter().map(|hunk| &diff.bytes[hunk.bytes.clone()]).collect();
+            crate::line_patch::build(&diff.bytes[diff.prefix.clone()], &hunks, lines, direction)
+        })
+    }
+
     fn apply_hunk(&self, diff: &Diff, index: usize, staged: bool, mode: &[&str]) -> Result<()> {
+        self.apply_part(diff, staged, Part::Hunk, mode, |diff| {
+            let hunk = diff
+                .hunks
+                .get(index)
+                .ok_or("The selected hunk is unavailable.")?;
+            let mut patch = Vec::new();
+            for line in diff.bytes[diff.prefix.clone()].split_inclusive(|&b| b == b'\n') {
+                if !line.starts_with(b"old mode ") && !line.starts_with(b"new mode ") {
+                    patch.extend_from_slice(line);
+                }
+            }
+            patch.extend_from_slice(&diff.bytes[hunk.bytes.clone()]);
+            Ok(patch)
+        })
+    }
+
+    fn apply_part(
+        &self,
+        diff: &Diff,
+        staged: bool,
+        part: Part,
+        mode: &[&str],
+        build: impl FnOnce(&Diff) -> Result<Vec<u8>>,
+    ) -> Result<()> {
         self.ensure_index_writable()?;
         let (root, path) = diff
             .source
             .as_ref()
             .filter(|_| diff.staged == staged)
-            .ok_or(if staged {
-                "Select a hunk from a staged file."
-            } else {
-                "Select a hunk from an unstaged file."
-            })?;
+            .ok_or_else(|| format!("Select {} from {} file.", part.some(), if staged { "a staged" } else { "an unstaged" }))?;
         if root != &self.root {
-            return Err("The selected hunk belongs to a different repository.".into());
+            return Err(format!("The selected {} to a different repository.", part.belongs()));
         }
-        let hunk = diff
-            .hunks
-            .get(index)
-            .ok_or("The selected hunk is unavailable.")?;
+        let patch = build(diff)?;
         let latest = self.file_diff(path, staged)?;
         if latest.bytes != diff.bytes {
-            return Err(
-                "This file changed since its diff was opened. Refresh and select the hunk again."
-                    .into(),
-            );
+            return Err(format!(
+                "This file changed since its diff was opened. Refresh and select the {} again.",
+                part.name()
+            ));
         }
-        let mut patch = Vec::new();
-        for line in diff.bytes[diff.prefix.clone()].split_inclusive(|&b| b == b'\n') {
-            if !line.starts_with(b"old mode ") && !line.starts_with(b"new mode ") {
-                patch.extend_from_slice(line);
-            }
-        }
-        patch.extend_from_slice(&diff.bytes[hunk.bytes.clone()]);
         let output = run_with_input(
             self.command().arg("apply").args(mode).args(["--whitespace=nowarn", "-"]),
             patch,
@@ -2560,6 +2618,196 @@ pub(crate) mod tests {
         assert_eq!(f.git(&["show", ":other.txt"]), lines.replace("line 2\n", "line two\n").into_bytes());
         let staged = f.repo.status().unwrap().staged;
         assert_eq!(staged, [ChangedFile { path: "other.txt".into(), status: "Modified", from: None }]);
+    }
+
+    fn picks(diff: &Diff, wanted: &[&str]) -> Vec<(usize, usize)> {
+        let mut found = Vec::new();
+        for (index, hunk) in diff.hunks.iter().enumerate() {
+            let body = diff.bytes[hunk.bytes.clone()].split_inclusive(|&b| b == b'\n').skip(1);
+            for (line, text) in body.enumerate() {
+                if wanted.iter().any(|want| text.strip_suffix(b"\n").unwrap_or(text) == want.as_bytes()) {
+                    found.push((index, line));
+                }
+            }
+        }
+        assert_eq!(found.len(), wanted.len(), "{wanted:?} in {}", diff.text);
+        found
+    }
+
+    fn committed(f: &Fixture, name: &str, text: &[u8]) {
+        fs::write(f.dir.join(name), text).unwrap();
+        f.git(&["add", "--", name]);
+        f.git(&["commit", "-qm", "base"]);
+    }
+
+    #[test]
+    fn picking_every_changed_line_of_a_hunk_stages_what_the_hunk_stages() {
+        let f = Fixture::new();
+        let base: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        committed(&f, "log.txt", base.as_bytes());
+        let edited = base.replace("line 3\n", "line three\n").replace("line 17\n", "line 17\nline 17b\n");
+        fs::write(f.dir.join("log.txt"), &edited).unwrap();
+        let path = Path::new("log.txt");
+        let diff = f.repo.file_diff(path, false).unwrap();
+        assert_eq!(diff.hunks.len(), 2);
+        f.repo.stage_hunk(&diff, 0).unwrap();
+        let by_hunk = f.git(&["ls-files", "--stage", "--", "log.txt"]);
+        f.git(&["reset", "-q", "--", "log.txt"]);
+        let diff = f.repo.file_diff(path, false).unwrap();
+        f.repo.stage_lines(&diff, &picks(&diff, &["-line 3", "+line three"])).unwrap();
+        assert_eq!(f.git(&["ls-files", "--stage", "--", "log.txt"]), by_hunk);
+        assert_eq!(fs::read_to_string(f.dir.join("log.txt")).unwrap(), edited);
+        assert_eq!(f.git(&["rev-list", "--count", "HEAD"]), b"1\n");
+    }
+
+    #[test]
+    fn picking_one_of_two_adjacent_additions_stages_exactly_that_one() {
+        let f = Fixture::new();
+        committed(&f, "trail.txt", b"north\nsouth\n");
+        fs::write(f.dir.join("trail.txt"), "north\neast\nwest\nsouth\n").unwrap();
+        let path = Path::new("trail.txt");
+        let diff = f.repo.file_diff(path, false).unwrap();
+        f.repo.stage_lines(&diff, &picks(&diff, &["+west"])).unwrap();
+        assert_eq!(f.git(&["show", ":trail.txt"]), b"north\nwest\nsouth\n");
+        assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "north\neast\nwest\nsouth\n");
+        let rest = f.repo.file_diff(path, false).unwrap();
+        assert!(rest.text.contains("\n+east\n") && !rest.text.contains("+west"), "{}", rest.text);
+    }
+
+    #[test]
+    fn picking_a_deletion_without_the_addition_that_replaced_it_removes_only_the_old_line() {
+        let f = Fixture::new();
+        committed(&f, "gear.txt", b"rope\ntent\nstove\n");
+        fs::write(f.dir.join("gear.txt"), "rope\ntarp\nstove\n").unwrap();
+        let path = Path::new("gear.txt");
+        let diff = f.repo.file_diff(path, false).unwrap();
+        f.repo.stage_lines(&diff, &picks(&diff, &["-tent"])).unwrap();
+        assert_eq!(f.git(&["show", ":gear.txt"]), b"rope\nstove\n");
+        let diff = f.repo.file_diff(path, false).unwrap();
+        f.repo.stage_lines(&diff, &picks(&diff, &["+tarp"])).unwrap();
+        assert_eq!(f.git(&["show", ":gear.txt"]), b"rope\ntarp\nstove\n");
+        assert!(f.repo.file_diff(path, false).unwrap().text.is_empty());
+    }
+
+    #[test]
+    fn a_pick_that_includes_the_last_line_of_a_file_without_a_final_newline_keeps_the_bytes() {
+        let f = Fixture::new();
+        committed(&f, "end.txt", b"one\ntwo");
+        fs::write(f.dir.join("end.txt"), b"one\ntwo\nthree\nfour").unwrap();
+        let path = Path::new("end.txt");
+        let diff = f.repo.file_diff(path, false).unwrap();
+        assert!(diff.text.contains("\\ No newline at end of file"), "{}", diff.text);
+        f.repo.stage_lines(&diff, &picks(&diff, &["+four"])).unwrap();
+        assert_eq!(f.git(&["show", ":end.txt"]), b"one\ntwo\nfour");
+        let diff = f.repo.file_diff(path, false).unwrap();
+        f.repo.stage_lines(&diff, &picks(&diff, &["+three"])).unwrap();
+        assert_eq!(f.git(&["show", ":end.txt"]), b"one\ntwo\nthree\nfour");
+        assert_eq!(fs::read(f.dir.join("end.txt")).unwrap(), b"one\ntwo\nthree\nfour");
+
+        let staged = f.repo.file_diff(path, true).unwrap();
+        f.repo.unstage_lines(&staged, &picks(&staged, &["+four"])).unwrap();
+        assert_eq!(f.git(&["show", ":end.txt"]), b"one\ntwo\nthree\n");
+        let staged = f.repo.file_diff(path, true).unwrap();
+        f.repo.unstage_lines(&staged, &picks(&staged, &["-two"])).unwrap();
+        assert_eq!(f.git(&["show", ":end.txt"]), b"one\ntwo\ntwo\nthree\n");
+    }
+
+    #[test]
+    fn unstaging_one_line_of_a_fully_staged_hunk_leaves_the_rest_staged() {
+        let f = Fixture::new();
+        committed(&f, "camp.txt", b"fire\nwater\n");
+        fs::write(f.dir.join("camp.txt"), "fire\nwood\nwater\nfood\n").unwrap();
+        f.git(&["add", "--", "camp.txt"]);
+        let path = Path::new("camp.txt");
+        let staged = f.repo.file_diff(path, true).unwrap();
+        assert_eq!(staged.hunks.len(), 1);
+        assert!(f.repo.stage_lines(&staged, &picks(&staged, &["+wood"])).is_err());
+        f.repo.unstage_lines(&staged, &picks(&staged, &["+wood"])).unwrap();
+        assert_eq!(f.git(&["show", ":camp.txt"]), b"fire\nwater\nfood\n");
+        assert_eq!(fs::read_to_string(f.dir.join("camp.txt")).unwrap(), "fire\nwood\nwater\nfood\n");
+        let unstaged = f.repo.file_diff(path, false).unwrap().text;
+        let added: Vec<&str> = unstaged.lines().filter(|line| line.starts_with('+') && !line.starts_with("+++")).collect();
+        assert_eq!(added, ["+wood"]);
+    }
+
+    #[test]
+    fn discarding_one_line_leaves_the_other_edits_in_the_working_file() {
+        let f = Fixture::new();
+        committed(&f, "map.txt", b"hill\nriver\nvalley\n");
+        fs::write(f.dir.join("map.txt"), "hill\nridge\nriver\nvale\n").unwrap();
+        f.git(&["add", "--", "map.txt"]);
+        fs::write(f.dir.join("map.txt"), "hill\nridge\nriver\nvale\nlake\nshore\n").unwrap();
+        let index = f.git(&["ls-files", "--stage", "--", "map.txt"]);
+        let path = Path::new("map.txt");
+        let diff = f.repo.file_diff(path, false).unwrap();
+        f.repo.discard_lines(&diff, &picks(&diff, &["+lake"])).unwrap();
+        assert_eq!(fs::read_to_string(f.dir.join("map.txt")).unwrap(), "hill\nridge\nriver\nvale\nshore\n");
+        assert_eq!(f.git(&["ls-files", "--stage", "--", "map.txt"]), index);
+    }
+
+    #[test]
+    fn line_picks_in_new_and_deleted_files_stage_and_return_parts_of_them() {
+        let f = Fixture::new();
+        committed(&f, "old.txt", b"a\nb\nc\n");
+        fs::write(f.dir.join("new.txt"), "x\ny\nz\n").unwrap();
+        let new = Path::new("new.txt");
+        let diff = f.repo.file_diff(new, false).unwrap();
+        f.repo.stage_lines(&diff, &picks(&diff, &["+x", "+z"])).unwrap();
+        assert_eq!(f.git(&["show", ":new.txt"]), b"x\nz\n");
+        let staged = f.repo.file_diff(new, true).unwrap();
+        f.repo.unstage_lines(&staged, &picks(&staged, &["+z"])).unwrap();
+        assert_eq!(f.git(&["show", ":new.txt"]), b"x\n");
+        let diff = f.repo.file_diff(new, false).unwrap();
+        f.repo.discard_lines(&diff, &picks(&diff, &["+y"])).unwrap();
+        assert_eq!(fs::read_to_string(f.dir.join("new.txt")).unwrap(), "x\nz\n");
+
+        fs::write(f.dir.join("loose.txt"), "keep\ndrop\n").unwrap();
+        let loose = Path::new("loose.txt");
+        let diff = f.repo.file_diff(loose, false).unwrap();
+        f.repo.discard_lines(&diff, &picks(&diff, &["+drop"])).unwrap();
+        assert_eq!(fs::read_to_string(f.dir.join("loose.txt")).unwrap(), "keep\n");
+        assert!(f.git(&["ls-files", "--", "loose.txt"]).is_empty());
+
+        fs::remove_file(f.dir.join("old.txt")).unwrap();
+        let old = Path::new("old.txt");
+        let diff = f.repo.file_diff(old, false).unwrap();
+        f.repo.stage_lines(&diff, &picks(&diff, &["-b"])).unwrap();
+        assert_eq!(f.git(&["show", ":old.txt"]), b"a\nc\n");
+        assert!(!f.dir.join("old.txt").exists());
+        let diff = f.repo.file_diff(old, false).unwrap();
+        f.repo.stage_lines(&diff, &picks(&diff, &["-a", "-c"])).unwrap();
+        assert!(f.git(&["ls-files", "--", "old.txt"]).is_empty());
+        let staged = f.repo.file_diff(old, true).unwrap();
+        f.repo.unstage_lines(&staged, &picks(&staged, &["-c"])).unwrap();
+        assert_eq!(f.git(&["show", ":old.txt"]), b"c\n");
+    }
+
+    #[test]
+    fn line_staging_refuses_a_file_that_changed_since_its_diff_was_read() {
+        let f = Fixture::new();
+        committed(&f, "note.txt", b"first\nsecond\n");
+        fs::write(f.dir.join("note.txt"), "first\nadded\nsecond\n").unwrap();
+        let path = Path::new("note.txt");
+        let diff = f.repo.file_diff(path, false).unwrap();
+        let lines = picks(&diff, &["+added"]);
+        let index = f.git(&["ls-files", "--stage", "--", "note.txt"]);
+        fs::write(f.dir.join("note.txt"), "first\nadded\nsecond\nlater\n").unwrap();
+        let err = f.repo.stage_lines(&diff, &lines).unwrap_err();
+        assert!(err.contains("changed since its diff was opened") && err.contains("the lines"), "{err}");
+        let err = f.repo.discard_lines(&diff, &lines).unwrap_err();
+        assert!(err.contains("changed since its diff was opened"), "{err}");
+        assert_eq!(f.git(&["ls-files", "--stage", "--", "note.txt"]), index);
+        assert_eq!(fs::read_to_string(f.dir.join("note.txt")).unwrap(), "first\nadded\nsecond\nlater\n");
+        let err = f.repo.unstage_lines(&diff, &lines).unwrap_err();
+        assert!(err.contains("Select lines from a staged file"), "{err}");
+        let other = Fixture::new();
+        committed(&other, "note.txt", b"first\nsecond\n");
+        let err = other.repo.stage_lines(&diff, &lines).unwrap_err();
+        assert!(err.contains("different repository"), "{err}");
+        let head = String::from_utf8(f.git(&["rev-parse", "HEAD"])).unwrap();
+        let committed_diff = f.repo.commit_diff(head.trim()).unwrap();
+        assert!(f.repo.stage_lines(&committed_diff, &[(0, 0)]).is_err());
+        assert_eq!(f.git(&["ls-files", "--stage", "--", "note.txt"]), index);
     }
 
     #[test]

@@ -271,11 +271,12 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                                 let at = new.or(*old).and_then(|row| doc.lines.get(row)).map_or(0, |row| row.at);
                                 return Some(line_menu(
                                     base_row()
-                                        .child(split_cell(ui, index, *old, true, code_width))
+                                        .child(split_cell(ui, index, *old, true, code_width, cx))
                                         .child(split_divider())
-                                        .child(split_cell(ui, index, *new, false, code_width)),
+                                        .child(split_cell(ui, index, *new, false, code_width, cx)),
                                     ui,
                                     at,
+                                    [*old, *new],
                                     cx,
                                 ));
                             }
@@ -301,12 +302,19 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                         _ => line_menu(
                             base_row()
                                 .when_some(line_background(row.kind), |d, bg| d.bg(rgb(bg)))
-                                .child(number(row.old, 40.))
-                                .child(number(row.new, 40.))
-                                .child(marker(row.kind))
+                                .child(crate::lines::gutter(
+                                    ui,
+                                    index,
+                                    gutter_cells()
+                                        .child(number(row.old, 40.))
+                                        .child(number(row.new, 40.))
+                                        .child(marker(row.kind)),
+                                    cx,
+                                ))
                                 .child(code(doc, row)),
                             ui,
                             row.at,
+                            [Some(index), None],
                             cx,
                         ),
                     })
@@ -343,6 +351,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             d.child(crate::inspection::file_history(app, cx))
         })
         .children(bars)
+        .children(crate::lines::bar(ui, cx))
         .children(placeholder)
         .when(showing, |d| {
             let sideways = if split {
@@ -351,7 +360,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                 kit::scrollbar("diff-pan", &ui.diff_scroll)
             };
             d.when(split, |d| d.child(split_headings()))
-                .child(lines)
+                .child(crate::lines::released(div().flex_1().min_h_0().flex().flex_col().child(lines), cx))
                 .child(kit::scrollbar("diff-scrollbar", &ui.diff_scroll))
                 .child(sideways.horizontal())
         })
@@ -475,8 +484,10 @@ fn mode_control<T: Desk>(mode: Mode, cx: &Context<T>) -> Div {
         .child(segment("diff-split", "Split", Mode::Split))
 }
 
-fn line_menu<T: Desk>(row: Div, ui: &Ui, at: u32, cx: &Context<T>) -> Div {
-    let Some(target) = line_target(&ui.selection, &ui.files, at) else { return row };
+fn line_menu<T: Desk>(row: Div, ui: &Ui, at: u32, rows: [Option<usize>; 2], cx: &Context<T>) -> Div {
+    let picked = rows.into_iter().flatten().any(|row| crate::lines::picked(ui, row));
+    let target = picked.then(|| crate::lines::target(ui)).flatten();
+    let Some(target) = target.or_else(|| line_target(&ui.selection, &ui.files, at)) else { return row };
     row.on_mouse_down(
         MouseButton::Right,
         cx.listener(move |app, event: &MouseDownEvent, window, cx| {
@@ -515,7 +526,11 @@ fn split_headings() -> Div {
         .child(div().pl_3().flex_1().child("After"))
 }
 
-fn split_cell(ui: &Ui, index: usize, side: Option<usize>, old: bool, width: Option<Pixels>) -> Div {
+fn gutter_cells() -> Div {
+    div().h_full().flex().flex_shrink_0().items_center()
+}
+
+fn split_cell<T: Desk>(ui: &Ui, index: usize, side: Option<usize>, old: bool, width: Option<Pixels>, cx: &Context<T>) -> Div {
     let cell = div()
         .flex_1()
         .min_w_0()
@@ -524,7 +539,7 @@ fn split_cell(ui: &Ui, index: usize, side: Option<usize>, old: bool, width: Opti
         .items_center()
         .overflow_hidden();
     let doc = &ui.diff;
-    let Some(row) = side.and_then(|i| doc.lines.get(i)) else {
+    let Some((at, row)) = side.and_then(|i| Some((i, doc.lines.get(i)?))) else {
         return cell.bg(rgb(PANEL));
     };
     if row.kind == Kind::NoNewline {
@@ -539,8 +554,12 @@ fn split_cell(ui: &Ui, index: usize, side: Option<usize>, old: bool, width: Opti
         .child(code(doc, row).when_some(width, |d, width| d.min_w(width)));
     text.style().restrict_scroll_to_axis = Some(true);
     cell.when_some(line_background(row.kind), |d, bg| d.bg(rgb(bg)))
-        .child(number(if old { row.old } else { row.new }, 34.))
-        .child(marker(row.kind))
+        .child(crate::lines::gutter(
+            ui,
+            at,
+            gutter_cells().child(number(if old { row.old } else { row.new }, 34.)).child(marker(row.kind)),
+            cx,
+        ))
         .child(text)
 }
 

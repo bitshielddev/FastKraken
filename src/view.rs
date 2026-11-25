@@ -203,6 +203,11 @@ pub(crate) enum DiscardAsk {
         index: usize,
         diff: std::sync::Arc<crate::repository::Diff>,
     },
+    Lines {
+        path: PathBuf,
+        lines: Vec<(usize, usize)>,
+        diff: std::sync::Arc<crate::repository::Diff>,
+    },
     Files {
         paths: Vec<PathBuf>,
         untracked: std::collections::BTreeSet<PathBuf>,
@@ -238,6 +243,7 @@ pub(crate) fn describe_discard(ask: &DiscardAsk) -> crate::prompt::Spec {
             Spec::new(format!("Discard this hunk{at} of {}?", base_name(path)), "Discard hunk")
                 .line("These lines return to their staged content. This cannot be undone.")
         }
+        DiscardAsk::Lines { path, lines, .. } => crate::lines::describe_discard(&base_name(path), lines.len()),
         DiscardAsk::Files { paths, untracked } => crate::picked::describe_discard(paths, untracked),
         DiscardAsk::All(seen) => crate::discard::describe(seen),
     }
@@ -269,7 +275,18 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
             _ => None,
         }
     }
+    fn lines(target: &Target, staged: bool) -> Option<usize> {
+        match target {
+            Target::Lines { count, side: Side::Staged, .. } if staged => Some(*count),
+            Target::Lines { count, side: Side::Unstaged, .. } if !staged => Some(*count),
+            _ => None,
+        }
+    }
     fn plural(target: &Target, staged: bool, one: &str, many: &str) -> String {
+        if let Some(count) = lines(target, staged) {
+            let (verb, tail) = one.split_once(' ').map_or((one, ""), |(verb, rest)| (verb, if rest.ends_with('…') { "…" } else { "" }));
+            return crate::lines::counted(verb, count, tail);
+        }
         match picked(target, staged) {
             Some(paths) => many.replace("{n}", &paths.len().to_string()),
             None => one.to_owned(),
@@ -279,7 +296,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         busy(ui).or_else(|| ui.operation.refusal())
     }
     fn file(ui: &Ui, target: &Target, staged: bool) -> Availability {
-        if worktree(target, staged).is_some() || picked(target, staged).is_some() {
+        if worktree(target, staged).is_some() || picked(target, staged).is_some() || lines(target, staged).is_some() {
             Availability::unless(index_edit(ui))
         } else {
             Availability::Hidden
@@ -428,6 +445,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
                 worktree(target, false).map(|path| Action::StagePath(path.clone())).or_else(|| {
                     picked(target, false).map(|paths| Action::Picked(crate::picked::Action::Stage(paths.clone())))
                 })
+                .or_else(|| lines(target, false).map(|_| Action::Lines(crate::lines::Action::Stage)))
             },
         )
         .icon("plus")
@@ -441,6 +459,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
                 worktree(target, true).map(|path| Action::UnstagePath(path.clone())).or_else(|| {
                     picked(target, true).map(|paths| Action::Picked(crate::picked::Action::Unstage(paths.clone())))
                 })
+                .or_else(|| lines(target, true).map(|_| Action::Lines(crate::lines::Action::Unstage)))
             },
         )
         .icon("minus")
@@ -454,6 +473,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
                 worktree(target, false).map(|path| Action::AskDiscard(Discard::File(path.clone()))).or_else(|| {
                     picked(target, false).map(|paths| Action::Picked(crate::picked::Action::AskDiscard(paths.clone())))
                 })
+                .or_else(|| lines(target, false).map(|_| Action::Lines(crate::lines::Action::AskDiscard)))
             },
         )
         .words(&["revert", "throw away"])
@@ -528,6 +548,7 @@ pub enum Action {
     Reverse(crate::reverse::Action),
     Pick(crate::pick::Action),
     Picked(crate::picked::Action),
+    Lines(crate::lines::Action),
     Discard(crate::discard::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
@@ -628,6 +649,7 @@ pub struct Ui {
     pub history: Vec<HistoryRow>,
     pub selection: Option<Selection>,
     pub(crate) picked: Option<crate::picked::Picked<PathBuf>>,
+    pub(crate) lines: crate::lines::State,
     pub files: Vec<FileRow>,
     pub changed_paths: usize,
     pub operation: crate::operation::State,
@@ -711,6 +733,7 @@ impl Ui {
             history: vec![],
             selection: None,
             picked: None,
+            lines: Default::default(),
             files: vec![],
             changed_paths: 0,
             operation: Default::default(),
@@ -2403,6 +2426,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Preferences(crate::preferences::Action::Close), w, cx);
             } else if ui.activity.open() {
                 app.dispatch(Action::Activity(crate::activity::Action::Close), w, cx);
+            } else if centre(ui) == Centre::Diff && crate::lines::current(ui).is_some() {
+                app.dispatch(Action::Lines(crate::lines::Action::Clear), w, cx);
             } else if centre(ui) == Centre::Diff {
                 app.dispatch(Action::CloseDiff, w, cx);
             } else if ui.merge.editing().is_some() {
