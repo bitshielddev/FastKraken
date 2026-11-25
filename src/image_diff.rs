@@ -539,15 +539,11 @@ fn diff_held(ui: &Ui) -> Option<&Held> {
 }
 
 pub(crate) fn showing(ui: &Ui) -> Option<&Held> {
-    if crate::inspection::showing_history(ui) {
-        return None;
-    }
     diff_held(ui).filter(|held| held.request.binary || ui.images.mode == Mode::Image)
 }
 
 pub(crate) fn offers_toggle(ui: &Ui) -> bool {
-    view::centre(ui) == view::Centre::Diff
-        && !crate::inspection::showing_history(ui)
+    view::diff_shown(ui)
         && diff_held(ui).is_some_and(|held| held.request.format == ImageFormat::Svg && !held.request.binary)
 }
 
@@ -588,7 +584,7 @@ fn settle_diff(tab: &mut Tab, cx: &mut Context<Tab>) {
         return;
     }
     let visible =
-        view::centre(ui) == view::Centre::Diff && !crate::inspection::showing_history(ui) && wants(&ui.images, held);
+        view::diff_shown(ui) && wants(&ui.images, held);
     match (visible, held.started) {
         (true, false) => start(tab, Slot::Diff, cx),
         (false, true) => {

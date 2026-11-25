@@ -143,9 +143,8 @@ impl State {
 }
 
 fn showing(ui: &Ui) -> bool {
-    view::centre(ui) == view::Centre::Diff
+    view::diff_shown(ui)
         && !ui.diff.lines.is_empty()
-        && !crate::inspection::showing_history(ui)
         && crate::image_diff::showing(ui).is_none()
 }
 
@@ -554,7 +553,7 @@ fn step(tab: &mut Tab, cx: &mut Context<Tab>) -> bool {
         return false;
     };
     if !present(ui, column) {
-        if !column.resolver() && view::centre(ui) == view::Centre::Diff && ui.loading_diff() {
+        if !column.resolver() && view::diff_shown(ui) && ui.loading_diff() {
             return true;
         }
         tab.ui.text.ticking = false;

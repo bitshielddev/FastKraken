@@ -1,8 +1,7 @@
 use crate::{
     Tab, kit,
     repository::{
-        ChangedFile, Repository, changed_status, checked, paired_status, parse_changed_files,
-        raw_path, validate_oid, validate_path,
+        ChangedFile, Repository, checked, parse_changed_files, raw_path, validate_oid,
     },
     theme::*,
     view::{self, Desk, Menu, Selection},
@@ -14,8 +13,6 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
 };
-
-const HISTORY_PAGE: usize = 64;
 
 pub(crate) struct Message {
     pub(crate) subject: gpui::Entity<CommitInput>,
@@ -44,7 +41,7 @@ fn show_message(tab: &mut Tab, subject: &str, body: &str, cx: &mut Context<Tab>)
 }
 
 pub(crate) const COMMANDS: &[crate::commands::Command] = {
-    use crate::commands::{Availability, Command, Group, Side, Target, busy, commit, operating};
+    use crate::commands::{Availability, Command, Group, commit};
     &[
         Command::new(
             "commit.copy-sha",
@@ -57,35 +54,6 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         )
         .words(&["hash", "id", "clipboard"])
         .icon("copy"),
-        Command::new(
-            "file.history",
-            Group::View,
-            |ui, target| {
-                if listing(ui, target) { "Hide file history" } else { "File history" }.into()
-            },
-            |ui, target, _| {
-                let Target::File { path, side: Side::Commit(oid) } = target else {
-                    return Availability::Hidden;
-                };
-                let shown = matches!(&ui.selection, Some(Selection::Commit(id)) if id == oid)
-                    && ui.inspection.oid.as_ref() == Some(oid)
-                    && ui.inspection.files.iter().any(|file| file.path == *path);
-                Availability::unless(busy(ui).or_else(|| operating(ui)).or_else(|| {
-                    (!shown).then(|| "Select the commit first".to_owned())
-                }))
-            },
-            |ui, target| {
-                let Target::File { path, .. } = target else {
-                    return None;
-                };
-                Some(view::Action::Inspect(if listing(ui, target) {
-                    Action::CloseHistory
-                } else {
-                    Action::FileHistory(path.clone())
-                }))
-            },
-        )
-        .icon("history"),
     ]
 };
 
@@ -102,13 +70,6 @@ struct CommitDetails {
     body: String,
     files: Vec<ChangedFile>,
     stats: HashMap<PathBuf, (u32, u32)>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct FileCommit {
-    pub oid: String,
-    pub subject: String,
-    pub path: PathBuf,
 }
 
 impl Repository {
@@ -208,68 +169,6 @@ impl Repository {
         }
         Ok(stats)
     }
-
-    fn file_history(
-        &self,
-        oid: &str,
-        path: &Path,
-        offset: usize,
-        limit: usize,
-    ) -> Result<Vec<FileCommit>, String> {
-        validate_oid(oid)?;
-        validate_path(path)?;
-        let output = checked(
-            self.read_command()
-                .args([
-                    "log",
-                    "--topo-order",
-                    "--follow",
-                    "--name-status",
-                    "--diff-merges=first-parent",
-                    "--no-show-signature",
-                    "--no-notes",
-                    "--no-color",
-                    "--format=%H%x00%s",
-                    "-z",
-                ])
-                .arg(format!("--max-count={}", offset + limit))
-                .args([oid, "--"])
-                .arg(path),
-        )?;
-        let mut commits = parse_file_history(&output, path)?;
-        commits.drain(..offset.min(commits.len()));
-        Ok(commits)
-    }
-}
-
-fn parse_file_history(output: &[u8], path: &Path) -> Result<Vec<FileCommit>, String> {
-    let mut commits = Vec::new();
-    let Some(records) = output.strip_suffix(b"\0") else {
-        return if output.is_empty() { Ok(commits) } else { Err("Incomplete file history record".into()) };
-    };
-    let mut fields = records.split(|&b| b == 0).peekable();
-    let mut named = path.to_owned();
-    while let Some(oid) = fields.next() {
-        let oid = String::from_utf8_lossy(oid.strip_prefix(b"\n").unwrap_or(oid)).into_owned();
-        validate_oid(&oid).map_err(|_| "Invalid file history record".to_owned())?;
-        let subject = fields.next().ok_or("Missing file history subject")?;
-        let code = fields.peek().map(|code| code.strip_prefix(b"\n").unwrap_or(code));
-        if let Some(code) = code.filter(|code| changed_status(code).is_some()) {
-            let paired = paired_status(code);
-            fields.next();
-            let mut name = || fields.next().map(raw_path).ok_or("Missing file history path");
-            if paired {
-                name()?;
-            }
-            named = name()?;
-        }
-        commits.push(FileCommit {
-            oid,
-            subject: String::from_utf8_lossy(subject).into_owned(),
-            path: named.clone(),
-        });
-    }
-    Ok(commits)
 }
 
 #[derive(Default)]
@@ -289,13 +188,8 @@ pub struct State {
     pub files: Vec<ChangedFile>,
     stats: HashMap<PathBuf, (u32, u32)>,
     pub path: Option<PathBuf>,
-    pub history: Option<Vec<FileCommit>>,
     opening: Option<PathBuf>,
-    history_ticket: u64,
-    loading_history: bool,
-    more_history: bool,
     pub(crate) scroll: gpui::UniformListScrollHandle,
-    history_scroll: gpui::UniformListScrollHandle,
     body_scroll: gpui::ScrollHandle,
 }
 
@@ -313,31 +207,17 @@ impl State {
         }
         self.files.iter().find(|file| file.path == path)
     }
-
-    fn close_history(&mut self) {
-        self.history_ticket += 1;
-        self.history = None;
-        self.loading_history = false;
-        self.more_history = false;
-        self.history_scroll = gpui::UniformListScrollHandle::new();
-    }
 }
 
 #[derive(Clone, Debug)]
 pub enum Action {
     OpenFile(PathBuf),
     AllChanges,
-    History,
-    FileHistory(PathBuf),
-    OpenRevision { oid: String, path: PathBuf },
-    MoreHistory,
-    CloseHistory,
 }
 
 pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
     crate::containing::selected(tab, oid, cx);
     let state = &mut tab.ui.inspection;
-    state.close_history();
     state.path = None;
     state.opening = None;
     if oid.is_some()
@@ -403,25 +283,7 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
     );
 }
 
-pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
-    if let Action::FileHistory(path) = action {
-        if tab.ui.inspection.path.as_ref() != Some(&path) || !tab.ui.diff_open {
-            dispatch(tab, Action::OpenFile(path.clone()), window, cx);
-        }
-        if tab.ui.inspection.path.as_ref() == Some(&path) {
-            dispatch(tab, Action::History, window, cx);
-        }
-        return;
-    }
-    if let Action::OpenRevision { oid, path } = action {
-        tab.dispatch(view::Action::Select(Selection::Commit(oid.clone())), window, cx);
-        crate::reveal::dispatch(tab, crate::reveal::Action::Commit(oid.clone()), window, cx);
-        if tab.ui.selection == Some(Selection::Commit(oid)) {
-            tab.ui.inspection.opening = Some(path);
-            open_waiting(tab, cx);
-        }
-        return;
-    }
+pub fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<Tab>) {
     let Some(Selection::Commit(oid)) = tab.ui.selection.clone() else {
         return;
     };
@@ -430,57 +292,19 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
         return;
     }
     match action {
-        Action::OpenFile(path) => open_file(tab, oid, path, cx),
+        Action::OpenFile(path) => {
+            if tab.ui.file_history.chosen().is_none_or(|entry| entry.oid != oid || entry.path != path) {
+                crate::file_history::leave(tab);
+            }
+            open_file(tab, oid, path, cx)
+        }
         Action::AllChanges => {
-            state.close_history();
+            crate::file_history::leave(tab);
+            let state = &mut tab.ui.inspection;
             state.path = None;
             tab.ui.diff_open = true;
             tab.load_selected_patch(Selection::Commit(oid), None, cx);
         }
-        Action::History | Action::MoreHistory => {
-            let (Some(repo), Some(path)) = (tab.repo.clone(), state.path.clone()) else {
-                return;
-            };
-            if state.loading_history {
-                return;
-            }
-            let offset = match action {
-                Action::History => {
-                    state.close_history();
-                    0
-                }
-                Action::MoreHistory if state.more_history => {
-                    state.history.as_ref().map_or(0, Vec::len)
-                }
-                _ => return,
-            };
-            let epoch = tab.epoch;
-            state.loading_history = true;
-            state.history_ticket += 1;
-            let ticket = state.history_ticket;
-            Tab::work(
-                cx,
-                move || repo.file_history(&oid, &path, offset, HISTORY_PAGE + 1),
-                move |tab, result, cx| {
-                    let state = &mut tab.ui.inspection;
-                    if tab.epoch != epoch || state.history_ticket != ticket {
-                        return;
-                    }
-                    state.loading_history = false;
-                    match result {
-                        Ok(mut rows) => {
-                            state.more_history = rows.len() > HISTORY_PAGE;
-                            rows.truncate(HISTORY_PAGE);
-                            state.history.get_or_insert_with(Vec::new).extend(rows);
-                        }
-                        Err(error) => tab.error(error, cx),
-                    }
-                    cx.notify();
-                },
-            );
-        }
-        Action::CloseHistory => state.close_history(),
-        Action::FileHistory(_) | Action::OpenRevision { .. } => unreachable!(),
     }
     cx.notify();
 }
@@ -491,10 +315,14 @@ fn open_file(tab: &mut Tab, oid: String, path: PathBuf, cx: &mut Context<Tab>) {
     };
     tab.ui.navigate.opened(&oid, index);
     let state = &mut tab.ui.inspection;
-    state.close_history();
     state.path = Some(path.clone());
     tab.ui.diff_open = true;
     tab.load_selected_patch(Selection::Commit(oid), Some(path), cx);
+}
+
+pub(crate) fn open_when_loaded(tab: &mut Tab, path: PathBuf, cx: &mut Context<Tab>) {
+    tab.ui.inspection.opening = Some(path);
+    open_waiting(tab, cx);
 }
 
 fn open_waiting(tab: &mut Tab, cx: &mut Context<Tab>) {
@@ -508,16 +336,6 @@ fn open_waiting(tab: &mut Tab, cx: &mut Context<Tab>) {
     if tab.ui.inspection.oid.as_ref() == Some(&oid) {
         open_file(tab, oid, path, cx);
     }
-}
-
-fn listing(ui: &view::Ui, target: &crate::commands::Target) -> bool {
-    matches!(target, crate::commands::Target::File { path, .. }
-        if showing_history(ui) && ui.inspection.path.as_ref() == Some(path))
-}
-
-pub(crate) fn showing_history(ui: &view::Ui) -> bool {
-    matches!(ui.selection, Some(Selection::Commit(_)))
-        && (ui.inspection.history.is_some() || ui.inspection.loading_history)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -871,94 +689,6 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .child(kit::scrollbar("committed-files-scrollbar", &state.scroll))
 }
 
-pub(crate) fn history_button<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement + use<T> {
-    let listing = showing_history(app.ui());
-    kit::btn("file-history", "File history")
-        .small()
-        .ghost()
-        .selected(listing)
-        .on(
-            view::Action::Inspect(if listing {
-                Action::CloseHistory
-            } else {
-                Action::History
-            }),
-            cx,
-        )
-}
-
-pub(crate) fn file_history<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
-    let state = &app.ui().inspection;
-    let count = state.history.as_ref().map_or(0, Vec::len);
-    let body = div().flex_1().min_h_0().flex().flex_col();
-    if count == 0 {
-        return body.child(div().p_4().child(kit::muted(if state.loading_history {
-            "Loading file history…"
-        } else {
-            "No commits changed this path."
-        })));
-    }
-    let id = SharedString::from(format!(
-        "file-revision-{}-{}",
-        state.oid.as_deref().unwrap_or(""),
-        state.path.as_deref().unwrap_or(Path::new("")).display()
-    ));
-    let list = uniform_list(
-        id,
-        count,
-        cx.processor(|app, range: Range<usize>, _, cx| {
-            let state = &app.ui().inspection;
-            range
-                .filter_map(|i| {
-                    let row = state.history.as_ref()?.get(i)?;
-                    let open = view::Action::Inspect(Action::OpenRevision { oid: row.oid.clone(), path: row.path.clone() });
-                    let moved = (state.path.as_ref() != Some(&row.path)).then(|| row.path.to_string_lossy().into_owned());
-                    Some(
-                        kit::row(("file-revision", i), false)
-                            .h(px(ROW))
-                            .pl_3()
-                            .pr_3()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .font_family(MONO)
-                                    .text_size(px(11.5))
-                                    .text_color(rgb(TEXT_3))
-                                    .child(row.oid.chars().take(7).collect::<String>()),
-                            )
-                            .child(kit::fit(row.subject.clone()).grow())
-                            .when_some(moved, |d, path| {
-                                d.child(
-                                    kit::fit(path)
-                                        .size(11.5)
-                                        .color(TEXT_3)
-                                        .cut(kit::Cut::Start),
-                                )
-                            })
-                            .on_click(cx.listener(move |app, _, w, cx| app.dispatch(open.clone(), w, cx))),
-                    )
-                })
-                .collect::<Vec<_>>()
-        }),
-    )
-    .track_scroll(state.history_scroll.clone())
-    .flex_1()
-    .min_h_0();
-    body.child(list)
-        .child(kit::scrollbar("file-revisions-scrollbar", &state.history_scroll))
-        .when(state.more_history, |d| {
-            d.child(
-                div().p_2().flex().justify_end().child(
-                    kit::btn("older-file-history", "Load older")
-                        .small()
-                        .enabled(!state.loading_history)
-                        .on(view::Action::Inspect(Action::MoreHistory), cx),
-                ),
-            )
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1094,14 +824,15 @@ mod tests {
         let diff = f.repo.commit_path_diff(&tip, notes, None).unwrap();
         assert!(diff.text.contains("+FastKraken: git for the impatient"));
         assert!(!diff.text.contains("Change in the same commit"));
-        let history = f.repo.file_history(&tip, notes, 0, 64).unwrap();
+        let start = crate::file_history::Start::Commit(tip.clone());
+        let history = f.repo.file_revisions(&start, notes, 0, 64).unwrap().1;
         let subjects = history
             .iter()
             .map(|r| r.subject.as_str())
             .collect::<Vec<_>>();
         assert_eq!(subjects, ["Revise notebook", "Start notebook"]);
         assert_eq!(
-            f.repo.file_history(&tip, notes, 1, 1).unwrap(),
+            f.repo.file_revisions(&start, notes, 1, 1).unwrap().1,
             history[1..]
         );
         let first = f.repo.commit_details(&history[1].oid).unwrap();
@@ -1195,62 +926,5 @@ mod tests {
         let whole = f.repo.commit_diff(moved).unwrap();
         assert!(whole.text.contains("rename from notes.txt"));
         assert!(!whole.text.contains("-eight"));
-    }
-
-    #[test]
-    fn file_history_crosses_the_rename_and_names_the_path_at_each_commit() {
-        let f = Fixture::new();
-        let commits = moved_notes(&f);
-        let new = Path::new("docs/notes é.md");
-        let history = f.repo.file_history(&commits[0], new, 0, 64).unwrap();
-        let rows: Vec<(&str, &Path)> = history.iter().map(|row| (row.subject.as_str(), row.path.as_path())).collect();
-        assert_eq!(
-            rows,
-            [
-                ("Edit moved notes", new),
-                ("Move notes", new),
-                ("Edit notes", Path::new("notes.txt")),
-                ("Start notes", Path::new("notes.txt")),
-            ]
-        );
-        assert_eq!(history.iter().map(|row| row.oid.as_str()).collect::<Vec<_>>(), commits);
-        assert_eq!(f.repo.file_history(&commits[0], new, 2, 1).unwrap(), history[2..3]);
-        let older = &history[2];
-        let details = f.repo.commit_details(&older.oid).unwrap();
-        assert!(details.files.iter().any(|file| file.path == older.path && file.from.is_none()));
-        let diff = f.repo.commit_path_diff(&older.oid, &older.path, None).unwrap();
-        assert!(diff.text.contains("+TWO") && diff.text.contains("b/notes.txt"));
-    }
-
-    #[test]
-    fn file_history_includes_a_merge_through_its_first_parent_and_reads_paths_with_newlines() {
-        let output = [
-            "a".repeat(40).as_bytes(), b"\0Merge side\0\nM\0new\nname\0",
-            "b".repeat(40).as_bytes(), b"\0Move\0\nR100\0old\0new\nname\0",
-            "c".repeat(40).as_bytes(), b"\0Start\0\nA\0old\0",
-        ]
-        .concat();
-        let rows = parse_file_history(&output, Path::new("new\nname")).unwrap();
-        let paths: Vec<&Path> = rows.iter().map(|row| row.path.as_path()).collect();
-        assert_eq!(paths, [Path::new("new\nname"), Path::new("new\nname"), Path::new("old")]);
-        assert_eq!(rows[1].subject, "Move");
-        assert!(parse_file_history(b"zz\0x\0", Path::new("a")).is_err());
-
-        let f = Fixture::new();
-        write(&f, Path::new("f.txt"), "1\n2\n3\n4\n5\n6\n");
-        f.repo.commit("Start").unwrap();
-        f.git(&["switch", "-qc", "side"]);
-        write(&f, Path::new("f.txt"), "1\n2\n3\n4\n5\n6\nside\n");
-        f.repo.commit("Side").unwrap();
-        f.git(&["switch", "-q", "main"]);
-        write(&f, Path::new("f.txt"), "one\n2\n3\n4\n5\n6\n");
-        f.repo.commit("Main").unwrap();
-        f.git(&["merge", "-q", "--no-edit", "side"]);
-        f.git(&["mv", "f.txt", "g.txt"]);
-        f.repo.commit("Move").unwrap();
-        let tip = f.repo.status().unwrap().head.unwrap();
-        let subjects: Vec<String> =
-            f.repo.file_history(&tip, Path::new("g.txt"), 0, 64).unwrap().into_iter().map(|row| row.subject).collect();
-        assert_eq!(subjects, ["Move", "Merge branch 'side'", "Side", "Main", "Start"]);
     }
 }

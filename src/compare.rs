@@ -64,7 +64,7 @@ pub(crate) struct State {
     pub(crate) picked: Option<Picked<Rev>>,
     commits: HashSet<String>,
     primary: Option<Rev>,
-    names: Option<Names>,
+    pub(crate) names: Option<Names>,
     shown: Option<Selection>,
     pub(crate) files: Vec<ChangedFile>,
     loading: bool,

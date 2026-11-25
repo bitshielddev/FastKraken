@@ -494,23 +494,22 @@ impl Replay<'_> {
         })
         .await?;
         self.open_file(new).await?;
-        self.action(Action::Inspect(inspection::Action::History))?;
+        self.action(Action::FileHistory(crate::file_history::Action::OpenHere))?;
         self.until("file history lists the commits from before the rename under the old path", |tab| {
-            tab.ui.inspection.history.as_ref().is_some_and(|history| {
-                history.iter().map(|row| (row.subject.as_str(), row.path.as_path())).eq([
-                    (subjects[0], Path::new(new)),
-                    (subjects[1], Path::new(new)),
-                    (subjects[2], Path::new(old)),
-                    (subjects[3], Path::new(old)),
-                ])
-            })
+            tab.ui.file_history.entries().iter().map(|row| (row.subject.as_str(), row.path.as_path())).eq([
+                (subjects[0], Path::new(new)),
+                (subjects[1], Path::new(new)),
+                (subjects[2], Path::new(old)),
+                (subjects[3], Path::new(old)),
+            ])
         })
         .await?;
 
-        self.action(Action::Inspect(inspection::Action::OpenRevision { oid: added.clone(), path: old.into() }))?;
+        self.action(Action::FileHistory(crate::file_history::Action::Choose(2)))?;
         self.until("the older revision opens under the old path", |tab| {
             tab.ui.selection == Some(Selection::Commit(added.clone()))
                 && tab.ui.diff_open
+                && view::centre(&tab.ui) == view::Centre::FileHistory
                 && tab.ui.inspection.path.as_deref() == Some(Path::new(old))
                 && patch(tab, "+TWO")
                 && changed_lines(tab) == ["-two", "+TWO"]

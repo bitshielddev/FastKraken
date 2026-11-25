@@ -909,6 +909,7 @@ impl Replay<'_> {
                 "file.discard",
                 "file.ignore-menu",
                 "file.stash",
+                "file.history",
                 "file.edit",
                 "file.open",
                 "file.reveal",
@@ -950,7 +951,7 @@ impl Replay<'_> {
         let staged = Target::File { path: "trail.txt".into(), side: commands::Side::Staged };
         let rows = self.menu_rows(&staged)?;
         if ids(rows.clone())
-            != ["file.unstage", "file.stash", "file.edit", "file.open", "file.reveal", "file.copy-path", "file.copy-full-path"]
+            != ["file.unstage", "file.stash", "file.history", "file.edit", "file.open", "file.reveal", "file.copy-path", "file.copy-full-path"]
         {
             return Err(format!("The menu of the staged trail.txt lists {rows:?}").into());
         }
@@ -996,16 +997,17 @@ impl Replay<'_> {
         })?;
         self.action(history.ok_or("File history cannot run")?)?;
         self.until("the file's history listed", |tab| {
-            tab.ui.inspection.path.as_deref() == Some(Path::new("trail.txt"))
-                && tab.ui.inspection.history.as_ref().is_some_and(|rows| {
-                    rows.iter().map(|row| row.oid.as_str()).collect::<Vec<_>>() == [second.as_str(), head.as_str()]
-                })
+            tab.ui.file_history.path() == Some(Path::new("trail.txt"))
+                && tab.ui.file_history.entries().iter().map(|row| row.oid.as_str()).collect::<Vec<_>>() == [second.as_str(), head.as_str()]
         })
         .await?;
         let stashed = Target::File { path: "notes.txt".into(), side: commands::Side::Stash(saved.clone()) };
         let rows = self.menu_rows(&stashed)?;
         let reason = Some("notes.txt is not in the working tree".to_owned());
-        if ids(rows.clone()) != ["file.reveal", "file.copy-path", "file.copy-full-path"] || rows[0].2 != reason {
+        if ids(rows.clone()) != ["file.history", "file.reveal", "file.copy-path", "file.copy-full-path"]
+            || rows[0].2.is_some()
+            || rows[1].2 != reason
+        {
             return Err(format!("The menu of the stashed notes.txt lists {rows:?}").into());
         }
         let rows = self.menu_rows(&Target::Stash(saved.clone()))?;

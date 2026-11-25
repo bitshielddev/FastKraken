@@ -56,7 +56,7 @@ const GAP_WAVES: &[(u8, &[&str])] =
         (6, &["GAP0601", "GAP0602", "GAP0603", "GAP0604", "GAP0605", "GAP0606", "GAP0607", "GAP0608", "GAP0609", "GAP0610", "GAP0611", "GAP0612", "GAP0613", "GAP0614", "GAP0615"]),
         (7, &["GAP0701", "GAP0702", "GAP0703", "GAP0704", "GAP0705", "GAP0706", "GAP0707", "GAP0708", "GAP0709", "GAP0710", "GAP0711", "GAP0712", "GAP0713", "GAP0714", "GAP0715", "GAP0716", "GAP0717"]),
         (8, &["GAP0801", "GAP0802", "GAP0803", "GAP0804", "GAP0805", "GAP0806", "GAP0807", "GAP0808", "GAP0809", "GAP0810", "GAP0811", "GAP0812", "GAP0813", "GAP0814"]),
-        (9, &["GAP0901", "GAP0902", "GAP0903", "GAP0904"]),
+        (9, &["GAP0901", "GAP0902", "GAP0903", "GAP0904", "GAP0905", "GAP0906"]),
     ];
 
 #[derive(Clone, Copy)]
@@ -717,18 +717,15 @@ impl Replay<'_> {
         })
         .await?;
         self.open_file("notes.txt").await?;
-        self.action(Action::Inspect(inspection::Action::History))?;
-        self.until(
-            "file history lists only Revise notebook and Start notebook",
-            |tab| {
-                tab.ui.inspection.history.as_ref().is_some_and(|history| {
-                    history
-                        .iter()
-                        .map(|r| r.subject.as_str())
-                        .eq(["Revise notebook", "Start notebook"])
-                })
-            },
-        )
+        self.action(Action::FileHistory(crate::file_history::Action::OpenHere))?;
+        self.until("file history lists only Revise notebook and Start notebook", |tab| {
+            tab.ui
+                .file_history
+                .entries()
+                .iter()
+                .map(|r| r.subject.as_str())
+                .eq(["Revise notebook", "Start notebook"])
+        })
         .await?;
         git_is(
             &root,

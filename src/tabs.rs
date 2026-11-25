@@ -53,6 +53,7 @@ pub(crate) const COMMANDS: &[Command] = {
                     _ if ui.repo.is_empty() => "Close tab",
                     Centre::Activity => "Close the activity log",
                     Centre::Diff | Centre::Resolver | Centre::Chooser => "Close the open file",
+                    Centre::FileHistory => "Close file history",
                     Centre::Search | Centre::History => "Close tab",
                 }
                 .into()
@@ -65,6 +66,7 @@ pub(crate) const COMMANDS: &[Command] = {
                     Centre::Resolver => view::Action::Merge(crate::merge::Action::Close),
                     Centre::Chooser => view::Action::Conflict(crate::conflict::Action::Close),
                     Centre::Diff => view::Action::CloseDiff,
+                    Centre::FileHistory => view::Action::FileHistory(crate::file_history::Action::Close),
                     Centre::Search | Centre::History => view::Action::Tabs(Action::Close(None)),
                 })
             },
@@ -89,7 +91,7 @@ pub(crate) const COMMANDS: &[Command] = {
 };
 
 fn covered(ui: &Ui) -> bool {
-    matches!(view::centre(ui), Centre::Activity | Centre::Diff | Centre::Resolver | Centre::Chooser)
+    matches!(view::centre(ui), Centre::Activity | Centre::Diff | Centre::FileHistory | Centre::Resolver | Centre::Chooser)
 }
 
 pub(crate) fn refusal(ui: &Ui) -> Option<String> {

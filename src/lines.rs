@@ -116,7 +116,7 @@ pub(crate) fn side(ui: &Ui) -> Option<bool> {
         Some(Selection::File { staged, .. })
             if ui.diff.stageable
                 && !ui.loading_diff()
-                && view::centre(ui) == view::Centre::Diff
+                && view::diff_shown(ui)
                 && crate::image_diff::showing(ui).is_none() =>
         {
             Some(*staged)

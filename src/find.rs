@@ -189,7 +189,7 @@ pub(crate) fn here(ui: &Ui) -> Option<Surface> {
         return None;
     }
     match view::centre(ui) {
-        Centre::Diff if !crate::inspection::showing_history(ui) && crate::image_diff::showing(ui).is_none() => {
+        Centre::Diff | Centre::FileHistory if view::diff_shown(ui) && crate::image_diff::showing(ui).is_none() => {
             Some(Surface::Diff)
         }
         Centre::Resolver => Some(Surface::Resolver),

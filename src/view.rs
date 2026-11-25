@@ -587,6 +587,7 @@ pub enum Action {
     Find(crate::find::Action),
     Images(crate::image_diff::Action),
     FileView(crate::file_view::Action),
+    FileHistory(crate::file_history::Action),
     Recover(crate::recover::Action),
     Discard(crate::discard::Action),
     Ignore(crate::ignore::Action),
@@ -689,6 +690,7 @@ pub struct Ui {
     pub selection: Option<Selection>,
     pub(crate) picked: Option<crate::picked::Picked<PathBuf>>,
     pub(crate) compare: crate::compare::State,
+    pub(crate) file_history: crate::file_history::State,
     pub(crate) lines: crate::lines::State,
     pub(crate) text: crate::diff_select::State,
     pub(crate) message: crate::inspection::Message,
@@ -793,6 +795,7 @@ impl Ui {
             selection: None,
             picked: None,
             compare: Default::default(),
+            file_history: Default::default(),
             lines: Default::default(),
             text: Default::default(),
             message: crate::inspection::Message::new(cx),
@@ -2859,8 +2862,21 @@ pub(crate) enum Centre {
     Resolver,
     Chooser,
     Diff,
+    FileHistory,
     Search,
     History,
+}
+
+pub(crate) fn diff_shown(ui: &Ui) -> bool {
+    match centre(ui) {
+        Centre::Diff => true,
+        Centre::FileHistory => crate::file_history::shows_diff(ui),
+        _ => false,
+    }
+}
+
+pub(crate) fn diff_pane<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> Div {
+    diff_view::render(app, window, cx)
 }
 
 pub(crate) fn centre(ui: &Ui) -> Centre {
@@ -2868,6 +2884,8 @@ pub(crate) fn centre(ui: &Ui) -> Centre {
     let browsing = !crate::operation::owns_panel(ui);
     if ui.activity.open() {
         Centre::Activity
+    } else if ui.file_history.open() {
+        Centre::FileHistory
     } else if ui.diff_open && browsing {
         Centre::Diff
     } else if operating && ui.merge.editing().is_some() {
@@ -3205,10 +3223,12 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Activity(crate::activity::Action::Close), w, cx);
             } else if crate::find::shown(ui).is_some() {
                 app.dispatch(Action::Find(crate::find::Action::Close), w, cx);
-            } else if centre(ui) == Centre::Diff && crate::lines::current(ui).is_some() {
+            } else if diff_shown(ui) && crate::lines::current(ui).is_some() {
                 app.dispatch(Action::Lines(crate::lines::Action::Clear), w, cx);
-            } else if centre(ui) == Centre::Diff && crate::diff_select::current(ui).is_some() {
+            } else if diff_shown(ui) && crate::diff_select::current(ui).is_some() {
                 app.dispatch(Action::Text(crate::diff_select::Action::Clear), w, cx);
+            } else if centre(ui) == Centre::FileHistory {
+                app.dispatch(Action::FileHistory(crate::file_history::Action::Close), w, cx);
             } else if centre(ui) == Centre::Diff {
                 app.dispatch(Action::CloseDiff, w, cx);
             } else if centre(ui) == Centre::Resolver && crate::diff_select::current(ui).is_some() {
@@ -3285,6 +3305,7 @@ pub fn render<T: Desk>(
             Centre::Resolver => crate::merge::resolver(app, cx),
             Centre::Chooser => crate::conflict::chooser(app, cx),
             Centre::Diff => diff_view::render(app, window, cx),
+            Centre::FileHistory => crate::file_history::render(app, window, cx),
             Centre::Search => crate::search::results(app, cx),
             Centre::History => history(app, ui.columns_drawn(viewport).1, cx),
         };

@@ -1924,17 +1924,24 @@ impl Replay<'_> {
             pictured(tab, "chart.png", chart, ["Before", "After"])
         })
         .await?;
-        self.action(Action::Inspect(crate::inspection::Action::History))?;
-        self.until("the chart's file history listed in place of its pictures", |tab| {
-            crate::inspection::showing_history(&tab.ui)
-                && tab.ui.inspection.history.as_ref().is_some_and(|history| history.len() == 2)
-                && image_diff::showing(&tab.ui).is_none()
-                && tab.ui.images.holding() == 0
+        self.action(Action::FileHistory(crate::file_history::Action::OpenHere))?;
+        self.until("the chart's file history listed beside its pictures", |tab| {
+            crate::view::centre(&tab.ui) == crate::view::Centre::FileHistory
+                && tab.ui.file_history.entries().len() == 2
+                && tab.ui.file_history.chosen_index() == Some(0)
+                && pictured(tab, "chart.png", chart, ["Before", "After"])
         })
         .await?;
-        self.action(Action::Inspect(crate::inspection::Action::CloseHistory))?;
+        self.action(Action::FileHistory(crate::file_history::Action::Step(1)))?;
+        self.until("the chart's older revision drawn in the history", |tab| {
+            tab.ui.file_history.chosen_index() == Some(1) && image_diff::showing(&tab.ui).is_some()
+        })
+        .await?;
+        self.action(Action::FileHistory(crate::file_history::Action::Close))?;
         self.until("the committed chart drawn again after its history", |tab| {
-            !crate::inspection::showing_history(&tab.ui) && pictured(tab, "chart.png", chart, ["Before", "After"])
+            !tab.ui.file_history.open()
+                && tab.ui.selection == Some(Selection::Commit(head.clone()))
+                && pictured(tab, "chart.png", chart, ["Before", "After"])
         })
         .await?;
         self.action(Action::CloseDiff)?;

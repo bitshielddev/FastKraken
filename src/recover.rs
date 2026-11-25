@@ -23,6 +23,7 @@ const REVIEW: &str = "It shows as a change in your files, ready to review. Nothi
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
     Restore { oid: String, path: PathBuf, before: bool },
+    Revision(Wanted),
     UndoHunk(usize),
 }
 
@@ -123,6 +124,13 @@ fn committed<'a>(ui: &'a Ui, target: &'a Target) -> Option<(&'a String, &'a Path
     }
 }
 
+fn revision<'a>(ui: &'a Ui, target: &Target) -> Option<&'a crate::file_history::Revision> {
+    match target {
+        Target::Revision { oid, path } => ui.file_history.entry(oid).filter(|entry| entry.path == *path),
+        _ => None,
+    }
+}
+
 fn restoring(target: &Target, before: bool) -> Option<view::Action> {
     match target {
         Target::File { path, side: Side::Commit(oid) } => {
@@ -180,6 +188,29 @@ pub(crate) const COMMANDS: &[Command] = &[
     .words(&["restore previous version", "undo changes to this file", "revert file", "parent version"])
     .icon("history"),
     Command::new(
+        "revision.restore",
+        Group::Reverse,
+        |_, _| "Restore this version…".into(),
+        |ui, target, _| match revision(ui, target) {
+            Some(entry) => Availability::unless(refusal(ui).or_else(|| {
+                (entry.status == DELETED)
+                    .then(|| "This commit deletes the file, so there is no version to restore".to_owned())
+            })),
+            None => Availability::Hidden,
+        },
+        |ui, target| {
+            let entry = revision(ui, target)?;
+            Some(view::Action::Recover(Action::Revision(Wanted {
+                oid: entry.oid.clone(),
+                path: entry.path.clone(),
+                from: entry.from.clone(),
+                before: false,
+            })))
+        },
+    )
+    .words(&["restore file from this commit", "checkout file", "get this version back", "revert file"])
+    .icon("history"),
+    Command::new(
         "code.undo-hunk",
         Group::Reverse,
         |_, _| "Undo this hunk in my files".into(),
@@ -203,20 +234,23 @@ fn refuse(tab: &mut Tab, reason: String, cx: &mut Context<Tab>) {
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<Tab>) {
     match action {
-        Action::Restore { oid, path, before } => look(tab, oid, path, before, cx),
+        Action::Restore { oid, path, before } => {
+            let Some(file) = tab.ui.inspection.file(&oid, &path) else {
+                return refuse(tab, format!("{} is no longer listed in this commit", name(&path)), cx);
+            };
+            let from = file.from.clone();
+            look(tab, Wanted { oid, from, path, before }, cx);
+        }
+        Action::Revision(wanted) => look(tab, wanted, cx),
         Action::UndoHunk(hunk) => undo(tab, hunk, cx),
     }
 }
 
-fn look(tab: &mut Tab, oid: String, path: PathBuf, before: bool, cx: &mut Context<Tab>) {
+fn look(tab: &mut Tab, wanted: Wanted, cx: &mut Context<Tab>) {
     if refusal(&tab.ui).is_some() || tab.ui.prompt.open() {
         return;
     }
     let Some(repo) = tab.repo.clone() else { return };
-    let Some(file) = tab.ui.inspection.file(&oid, &path) else {
-        return refuse(tab, format!("{} is no longer listed in this commit", name(&path)), cx);
-    };
-    let wanted = Wanted { oid, from: file.from.clone(), path, before };
     tab.ui.menu = None;
     tab.ui.recover.looking += 1;
     let ticket = tab.ui.recover.looking;

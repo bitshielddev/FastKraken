@@ -1,8 +1,10 @@
 use super::*;
 use crate::{
-    commands::{self, Target},
+    commands::{self, Side, Target},
     compare::{self, Rev},
+    file_history,
     picked::How,
+    view::DiffMode,
 };
 
 type Listed = Vec<(String, String, Option<String>)>;
@@ -71,12 +73,39 @@ fn untouched(root: &Path) -> Result<String> {
     .join("\n"))
 }
 
+const CONFIRM: &str = if cfg!(target_os = "macos") { "cmd-enter" } else { "ctrl-enter" };
+
+fn revisions(tab: &Tab) -> Vec<String> {
+    tab.ui.file_history.entries().iter().map(|entry| entry.oid.clone()).collect()
+}
+
+fn listed_oids(root: &Path, args: &[&str]) -> Result<Vec<String>> {
+    let mut command = vec!["log", "--follow", "--format=%H"];
+    command.extend_from_slice(args);
+    Ok(git(root, &command)?.lines().map(str::to_owned).collect())
+}
+
+fn in_history(tab: &Tab, index: usize, oid: &str, path: &str) -> bool {
+    view::centre(&tab.ui) == view::Centre::FileHistory
+        && tab.ui.file_history.chosen_index() == Some(index)
+        && tab.ui.selection == Some(Selection::Commit(oid.to_owned()))
+        && tab.ui.diff_open
+        && tab.ui.inspection.path.as_deref() == Some(Path::new(path))
+        && !tab.ui.loading_diff()
+}
+
+fn whole_file(tab: &Tab, contents: &str) -> bool {
+    !tab.ui.loading_diff() && tab.ui.diff.file.as_ref().and_then(|shown| shown.contents.as_deref()) == Some(contents)
+}
+
 impl Replay<'_> {
     pub(super) async fn gap09(&mut self, dir: &Path) -> Result<()> {
         self.compare_two_commits(dir).await?;
         self.compare_since_they_diverged(dir).await?;
         self.compare_with_my_files(dir).await?;
-        self.combine_a_run(dir).await
+        self.combine_a_run(dir).await?;
+        self.step_through_history(dir).await?;
+        self.history_from_my_files(dir).await
     }
 
     fn pick_commit(&mut self, oid: &str, how: How) -> Result<()> {
@@ -375,5 +404,228 @@ impl Replay<'_> {
                 && heading(tab).is_none()
         })
         .await
+    }
+
+    async fn step_through_history(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0905");
+        let root = init(dir, "History-trail")?;
+        let rest = "Water from the creek\nTents in a row\nFood in the tree\nMap on the board\nLamp by the door\n";
+        let pitched = format!("Base camp by the pines\n{rest}");
+        let moved_text = format!("Base camp by the lake\n{rest}");
+        let ring_text = format!("Base camp by the lake\n{rest}Fire ring\n");
+        record(&root, "camp.txt", &pitched, "Pitch the camp")?;
+        let pitch = oid(&root, "HEAD")?;
+        record(&root, "trail.txt", "Trail\n", "Mark the trail")?;
+        git(&root, &["mv", "camp.txt", "site.txt"])?;
+        record(&root, "site.txt", &moved_text, "Move the camp")?;
+        let moved = oid(&root, "HEAD")?;
+        record(&root, "site.txt", &ring_text, "Build the fire ring")?;
+        let ring = oid(&root, "HEAD")?;
+        let logged = listed_oids(&root, &["--", "site.txt"])?;
+        if logged != [ring.clone(), moved.clone(), pitch.clone()] {
+            return Err(format!("git log --follow lists {logged:?} for site.txt").into());
+        }
+        let dates = git(&root, &["log", "--follow", "--format=%as", "--", "site.txt"])?;
+        let dates: Vec<&str> = dates.lines().collect();
+        self.open(&root)?;
+        self.until("History-trail open at its tip", |tab| {
+            tab.ui.repo == "History-trail" && tab.ui.history.len() == 4 && tab.ui.selection == Some(Selection::Commit(ring.clone()))
+        })
+        .await?;
+        self.open_file("site.txt").await?;
+        let (mode, offered) = self.tab.read_with(self.cx, |tab, _| (tab.ui.diff_mode, file_history::offered_here(&tab.ui)))?;
+        if !offered {
+            return Err("The diff header of site.txt offers no History".into());
+        }
+
+        self.action(Action::FileHistory(file_history::Action::OpenHere))?;
+        self.until("the file's history beside its newest diff", |tab| {
+            revisions(tab) == [ring.clone(), moved.clone(), pitch.clone()]
+                && in_history(tab, 0, &ring, "site.txt")
+                && patch(tab, "+Fire ring")
+        })
+        .await?;
+        let entries = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui
+                .file_history
+                .entries()
+                .iter()
+                .map(|entry| (entry.subject.clone(), entry.author.clone(), entry.date.clone(), entry.moved()))
+                .collect::<Vec<_>>()
+        })?;
+        let expected = [
+            ("Build the fire ring", None),
+            ("Move the camp", Some("renamed from camp.txt".to_owned())),
+            ("Pitch the camp", None),
+        ];
+        let read = entries.iter().zip(expected.iter()).zip(dates.iter()).all(|(((subject, author, date, moved), (want, renamed)), day)| {
+            subject == want && author == "Cedar Contributor" && date == day && moved == renamed
+        });
+        if !read || entries.len() != 3 {
+            return Err(format!("The history lists {entries:?}").into());
+        }
+
+        self.action(Action::DiffMode(DiffMode::Split))?;
+        self.key("down")?;
+        self.until("Down shows the next revision with the view still open", |tab| {
+            in_history(tab, 1, &moved, "site.txt")
+                && patch(tab, "+Base camp by the lake")
+                && !tab.ui.diff.has("+Fire ring")
+                && tab.ui.shown_mode() == DiffMode::Split
+        })
+        .await?;
+        self.key("down")?;
+        self.until("Down again shows the file being added under its old name", |tab| {
+            in_history(tab, 2, &pitch, "camp.txt") && patch(tab, "+Base camp by the pines") && tab.ui.shown_mode() == DiffMode::Split
+        })
+        .await?;
+        self.key("down")?;
+        self.until("Down at the oldest entry stays there", |tab| in_history(tab, 2, &pitch, "camp.txt")).await?;
+
+        self.action(Action::FileView(crate::file_view::Action::Show(crate::file_view::View::File)))?;
+        self.until("the whole file at the oldest revision", |tab| in_history(tab, 2, &pitch, "camp.txt") && whole_file(tab, &pitched))
+            .await?;
+        self.key("up")?;
+        self.until("Up shows the whole file as it was after the move", |tab| {
+            in_history(tab, 1, &moved, "site.txt") && whole_file(tab, &moved_text)
+        })
+        .await?;
+        self.action(Action::FileView(crate::file_view::Action::Show(crate::file_view::View::Diff)))?;
+        self.action(Action::DiffMode(mode))?;
+        self.until("the diff back in its own layout", |tab| {
+            in_history(tab, 1, &moved, "site.txt") && tab.ui.diff.file.is_none() && tab.ui.diff_mode == mode
+        })
+        .await?;
+
+        let entry = Target::Revision { oid: moved.clone(), path: "site.txt".into() };
+        let rows = self.menu_rows(&entry)?;
+        let ids: Vec<&str> = rows.iter().map(|row| row.0).collect();
+        let titles: Vec<&str> = rows.iter().map(|row| row.1.as_str()).collect();
+        if ids != ["revision.restore", "revision.show-in-graph", "revision.copy-sha"]
+            || titles != ["Restore this version…", "Show in graph", "Copy SHA"]
+            || rows.iter().any(|row| row.2.is_some())
+        {
+            return Err(format!("The entry menu lists {rows:?}").into());
+        }
+        let refs = git(&root, &["for-each-ref"])?;
+        self.choose(&entry, "revision.restore")?;
+        self.asked_about(&format!("Restore site.txt from {}?", short(&moved))).await?;
+        self.key(CONFIRM)?;
+        self.noticed(&format!("Restored site.txt from {}", short(&moved))).await?;
+        if fs::read(root.join("site.txt"))? != git(&root, &["show", &format!("{moved}:site.txt")])?.into_bytes() {
+            return Err("site.txt does not equal its version in Move the camp".into());
+        }
+        git_is(&root, &["status", "--porcelain=v1"], " M site.txt\n")?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "")?;
+        git_is(&root, &["for-each-ref"], &refs)?;
+        self.until("the history still open on the restored entry", |tab| in_history(tab, 1, &moved, "site.txt")).await?;
+
+        self.key("escape")?;
+        self.until("Esc returns to the file the history was opened from", |tab| {
+            !tab.ui.file_history.open()
+                && view::centre(&tab.ui) == view::Centre::Diff
+                && tab.ui.selection == Some(Selection::Commit(ring.clone()))
+                && tab.ui.inspection.path.as_deref() == Some(Path::new("site.txt"))
+                && patch(tab, "+Fire ring")
+        })
+        .await?;
+        self.action(Action::FileHistory(file_history::Action::OpenHere))?;
+        self.until("the history open again", |tab| revisions(tab).len() == 3 && in_history(tab, 0, &ring, "site.txt")).await?;
+        self.choose(&Target::Revision { oid: pitch.clone(), path: "camp.txt".into() }, "revision.show-in-graph")?;
+        self.until("the oldest entry shown in the graph", |tab| {
+            !tab.ui.file_history.open()
+                && view::centre(&tab.ui) == view::Centre::History
+                && tab.ui.selection == Some(Selection::Commit(pitch.clone()))
+        })
+        .await?;
+        git(&root, &["checkout", "--", "site.txt"])?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn history_from_my_files(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0906");
+        let root = init(dir, "Desk-history")?;
+        record(&root, "camp.txt", "Base camp\n", "Pitch the camp")?;
+        record(&root, "trail.txt", "Trail\n", "Mark the trail")?;
+        record(&root, "camp.txt", "Base camp\nFire ring\n", "Build the fire ring")?;
+        let head = oid(&root, "HEAD")?;
+        git(&root, &["switch", "-qc", "ridge"])?;
+        record(&root, "camp.txt", "Base camp\nFire ring\nRidge view\n", "Look over the ridge")?;
+        let ridge = oid(&root, "HEAD")?;
+        git(&root, &["switch", "-q", "main"])?;
+        fs::write(root.join("camp.txt"), "Base camp\nFire ring\nKettle on\n")?;
+        fs::write(root.join("loose.txt"), "Loose\n")?;
+        let expected = listed_oids(&root, &["HEAD", "--", "camp.txt"])?;
+        if expected.len() != 2 || expected[0] != head || expected.contains(&ridge) {
+            return Err(format!("git log --follow HEAD lists {expected:?} for camp.txt").into());
+        }
+        self.open(&root)?;
+        self.until("Desk-history open with its changes", |tab| {
+            tab.ui.repo == "Desk-history" && files(tab, &[], &["camp.txt", "loose.txt"])
+        })
+        .await?;
+        self.action(Action::Select(file("camp.txt", false)))?;
+        self.until("the unstaged camp.txt open", |tab| patch(tab, "+Kettle on")).await?;
+        let before = untouched(&root)?;
+
+        let unstaged = Target::File { path: "camp.txt".into(), side: Side::Unstaged };
+        let offered = self.menu_rows(&unstaged)?.into_iter().find(|row| row.0 == "file.history");
+        if offered != Some(("file.history", "File history".to_owned(), None)) {
+            return Err(format!("The unstaged camp.txt offers {offered:?}").into());
+        }
+        let loose = Target::File { path: "loose.txt".into(), side: Side::Unstaged };
+        let refused = self.menu_rows(&loose)?.into_iter().find(|row| row.0 == "file.history").and_then(|row| row.2);
+        if refused.as_deref() != Some("This file has never been committed") {
+            return Err(format!("File history on the untracked loose.txt reads {refused:?}").into());
+        }
+        self.choose(&unstaged, "file.history")?;
+        self.until("the history of camp.txt starting at HEAD", |tab| {
+            tab.ui.file_history.start() == Some(head.as_str())
+                && revisions(tab) == expected
+                && in_history(tab, 0, &head, "camp.txt")
+                && patch(tab, "+Fire ring")
+                && !tab.ui.diff.has("+Kettle on")
+        })
+        .await?;
+        self.key("escape")?;
+        self.until("Esc returns to my unstaged camp.txt", |tab| {
+            !tab.ui.file_history.open() && tab.ui.selection == Some(file("camp.txt", false)) && patch(tab, "+Kettle on")
+        })
+        .await?;
+        if untouched(&root)? != before {
+            return Err("Looking at the history of camp.txt changed a ref, the index or a file".into());
+        }
+
+        git(&root, &["mv", "camp.txt", "base.txt"])?;
+        self.action(Action::Refresh)?;
+        self.until("the staged rename listed", |tab| {
+            files(tab, &["base.txt"], &["base.txt", "loose.txt"])
+                && tab.ui.files.iter().any(|row| row.staged && row.from.as_deref() == Some(Path::new("camp.txt")))
+        })
+        .await?;
+        self.action(Action::Select(file("base.txt", true)))?;
+        self.until("the staged base.txt open", |tab| tab.ui.selection == Some(file("base.txt", true)) && !tab.ui.loading_diff())
+            .await?;
+        let before = untouched(&root)?;
+        self.action(Action::FileHistory(file_history::Action::OpenHere))?;
+        self.until("the staged rename's history follows its old name from HEAD", |tab| {
+            tab.ui.file_history.path() == Some(Path::new("base.txt"))
+                && tab.ui.file_history.start() == Some(head.as_str())
+                && revisions(tab) == expected
+                && tab.ui.file_history.entries().iter().all(|entry| entry.path == Path::new("camp.txt"))
+                && in_history(tab, 0, &head, "camp.txt")
+        })
+        .await?;
+        self.key("escape")?;
+        self.until("Esc returns to the staged base.txt", |tab| {
+            !tab.ui.file_history.open() && tab.ui.selection == Some(file("base.txt", true))
+        })
+        .await?;
+        if untouched(&root)? != before {
+            return Err("Looking at the history of base.txt changed a ref, the index or a file".into());
+        }
+        self.pass();
+        Ok(())
     }
 }

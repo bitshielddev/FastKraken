@@ -27,6 +27,7 @@ mod discard;
 mod drag;
 mod environment;
 mod explain;
+mod file_history;
 mod file_view;
 mod find;
 mod github;
@@ -592,10 +593,23 @@ impl Tab {
         self.ui.diff_title.clear();
     }
 
+    fn choose(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        reveal::chose(self, &selection);
+        self.ui.picked = None;
+        if self.ui.selection.as_ref() != Some(&selection) {
+            self.ui.text.unfocus();
+        }
+        self.ui.navigate.chose(&selection);
+        self.follow = Follow::Nothing;
+        self.ui.diff_open = matches!(selection, Selection::File { .. });
+        self.select(selection, cx);
+    }
+
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         if self.repo.is_none() {
             return;
         }
+        file_history::selected(self, &selection);
         if !matches!(selection, Selection::File { .. })
             && self.ui.selection.as_ref() != Some(&selection)
         {
@@ -622,6 +636,13 @@ impl Tab {
             cx,
         );
         compare::selected(self, cx);
+        if let Some(path) = file_history::holding(&self.ui, &selection) {
+            self.clear_diff();
+            self.ui.diff.state = diff_doc::PatchState::Loading;
+            inspection::open_when_loaded(self, path, cx);
+            cx.notify();
+            return;
+        }
         if matches!(selection, Selection::Changes | Selection::Commits | Selection::Compare { .. }) {
             self.clear_diff();
             cx.notify();
@@ -1605,6 +1626,7 @@ impl Tab {
             Action::Find(action) => find::dispatch(self, action, window, cx),
             Action::Images(action) => image_diff::dispatch(self, action, window, cx),
             Action::FileView(action) => file_view::dispatch(self, action, window, cx),
+            Action::FileHistory(action) => file_history::dispatch(self, action, window, cx),
             Action::Recover(action) => recover::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
@@ -1643,17 +1665,7 @@ impl Tab {
             Action::StageAll => self.mutate(cx, |repo| repo.stage_all()),
             Action::UnstageAll => self.mutate(cx, |repo| repo.unstage_all()),
             Action::More => self.load_history(false, cx),
-            Action::Select(selection) => {
-                reveal::chose(self, &selection);
-                self.ui.picked = None;
-                if self.ui.selection.as_ref() != Some(&selection) {
-                    self.ui.text.unfocus();
-                }
-                self.ui.navigate.chose(&selection);
-                self.follow = Follow::Nothing;
-                self.ui.diff_open = matches!(selection, Selection::File { .. });
-                self.select(selection, cx);
-            }
+            Action::Select(selection) => self.choose(selection, cx),
             Action::OpenDiff => {
                 self.ui.diff_open = true;
                 cx.notify();
@@ -1663,6 +1675,10 @@ impl Tab {
                 self.ui.rewrap();
                 settings::Settings::update(cx, |s| s.diff_mode = mode);
                 cx.notify();
+            }
+            Action::CloseDiff if self.ui.file_history.open() => {
+                file_history::dispatch(self, file_history::Action::Close, window, cx);
+                view::focus(&self.ui, window);
             }
             Action::CloseDiff => {
                 self.ui.diff_open = false;

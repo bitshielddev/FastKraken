@@ -405,7 +405,6 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     let file_view = ui.diff.file.is_some();
     let layout = &ui.diff_layout;
     let doc = &ui.diff;
-    let listing_history = crate::inspection::showing_history(ui);
     let side = match &ui.selection {
         Some(Selection::File { staged, .. }) => Some(*staged),
         _ => None,
@@ -430,7 +429,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     };
     let editable = ui.can_edit_index();
     let picture = crate::image_diff::showing(ui);
-    let texts = !listing_history && picture.is_none();
+    let texts = picture.is_none();
     let header = div()
         .min_h(px(34.))
         .flex_shrink_0()
@@ -500,9 +499,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         })
         .when_some(edit_button(ui, cx), |d, button| d.child(button))
         .when_some(crate::stash::restore_button(ui, cx), |d, button| d.child(button))
-        .when(committed_file.is_some(), |d| {
-            d.child(crate::inspection::history_button(app, cx))
-        })
+        .when(crate::file_history::offered_here(ui), |d| d.child(crate::file_history::button(ui, cx)))
         .when(crate::file_view::offered(ui), |d| d.child(crate::file_view::toggle(ui, cx)))
         .when(crate::image_diff::offers_toggle(ui), |d| d.child(crate::image_diff::toggle(ui, cx)))
         .when(texts && !file_view && !doc.lines.is_empty(), |d| {
@@ -647,7 +644,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     if split {
         lines.style().restrict_scroll_to_axis = Some(true);
     }
-    let marks = showing_marks(ui, listing_history);
+    let marks = showing_marks(ui);
     let measured = ui.diff_options.measured;
     let face_measured = ui.diff_text.face.clone();
     let desk = cx.entity().downgrade();
@@ -664,9 +661,6 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         .overflow_hidden()
         .child(header)
         .children(crate::find::bar(app, crate::find::Surface::Diff, cx))
-        .when(listing_history, |d| {
-            d.child(crate::inspection::file_history(app, cx))
-        })
         .children(bars)
         .when(texts, |d| d.children(crate::lines::bar(ui, cx)))
         .children(picture.map(crate::image_diff::view))
@@ -876,8 +870,8 @@ fn change_buttons<T: Desk>(cx: &Context<T>) -> Div {
         .child(kit::icon_btn("next-change", "chevron-down", "Next change (⌥↓)", Action::DiffOptions(Show::Next), cx))
 }
 
-fn showing_marks(ui: &Ui, listing_history: bool) -> Vec<crate::scrollbar::Mark> {
-    if listing_history || ui.diff.lines.is_empty() {
+fn showing_marks(ui: &Ui) -> Vec<crate::scrollbar::Mark> {
+    if ui.diff.lines.is_empty() {
         Vec::new()
     } else {
         crate::diff_options::marks(ui)

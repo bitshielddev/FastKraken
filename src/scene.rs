@@ -30,7 +30,8 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             .files
             .get(index)
             .map(|file| Action::Compare(crate::compare::Action::OpenFile(file.path.clone()))),
-        "history" => Some(Action::Inspect(crate::inspection::Action::History)),
+        "history" => Some(Action::FileHistory(crate::file_history::Action::OpenHere)),
+        "historyentry" => Some(Action::FileHistory(crate::file_history::Action::Choose(index))),
         "search" => {
             tab.dispatch(Action::Search(search::Action::Open), window, cx);
             tab.ui.search.input.update(cx, |input, cx| input.set_text(argument, cx));

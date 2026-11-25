@@ -137,13 +137,12 @@ pub(crate) fn wanted(ui: &Ui, selection: &Selection, open: Option<&Path>) -> boo
 
 pub(crate) fn offered(ui: &Ui) -> bool {
     let Some(selection) = &ui.selection else { return false };
-    view::centre(ui) == view::Centre::Diff
-        && !crate::inspection::showing_history(ui)
+    view::diff_shown(ui)
         && single(selection, image_diff::selection_open(ui).as_deref()).is_some()
 }
 
 pub(crate) fn showing(ui: &Ui) -> bool {
-    ui.diff.file.is_some() && view::centre(ui) == view::Centre::Diff && !crate::inspection::showing_history(ui)
+    ui.diff.file.is_some() && view::diff_shown(ui)
 }
 
 fn loading(ui: &Ui) -> bool {

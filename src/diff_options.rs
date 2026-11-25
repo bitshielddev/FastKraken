@@ -77,9 +77,8 @@ fn store(settings: &mut Settings, choice: Choice, on: bool) {
 }
 
 pub(crate) fn showing(ui: &Ui) -> bool {
-    view::centre(ui) == view::Centre::Diff
+    view::diff_shown(ui)
         && !ui.diff.lines.is_empty()
-        && !crate::inspection::showing_history(ui)
         && crate::image_diff::showing(ui).is_none()
 }
 
