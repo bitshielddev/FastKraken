@@ -119,6 +119,18 @@ impl Replay<'_> {
         self.pick("+east", How::One, &["+east"]).await?;
         self.pick("+west", How::Range, &["+east", "+west"]).await?;
         self.pick("+east", How::Toggle, &["+west"]).await?;
+        self.action(Action::Activity(crate::activity::Action::Toggle))?;
+        self.until("the activity log hiding the diff and its pick", |tab| {
+            !tab.ui.diff_open && tab.ui.activity.open() && lines::target(&tab.ui).is_none()
+        })
+        .await?;
+        self.action(Action::Activity(crate::activity::Action::Close))?;
+        self.until("the pick still hidden with the diff closed", |tab| {
+            !tab.ui.activity.open() && !tab.ui.diff_open && lines::target(&tab.ui).is_none()
+        })
+        .await?;
+        self.action(Action::OpenDiff)?;
+        self.until("the pick back with its diff", |tab| tab.ui.diff_open && picked(tab) == ["+west"]).await?;
         let target = Target::Lines { path: "trail.txt".into(), side: Side::Unstaged, count: 1 };
         let shown = self.tab.read_with(self.cx, |tab, _| lines::target(&tab.ui))?;
         if shown.as_ref() != Some(&target) {
