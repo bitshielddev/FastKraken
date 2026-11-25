@@ -1037,8 +1037,19 @@ pub(crate) fn highlights(ui: &Ui, index: usize, row: &Line, column: Column) -> V
         })
         .filter(|layer| !layer.0.is_empty())
         .collect();
-    let mut layers: Vec<(&[Range<usize>], HighlightStyle)> =
-        vec![(&chosen, selected), (&focus, current), (&found, matched), (&row.words, changed)];
+    let readable = HighlightStyle { color: Some(rgb(TEXT).into()), ..Default::default() };
+    let chosen_focus: Vec<Range<usize>> = chosen
+        .iter()
+        .flat_map(|chosen| focus.iter().map(move |hit| chosen.start.max(hit.start)..chosen.end.min(hit.end)))
+        .filter(|span| span.start < span.end)
+        .collect();
+    let mut layers: Vec<(&[Range<usize>], HighlightStyle)> = vec![
+        (&chosen_focus, readable),
+        (&chosen, selected),
+        (&focus, current),
+        (&found, matched),
+        (&row.words, changed),
+    ];
     layers.extend(inked.iter().map(|(spans, style)| (spans.as_slice(), *style)));
     layered(&layers)
 }

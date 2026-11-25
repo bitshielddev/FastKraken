@@ -167,8 +167,19 @@ pub(crate) fn resolver_hits(merge: &crate::merge::State, query: &str) -> Vec<Hit
     hits
 }
 
+fn front_filter(ui: &Ui) -> Option<&Entity<CommitInput>> {
+    match ui.help.sheet() {
+        Some(crate::help::Sheet::Shortcuts) => Some(&ui.help.filter),
+        Some(_) => None,
+        None if ui.preferences.shows_filter() => Some(&ui.preferences.filter),
+        None if ui.refs.list_open && ui.refs.draft.is_none() => Some(&ui.refs.find),
+        None if ui.commit_options.picking() => Some(&ui.commit_options.filter),
+        None => None,
+    }
+}
+
 pub(crate) fn filters(ui: &Ui) -> bool {
-    ui.help.sheet() == Some(crate::help::Sheet::Shortcuts) || (ui.refs.list_open && ui.refs.draft.is_none())
+    front_filter(ui).is_some()
 }
 
 pub(crate) fn here(ui: &Ui) -> Option<Surface> {
@@ -361,10 +372,11 @@ fn field(input: &Entity<CommitInput>, window: &mut Window, cx: &mut Context<Tab>
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
     match action {
-        Action::Front if tab.ui.help.sheet() == Some(crate::help::Sheet::Shortcuts) => {
-            field(&tab.ui.help.filter.clone(), window, cx)
+        Action::Front if filters(&tab.ui) => {
+            if let Some(filter) = front_filter(&tab.ui).cloned() {
+                field(&filter, window, cx);
+            }
         }
-        Action::Front if tab.ui.refs.list_open && tab.ui.refs.draft.is_none() => field(&tab.ui.refs.find.clone(), window, cx),
         Action::Front => match here(&tab.ui) {
             Some(surface) => open(tab, surface, window, cx),
             None => return tab.dispatch(view::Action::Search(crate::search::Action::Open), window, cx),

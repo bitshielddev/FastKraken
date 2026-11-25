@@ -1541,6 +1541,18 @@ impl Replay<'_> {
         })
         .await?;
         self.find_step("enter", "2 of 6", "+the KELP thins here", "KELP").await?;
+        self.action(Action::Text(crate::diff_select::Action::SelectAll))?;
+        let selected = self.tab.read_with(self.cx, |tab, _| {
+            let hit = tab.ui.find.current()?.clone();
+            let line = tab.ui.diff.lines.get(hit.row)?;
+            let runs = crate::view::diff_highlights(&tab.ui, hit.row, line, Column::Unified);
+            runs.into_iter().find(|(range, _)| range.start <= hit.range.start && hit.range.start < range.end).map(|(_, style)| style)
+        })?;
+        let readable = (Some(gpui::rgb(crate::theme::TEXT_SELECTION).into()), Some(gpui::rgb(crate::theme::TEXT).into()));
+        if selected.map(|style| (style.background_color, style.color)) != Some(readable) {
+            return Err(format!("The current match under a text selection is drawn {selected:?}").into());
+        }
+        self.action(Action::Text(crate::diff_select::Action::Clear))?;
 
         self.key("escape")?;
         self.until("the find bar closed and the diff still open", |tab| {
@@ -1617,6 +1629,42 @@ impl Replay<'_> {
         }
         self.key("escape")?;
         self.until("the shortcuts sheet closed", |tab| !tab.ui.help.open()).await?;
+
+        let shortcuts = Some(crate::preferences::Section::Shortcuts);
+        self.action(Action::Preferences(crate::preferences::Action::Open(shortcuts)))?;
+        self.until("the shortcuts in Preferences", |tab| tab.ui.preferences.shows_filter()).await?;
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.preferences.filter.update(cx, |field, cx| field.set_text("find", cx)))?;
+        self.focus_desk()?;
+        self.key("cmd-f")?;
+        let preferences = self.tab.update(self.cx, |tab, window, cx| {
+            let focused = tab.ui.preferences.filter.focus_handle(cx).is_focused(window);
+            (focused, tab.ui.preferences.filter.read(cx).selected_range(), tab.ui.preferences.open(), tab.ui.search.open())
+        })?;
+        if preferences != (true, 0..4, true, false) {
+            return Err(format!(
+                "Cmd-F over the Preferences shortcuts (filter focused, selection, Preferences open, commit search open) reads {preferences:?}"
+            )
+            .into());
+        }
+        self.action(Action::Preferences(crate::preferences::Action::Close))?;
+        self.until("Preferences closed", |tab| !tab.ui.preferences.open()).await?;
+
+        self.action(Action::Select(Selection::Changes))?;
+        self.until("the working tree selected", |tab| tab.ui.selection == Some(Selection::Changes)).await?;
+        self.action(Action::CommitOptions(crate::commit_options::Action::OpenCoauthors))?;
+        self.until("the co-author picker", |tab| tab.ui.commit_options.picking()).await?;
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.commit_options.filter.update(cx, |field, cx| field.set_text("ada", cx)))?;
+        self.focus_desk()?;
+        self.key("cmd-f")?;
+        let picker = self.tab.update(self.cx, |tab, window, cx| {
+            let focused = tab.ui.commit_options.filter.focus_handle(cx).is_focused(window);
+            (focused, tab.ui.commit_options.filter.read(cx).selected_range(), tab.ui.commit_options.picking(), tab.ui.search.open())
+        })?;
+        if picker != (true, 0..3, true, false) {
+            return Err(format!("Cmd-F over the co-author picker (filter focused, selection, picker open, commit search open) reads {picker:?}").into());
+        }
+        self.action(Action::CommitOptions(crate::commit_options::Action::CloseCoauthors))?;
+        self.until("the co-author picker closed", |tab| !tab.ui.commit_options.picking()).await?;
         self.pass();
         Ok(())
     }
