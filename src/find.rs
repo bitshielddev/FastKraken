@@ -385,7 +385,13 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         }
         Action::Front => match here(&tab.ui) {
             Some(surface) => open(tab, surface, window, cx),
-            None => return tab.dispatch(view::Action::Search(crate::search::Action::Open), window, cx),
+            None => {
+                let action = match crate::file_list::here(&tab.ui) {
+                    Some(panel) => view::Action::FileList(crate::file_list::Action::Filter(panel)),
+                    None => view::Action::Search(crate::search::Action::Open),
+                };
+                return tab.dispatch(action, window, cx);
+            }
         },
         Action::Close if tab.ui.find.surface.is_some() => {
             tab.ui.find.close();
@@ -494,6 +500,7 @@ pub(crate) fn title(ui: &Ui) -> &'static str {
         Some(Surface::Diff) if ui.diff.file.is_some() => "Find in file…",
         Some(Surface::Diff) => "Find in diff…",
         Some(Surface::Resolver) => "Find in conflict…",
+        None if crate::file_list::here(ui).is_some() => "Filter files…",
         None => "Find commits…",
     }
 }

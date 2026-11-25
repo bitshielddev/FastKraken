@@ -443,6 +443,7 @@ pub(crate) fn header<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .border_b_1()
         .border_color(rgb(LINE))
         .child(kit::fit(summary(ui)).size(12.).color(TEXT_2).grow())
+        .when(!ui.files.is_empty(), |row| row.child(crate::file_list::tools(ui, crate::file_list::Panel::Working, cx)))
         .when(enabled, |row| {
             row.child(kit::icon_btn("discard-all", "trash", tip, view::Action::Run("repo.discard-all"), cx))
         })

@@ -4,9 +4,11 @@ use crate::{
     commands::{self, Side, Target},
     compare::{self, Rev},
     file_history,
+    file_list::{self, Mode, Panel, Row, Which},
     picked::How,
     view::DiffMode,
 };
+use gpui::Focusable;
 
 type Listed = Vec<(String, String, Option<String>)>;
 
@@ -128,6 +130,23 @@ fn blaming(tab: &Tab, path: &str, resolved: Option<&str>, lines: &[String]) -> b
         && annotated(tab) == lines
 }
 
+fn drawn(tab: &Tab, which: Which) -> Vec<String> {
+    let files = file_list::source(&tab.ui, which);
+    file_list::rows(&tab.ui, which)
+        .iter()
+        .map(|row| match row {
+            Row::File { index, depth } => format!("{}{}", "  ".repeat(*depth), files[*index].path.display()),
+            Row::Folder { name, depth, count, folded, .. } => {
+                format!("{}{} {name}/ ({count})", "  ".repeat(*depth), if *folded { "+" } else { "-" })
+            }
+        })
+        .collect()
+}
+
+fn owned(rows: &[&str]) -> Vec<String> {
+    rows.iter().map(|row| (*row).to_owned()).collect()
+}
+
 fn chosen(tab: &Tab) -> Option<(String, PathBuf, Option<(String, PathBuf)>)> {
     let (block, commit) = tab.ui.blame.chosen()?;
     Some((commit.oid.clone(), block.path.clone(), block.previous.clone()))
@@ -142,7 +161,9 @@ impl Replay<'_> {
         self.step_through_history(dir).await?;
         self.history_from_my_files(dir).await?;
         self.blame_a_file(dir).await?;
-        self.blame_before_a_change(dir).await
+        self.blame_before_a_change(dir).await?;
+        self.tree_stages_a_folder(dir).await?;
+        self.filter_a_commits_files(dir).await
     }
 
     fn pick_commit(&mut self, oid: &str, how: How) -> Result<()> {
@@ -921,6 +942,259 @@ impl Replay<'_> {
         .await?;
         if untouched(&root)? != before {
             return Err("Blaming site.txt changed a ref, the index or a file".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    fn ticked(&mut self, target: &Target) -> Result<Vec<(&'static str, Option<bool>)>> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, target, cx).into_iter().map(|entry| (entry.id, entry.check)).collect()
+        })?)
+    }
+
+    async fn run_entry(&mut self, target: &Target, id: &str, title: &str) -> Result<()> {
+        let (found, action) = self.entry_action(target, id)?;
+        if found != title {
+            return Err(format!("{id} on {target:?} reads {found:?}").into());
+        }
+        self.action(action)
+    }
+
+    async fn tree_stages_a_folder(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0909");
+        let root = init(dir, "Tree-camp")?;
+        let committed = ["src/app/models/user.rs", "src/app/view.rs", "src/lib.rs", "src/application.rs", "docs/intro.md"];
+        for path in committed {
+            fs::create_dir_all(root.join(path).parent().unwrap_or(&root))?;
+            fs::write(root.join(path), "first\n")?;
+        }
+        git(&root, &["add", "."])?;
+        git(&root, &["commit", "-qm", "Lay out the camp"])?;
+        for path in committed {
+            fs::write(root.join(path), "second\n")?;
+        }
+        fs::write(root.join("src/app/models/team.rs"), "new\n")?;
+        let refs_before = git(&root, &["for-each-ref"])?;
+        let mut all = committed.to_vec();
+        all.push("src/app/models/team.rs");
+        self.open(&root)?;
+        self.until("Tree-camp open with six unstaged files", |tab| tab.ui.repo == "Tree-camp" && files(tab, &[], &all)).await?;
+        self.action(Action::Select(Selection::Changes))?;
+        self.until("the working tree selected", |tab| tab.ui.selection == Some(Selection::Changes)).await?;
+
+        let working = Target::FileList(Panel::Working);
+        let ticks = self.ticked(&working)?;
+        let wanted = vec![
+            ("files.show-list", Some(true)),
+            ("files.show-tree", Some(false)),
+            ("files.sort-path", Some(true)),
+            ("files.sort-name", Some(false)),
+            ("files.sort-status", Some(false)),
+            ("files.filter", None),
+        ];
+        if ticks != wanted {
+            return Err(format!("The file list options read {ticks:?}").into());
+        }
+        self.run_entry(&working, "files.show-tree", "Show files as a tree").await?;
+        let tree = owned(&[
+            "- docs/ (1)",
+            "  docs/intro.md",
+            "- src/ (5)",
+            "  - app/ (3)",
+            "    - models/ (2)",
+            "      src/app/models/team.rs",
+            "      src/app/models/user.rs",
+            "    src/app/view.rs",
+            "  src/application.rs",
+            "  src/lib.rs",
+        ]);
+        self.until("the unstaged files as a tree", |tab| drawn(tab, Which::Unstaged) == tree).await?;
+        let remembered = self.tab.read_with(self.cx, |tab, cx| (crate::settings::settings(cx).file_list_mode, tab.ui.file_list.mode))?;
+        if remembered != (Mode::Tree, Mode::Tree) {
+            return Err(format!("After choosing the tree the settings and the list read {remembered:?}").into());
+        }
+
+        let app = PathBuf::from("src/app");
+        self.action(Action::FileList(file_list::Action::Fold { which: Which::Unstaged, path: app.clone() }))?;
+        let folded = owned(&["- docs/ (1)", "  docs/intro.md", "- src/ (5)", "  + app/ (3)", "  src/application.rs", "  src/lib.rs"]);
+        self.until("src/app folded", |tab| drawn(tab, Which::Unstaged) == folded).await?;
+        let folder = Target::Folder { path: app.clone(), side: Side::Unstaged };
+        let offered: Vec<&str> = self.ticked(&folder)?.into_iter().map(|(id, _)| id).collect();
+        if offered != ["folder.stage", "folder.discard", "folder.ignore", "folder.stash", "folder.copy-path"] {
+            return Err(format!("The menu on src/app offers {offered:?}").into());
+        }
+        self.run_entry(&folder, "folder.stage", "Stage folder").await?;
+        let staged = ["src/app/models/team.rs", "src/app/models/user.rs", "src/app/view.rs"];
+        let left = ["docs/intro.md", "src/application.rs", "src/lib.rs"];
+        self.until("exactly the files under src/app staged", |tab| files(tab, &staged, &left)).await?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "src/app/models/team.rs\nsrc/app/models/user.rs\nsrc/app/view.rs\n")?;
+        let lists = self.tab.read_with(self.cx, |tab, _| (drawn(tab, Which::Staged), drawn(tab, Which::Unstaged)))?;
+        let wanted = (
+            owned(&["- src/app/ (3)", "  - models/ (2)", "    src/app/models/team.rs", "    src/app/models/user.rs", "  src/app/view.rs"]),
+            owned(&["- docs/ (1)", "  docs/intro.md", "- src/ (2)", "  src/application.rs", "  src/lib.rs"]),
+        );
+        if lists != wanted {
+            return Err(format!("After staging src/app the staged and unstaged trees read {lists:?}").into());
+        }
+
+        let models = Target::Folder { path: PathBuf::from("src/app/models"), side: Side::Staged };
+        let offered: Vec<&str> = self.ticked(&models)?.into_iter().map(|(id, _)| id).collect();
+        if offered != ["folder.unstage", "folder.stash", "folder.copy-path"] {
+            return Err(format!("The menu on the staged models folder offers {offered:?}").into());
+        }
+        self.run_entry(&models, "folder.unstage", "Unstage folder").await?;
+        let unstaged = ["docs/intro.md", "src/application.rs", "src/lib.rs", "src/app/models/team.rs", "src/app/models/user.rs"];
+        self.until("the models folder unstaged", |tab| files(tab, &["src/app/view.rs"], &unstaged)).await?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "src/app/view.rs\n")?;
+
+        self.run_entry(&working, "files.collapse-all", "Collapse all folders").await?;
+        self.until("every folder folded", |tab| {
+            drawn(tab, Which::Unstaged) == owned(&["+ docs/ (1)", "+ src/ (4)"]) && drawn(tab, Which::Staged) == owned(&["+ src/app/ (1)"])
+        })
+        .await?;
+        self.run_entry(&working, "files.expand-all", "Expand all folders").await?;
+        let open = owned(&[
+            "- docs/ (1)",
+            "  docs/intro.md",
+            "- src/ (4)",
+            "  - app/models/ (2)",
+            "    src/app/models/team.rs",
+            "    src/app/models/user.rs",
+            "  src/application.rs",
+            "  src/lib.rs",
+        ]);
+        self.until("every folder open again", |tab| {
+            drawn(tab, Which::Unstaged) == open && drawn(tab, Which::Staged) == owned(&["- src/app/ (1)", "  src/app/view.rs"])
+        })
+        .await?;
+
+        self.run_entry(&working, "files.show-list", "Show files as a list").await?;
+        let flat = owned(&["docs/intro.md", "src/app/models/team.rs", "src/app/models/user.rs", "src/application.rs", "src/lib.rs"]);
+        self.until("the lists flat again", |tab| drawn(tab, Which::Unstaged) == flat).await?;
+        let remembered = self.tab.read_with(self.cx, |_, cx| crate::settings::settings(cx).file_list_mode)?;
+        if remembered != Mode::List {
+            return Err(format!("After choosing the list the settings read {remembered:?}").into());
+        }
+        if git(&root, &["for-each-ref"])? != refs_before {
+            return Err("Staging a folder changed a ref".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    fn type_filter(&mut self, panel: Panel, text: &str) -> Result<()> {
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.file_list.input(panel).clone().update(cx, |field, cx| field.set_text(text, cx)))?;
+        Ok(())
+    }
+
+    fn filter_focused(&mut self, panel: Panel) -> Result<bool> {
+        Ok(self.tab.update(self.cx, |tab, window, cx| tab.ui.file_list.input(panel).focus_handle(cx).is_focused(window))?)
+    }
+
+    async fn filter_a_commits_files(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0910");
+        let root = init(dir, "Filter-camp")?;
+        for folder in ["camp", "trail", "lake", "notes"] {
+            fs::create_dir_all(root.join(folder))?;
+        }
+        fs::write(root.join("README.md"), "Camp\n")?;
+        fs::write(root.join("lake/map.txt"), "Lake\n")?;
+        git(&root, &["add", "."])?;
+        git(&root, &["commit", "-qm", "Pitch the camp"])?;
+        let pitch = oid(&root, "HEAD")?;
+        for n in 1..=8 {
+            fs::write(root.join(format!("camp/tent-{n:02}.txt")), format!("Tent {n}\n"))?;
+        }
+        for n in 1..=6 {
+            fs::write(root.join(format!("trail/marker-{n:02}.txt")), format!("Marker {n}\n"))?;
+        }
+        fs::write(root.join("lake/map.txt"), "Lake with a dock\n")?;
+        fs::write(root.join("lake/dock.txt"), "Dock\n")?;
+        fs::write(root.join("README.md"), "Camp, stocked\n")?;
+        fs::write(root.join("notes/camp-log.md"), "Day one\n")?;
+        git(&root, &["add", "-A"])?;
+        git(&root, &["commit", "-qm", "Stock the camp"])?;
+        let stock = oid(&root, "HEAD")?;
+        let changed: Vec<String> =
+            git(&root, &["diff-tree", "--no-commit-id", "--name-only", "-r", &stock])?.lines().map(str::to_owned).collect();
+        if changed.len() != 18 {
+            return Err(format!("Git lists {changed:?} in Stock the camp").into());
+        }
+        let before = untouched(&root)?;
+        self.open(&root)?;
+        self.until("Filter-camp open with two commits", |tab| tab.ui.repo == "Filter-camp" && tab.ui.history.len() == 2).await?;
+
+        self.action(Action::Select(Selection::Commit(pitch.clone())))?;
+        self.until("Pitch the camp's two files", |tab| {
+            tab.ui.selection == Some(Selection::Commit(pitch.clone()))
+                && tab.ui.inspection.file(&pitch, Path::new("README.md")).is_some()
+                && tab.ui.inspection.files.len() == 2
+        })
+        .await?;
+        self.focus_desk()?;
+        self.key("right")?;
+        self.until("the keyboard in the file list", |tab| file_list::here(&tab.ui) == Some(Panel::Commit)).await?;
+        let read = self.tab.read_with(self.cx, |tab, _| (file_list::field_shown(&tab.ui, Panel::Commit), crate::find::title(&tab.ui)))?;
+        if read != (false, "Filter files…") {
+            return Err(format!("With two files (filter field shown, Cmd-F command) reads {read:?}").into());
+        }
+        self.key("cmd-f")?;
+        self.until("the filter field shown", |tab| file_list::field_shown(&tab.ui, Panel::Commit)).await?;
+        if !self.filter_focused(Panel::Commit)? {
+            return Err("Cmd-F showed the filter field without putting the cursor in it".into());
+        }
+        self.key("escape")?;
+        self.until("the filter field gone", |tab| !file_list::field_shown(&tab.ui, Panel::Commit)).await?;
+
+        self.action(Action::Select(Selection::Commit(stock.clone())))?;
+        self.until("Stock the camp's eighteen files", |tab| {
+            tab.ui.selection == Some(Selection::Commit(stock.clone()))
+                && tab.ui.inspection.file(&stock, Path::new("README.md")).is_some()
+                && tab.ui.inspection.files.len() == 18
+        })
+        .await?;
+        if !self.tab.read_with(self.cx, |tab, _| file_list::field_shown(&tab.ui, Panel::Commit))? {
+            return Err("A commit with eighteen files shows no filter field".into());
+        }
+        let matching = |needle: &str| -> Vec<PathBuf> {
+            let mut kept: Vec<PathBuf> =
+                changed.iter().filter(|path| path.to_lowercase().contains(&needle.to_lowercase())).map(PathBuf::from).collect();
+            kept.sort();
+            kept
+        };
+        let camp = matching("camp");
+        if camp.len() != 9 || !camp.contains(&PathBuf::from("notes/camp-log.md")) {
+            return Err(format!("Git's paths with camp in them are {camp:?}").into());
+        }
+        self.type_filter(Panel::Commit, "camp")?;
+        self.until("only the paths with camp in them", |tab| file_list::shown_paths(&tab.ui, Which::Commit) == camp).await?;
+        self.type_filter(Panel::Commit, "TENT-03")?;
+        self.until("only tent-03, whatever the case", |tab| file_list::shown_paths(&tab.ui, Which::Commit) == [PathBuf::from("camp/tent-03.txt")])
+            .await?;
+        self.type_filter(Panel::Commit, "nowhere")?;
+        self.until("nothing listed and the list saying so", |tab| {
+            file_list::shown_paths(&tab.ui, Which::Commit).is_empty() && file_list::nothing_matches(&tab.ui, Panel::Commit).is_some()
+        })
+        .await?;
+        self.action(Action::FileList(file_list::Action::Show(Mode::Tree)))?;
+        self.type_filter(Panel::Commit, "lake")?;
+        let lake = owned(&["- lake/ (2)", "  lake/dock.txt", "  lake/map.txt"]);
+        self.until("the lake folder and its two files", |tab| drawn(tab, Which::Commit) == lake).await?;
+        self.action(Action::FileList(file_list::Action::Show(Mode::List)))?;
+        self.tab.update(self.cx, |tab, window, cx| window.focus(&tab.ui.file_list.input(Panel::Commit).focus_handle(cx)))?;
+        self.key("escape")?;
+        let mut everything: Vec<PathBuf> = changed.iter().map(PathBuf::from).collect();
+        everything.sort();
+        self.until("all eighteen files again", |tab| {
+            tab.ui.file_list.filter(Panel::Commit).is_empty() && file_list::shown_paths(&tab.ui, Which::Commit) == everything
+        })
+        .await?;
+        if self.filter_focused(Panel::Commit)? {
+            return Err("Esc left the cursor in the filter field".into());
+        }
+        if untouched(&root)? != before {
+            return Err("Filtering a commit's files changed the repository".into());
         }
         self.pass();
         Ok(())

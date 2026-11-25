@@ -578,6 +578,7 @@ pub enum Action {
     Reverse(crate::reverse::Action),
     Pick(crate::pick::Action),
     Picked(crate::picked::Action),
+    FileList(crate::file_list::Action),
     Compare(crate::compare::Action),
     Lines(crate::lines::Action),
     Text(crate::diff_select::Action),
@@ -690,6 +691,7 @@ pub struct Ui {
     pub history: Vec<HistoryRow>,
     pub selection: Option<Selection>,
     pub(crate) picked: Option<crate::picked::Picked<PathBuf>>,
+    pub(crate) file_list: crate::file_list::State,
     pub(crate) compare: crate::compare::State,
     pub(crate) file_history: crate::file_history::State,
     pub(crate) blame: crate::blame::State,
@@ -796,6 +798,7 @@ impl Ui {
             history: vec![],
             selection: None,
             picked: None,
+            file_list: crate::file_list::State::new(&settings, cx),
             compare: Default::default(),
             file_history: Default::default(),
             blame: Default::default(),
@@ -2534,9 +2537,13 @@ fn no_commits(branch: &str, head: Option<&str>, history: usize) -> bool {
 
 
 fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
+    use crate::file_list::{self, Row, Which};
     let ui = app.ui();
     let (unstaged, staged) = ui.file_ranges();
-    let listed = ui.files.len();
+    let unstaged_rows = file_list::rows(ui, Which::Unstaged);
+    let staged_rows = file_list::rows(ui, Which::Staged);
+    let first_staged = unstaged_rows.len() + 1;
+    let listed = unstaged_rows.len() + staged_rows.len();
     let staged_count = staged.len();
     let amending = ui.amend.is_some();
     let loading = ui.amend.as_ref().is_some_and(|amend| amend.original.is_none());
@@ -2549,13 +2556,15 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             let ui = app.ui();
             let editable = ui.can_edit_index();
             let pick = crate::picked::files(ui);
+            let mode = ui.file_list.mode;
             range
                 .map(|i| {
-                    if i == 0 || i == unstaged.len() + 1 {
-                        let (name, count, id, label, action, command) = if i == 0 {
+                    if i == 0 || i == first_staged {
+                        let (name, count, which, id, label, action, command) = if i == 0 {
                             (
                                 "Unstaged",
                                 unstaged.len(),
+                                Which::Unstaged,
                                 "stage-all",
                                 "Stage all",
                                 Action::StageAll,
@@ -2565,6 +2574,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             (
                                 "Staged",
                                 staged.len(),
+                                Which::Staged,
                                 "unstage-all",
                                 "Unstage all",
                                 Action::UnstageAll,
@@ -2580,7 +2590,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             .gap(px(6.))
                             .items_center()
                             .child(kit::label(name))
-                            .child(kit::label(count.to_string()).font_weight(FontWeight::MEDIUM))
+                            .child(kit::label(file_list::count_label(ui, which)).font_weight(FontWeight::MEDIUM))
                             .child(kit::grow())
                             .when(count > 0, |row| {
                                 row.child(
@@ -2594,10 +2604,18 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             })
                             .into_any_element();
                     }
-                    let index = if i < unstaged.len() + 1 {
-                        unstaged.start + i - 1
+                    let (which, row, start) = if i < first_staged {
+                        (Which::Unstaged, &unstaged_rows[i - 1], unstaged.start)
                     } else {
-                        staged.start + i - unstaged.len() - 2
+                        (Which::Staged, &staged_rows[i - first_staged - 1], staged.start)
+                    };
+                    let (index, depth) = match row {
+                        Row::File { index, depth } => (start + index, *depth),
+                        Row::Folder { path, .. } => {
+                            let side = which.side(ui);
+                            let actions = file_list::folder_actions(ui, which, path, i, cx);
+                            return file_list::folder_row(("worktree-folder", i), which, row, side, actions, cx);
+                        }
                     };
                     let f = &ui.files[index];
                     let choice = file_selection(f);
@@ -2626,7 +2644,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             "Unstage file (U)".to_owned(),
                         ),
                     };
-                    let label = kit::file_label(("file-label", index), f.status, &f.path, f.from.as_deref());
+                    let label = file_list::label(("file-label", index), f.status, &f.path, f.from.as_deref(), mode);
                     let actions = div()
                         .flex()
                         .flex_shrink_0()
@@ -2648,7 +2666,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     kit::row(("file", index), selected)
                         .group("file-row")
                         .h(px(FILE_ROW))
-                        .pl(px(10.))
+                        .pl(px(file_list::indent(mode, depth)))
                         .pr_2()
                         .gap_2()
                         .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
@@ -2753,6 +2771,8 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex_col()
         .child(crate::discard::header(app, cx))
         .when_some(detached_warning(ui), |d, warning| d.child(detached_note(app, warning, cx)))
+        .children(file_list::filter_field(ui, file_list::Panel::Working, cx))
+        .children(file_list::nothing_matches(ui, file_list::Panel::Working))
         .child(files)
         .child(kit::scrollbar("worktree-scrollbar", &ui.file_scroll))
         .child(
@@ -3198,6 +3218,8 @@ pub fn render<T: Desk>(
                 } else {
                     app.dispatch(Action::Sidebar(crate::sidebar::Action::ClearFilter), w, cx);
                 }
+            } else if let Some(panel) = crate::file_list::focused(ui, w, cx).filter(|_| !ui.prompt.open() && ui.menu.is_none()) {
+                app.dispatch(Action::FileList(crate::file_list::Action::CloseFilter(panel)), w, cx);
             } else if ui.prompt.open() {
                 app.dispatch(Action::Prompt(crate::prompt::Action::Cancel), w, cx);
             } else if ui.palette.open() {

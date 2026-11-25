@@ -29,6 +29,7 @@ mod drag;
 mod environment;
 mod explain;
 mod file_history;
+mod file_list;
 mod file_view;
 mod find;
 mod github;
@@ -1624,6 +1625,7 @@ impl Tab {
             Action::Reverse(action) => reverse::dispatch(self, action, window, cx),
             Action::Pick(action) => pick::dispatch(self, action, window, cx),
             Action::Picked(action) => picked::dispatch(self, action, window, cx),
+            Action::FileList(action) => file_list::dispatch(self, action, window, cx),
             Action::Compare(action) => compare::dispatch(self, action, window, cx),
             Action::Lines(action) => lines::dispatch(self, action, window, cx),
             Action::Text(action) => diff_select::dispatch(self, action, window, cx),

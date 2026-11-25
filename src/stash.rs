@@ -1930,16 +1930,25 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     let position = ui.stash.entries.iter().position(|s| &s.oid == oid);
     let writable = ui.can_edit_index() && !ui.operation.active();
     let n = ui.stash.files.len();
+    let rows = crate::file_list::rows(ui, crate::file_list::Which::Stash);
     let files = uniform_list(
         "stashed-files",
-        n,
-        cx.processor(|app, range: Range<usize>, _, cx| {
+        rows.len(),
+        cx.processor(move |app, range: Range<usize>, _, cx| {
             let Some(Selection::Stash(stash)) = &app.ui().selection else {
                 return Vec::new();
             };
+            let mode = app.ui().file_list.mode;
             range
-                .filter_map(|idx| {
+                .filter_map(|at| {
                     let ui = app.ui();
+                    let (idx, depth) = match rows.get(at)? {
+                        crate::file_list::Row::File { index, depth } => (*index, *depth),
+                        row => {
+                            let which = crate::file_list::Which::Stash;
+                            return Some(crate::file_list::folder_row(("stashed-folder", at), which, row, which.side(ui), None, cx));
+                        }
+                    };
                     let file = ui.stash.files.get(idx)?;
                     let target = crate::commands::Target::File {
                         path: file.path.clone(),
@@ -1950,7 +1959,7 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     Some(
                         kit::row(("stashed-file", idx), open)
                             .h(px(FILE_ROW))
-                            .pl(px(10.))
+                            .pl(px(crate::file_list::indent(mode, depth)))
                             .pr_3()
                             .gap_2()
                             .on_click(cx.listener(move |app, _, w, cx| {
@@ -1967,12 +1976,14 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                     )
                                 }),
                             )
-                            .child(kit::file_label(
+                            .child(crate::file_list::label(
                                 ("stashed-file-label", idx),
                                 file.status,
                                 &file.path,
                                 file.from.as_deref(),
-                            )),
+                                mode,
+                            ))
+                            .into_any_element(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -2052,11 +2063,16 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             div()
                 .h(px(28.))
                 .flex_shrink_0()
-                .px_3()
+                .pl_3()
+                .pr_2()
                 .flex()
                 .items_center()
-                .child(kit::label(self::files(n))),
+                .child(kit::label(self::files(n)))
+                .child(kit::grow())
+                .when(n > 0, |d| d.child(crate::file_list::tools(ui, crate::file_list::Panel::Stash, cx))),
         )
+        .children(crate::file_list::filter_field(ui, crate::file_list::Panel::Stash, cx))
+        .children(crate::file_list::nothing_matches(ui, crate::file_list::Panel::Stash))
         .child(files)
         .child(kit::scrollbar("stashed-files-scrollbar", &ui.stash.files_scroll))
 }

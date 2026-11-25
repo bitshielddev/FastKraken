@@ -13,6 +13,7 @@ pub(crate) enum Side {
     Staged,
     Commit(String),
     Stash(String),
+    Compare(crate::compare::Rev),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +30,8 @@ pub(crate) enum Target {
     File { path: PathBuf, side: Side },
     Revision { oid: String, path: PathBuf },
     Files { paths: Vec<PathBuf>, side: Side },
+    Folder { path: PathBuf, side: Side },
+    FileList(crate::file_list::Panel),
     Conflict(PathBuf),
     Code { path: Option<PathBuf>, line: Option<u32>, row: usize, hunk: Option<usize> },
     Lines { path: PathBuf, side: Side, count: usize },
@@ -261,6 +264,8 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         view::COMMANDS,
         crate::discard::COMMANDS,
         crate::picked::COMMANDS,
+        crate::file_list::COMMANDS,
+        crate::file_list::FOLDER_COMMANDS,
         crate::ignore::COMMANDS,
         crate::search::COMMANDS,
         crate::find::COMMANDS,

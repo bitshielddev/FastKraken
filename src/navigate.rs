@@ -376,35 +376,31 @@ fn files(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Ta
     match tab.ui.selection.clone() {
         Some(Selection::File { path, staged }) => {
             let ui = &tab.ui;
-            let current = ui.files.iter().position(|f| f.staged == staged && f.path == path);
+            let order = crate::file_list::working_order(ui);
+            let current = order.iter().position(|(at, side, _)| *side == staged && *at == path);
             let Some(how) = how(action, page(&ui.file_scroll, FILE_ROW)) else {
                 return;
             };
-            let Some(index) = moved(current, ui.files.len(), how) else {
+            let Some(index) = moved(current, order.len(), how) else {
                 return;
             };
-            let (unstaged, staged) = ui.file_ranges();
-            let row = if ui.files[index].staged {
-                2 + unstaged.len() + index - staged.start
-            } else {
-                1 + index - unstaged.start
-            };
+            let (path, staged, row) = order[index].clone();
             ui.file_scroll.scroll_to_item(row, ScrollStrategy::Center);
-            let file = &ui.files[index];
-            let selection = Selection::File { path: file.path.clone(), staged: file.staged };
-            select(tab, selection, window, cx);
+            select(tab, Selection::File { path, staged }, window, cx);
         }
         Some(Selection::Commit(oid)) => {
             let ui = &tab.ui;
-            let count = ui.inspection.files.len();
+            let order = crate::file_list::shown(ui, crate::file_list::Which::Commit);
             let Some(how) = how(action, page(&ui.inspection.scroll, FILE_ROW)) else {
                 return;
             };
-            let current = ui.navigate.file_cursor(ui);
-            let Some(index) = moved(current, count, how) else {
+            let current = ui.navigate.file_cursor(ui).and_then(|cursor| order.iter().position(|index| *index == cursor));
+            let Some(index) = moved(current, order.len(), how).map(|at| order[at]) else {
                 return;
             };
-            ui.inspection.scroll.scroll_to_item(index, ScrollStrategy::Center);
+            if let Some(row) = crate::file_list::row_of(ui, crate::file_list::Which::Commit, index) {
+                ui.inspection.scroll.scroll_to_item(row, ScrollStrategy::Center);
+            }
             let open = ui.diff_open && ui.inspection.path.is_some();
             let path = ui.inspection.files[index].path.clone();
             tab.ui.navigate.opened(&oid, index);
@@ -437,16 +433,22 @@ fn sideways(tab: &mut Tab, zone: Zone, right: bool, window: &mut Window, cx: &mu
                     ui.inspection.files.iter().position(|file| &file.path == path)
                 });
                 let kept = ui.navigate.file_of.as_ref() == Some(&oid);
-                let index = open.unwrap_or(if kept { ui.navigate.file } else { 0 });
-                let last = ui.inspection.files.len() - 1;
-                tab.ui.navigate.opened(&oid, index.min(last));
-                tab.ui.inspection.scroll.scroll_to_item(tab.ui.navigate.file, ScrollStrategy::Center);
+                let order = crate::file_list::shown(ui, crate::file_list::Which::Commit);
+                let wanted = open.unwrap_or(if kept { ui.navigate.file } else { usize::MAX });
+                let Some(index) = order.iter().copied().find(|index| *index == wanted).or_else(|| order.first().copied()) else {
+                    return;
+                };
+                tab.ui.navigate.opened(&oid, index);
+                if let Some(row) = crate::file_list::row_of(&tab.ui, crate::file_list::Which::Commit, index) {
+                    tab.ui.inspection.scroll.scroll_to_item(row, ScrollStrategy::Center);
+                }
             }
             _ => {
-                let first = &tab.ui.files[0];
-                let selection = Selection::File { path: first.path.clone(), staged: first.staged };
+                let Some((path, staged, _)) = crate::file_list::working_order(&tab.ui).into_iter().next() else {
+                    return;
+                };
                 tab.ui.file_scroll.scroll_to_item(0, ScrollStrategy::Top);
-                select(tab, selection, window, cx);
+                select(tab, Selection::File { path, staged }, window, cx);
             }
         },
         (Zone::Files, Zone::Graph) => {

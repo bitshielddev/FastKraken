@@ -66,6 +66,10 @@ pub(crate) struct Settings {
     #[serde(deserialize_with = "storage::lenient_list")]
     pub(crate) hidden_sections: Vec<Section>,
     pub(crate) commit_bodies: bool,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) file_list_mode: crate::file_list::Mode,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) file_list_sort: crate::file_list::Sort,
 }
 
 impl Settings {
@@ -116,6 +120,8 @@ impl Default for Settings {
             graph_columns: crate::columns::Layout::default(),
             hidden_sections: Vec::new(),
             commit_bodies: false,
+            file_list_mode: crate::file_list::Mode::default(),
+            file_list_sort: crate::file_list::Sort::default(),
         }
     }
 }
@@ -637,6 +643,8 @@ mod tests {
             },
             hidden_sections: vec![Section::Tags, Section::Stashes],
             commit_bodies: true,
+            file_list_mode: crate::file_list::Mode::Tree,
+            file_list_sort: crate::file_list::Sort::Status,
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

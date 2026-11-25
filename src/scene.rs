@@ -42,6 +42,16 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
         "searchpick" => Some(Action::Search(search::Action::Pick(None))),
         "searchgraph" => Some(Action::Search(search::Action::ShowInGraph)),
         "changes" => Some(Action::Select(Selection::Changes)),
+        "filetree" => Some(Action::FileList(crate::file_list::Action::Show(crate::file_list::Mode::Tree))),
+        "filelist" => Some(Action::FileList(crate::file_list::Action::Show(crate::file_list::Mode::List))),
+        "filefilter" => {
+            if let Some(panel) = crate::file_list::Panel::of(&tab.ui) {
+                tab.dispatch(Action::FileList(crate::file_list::Action::Filter(panel)), window, cx);
+                let input = tab.ui.file_list.input(panel).clone();
+                input.update(cx, |input, cx| input.set_text(argument, cx));
+            }
+            None
+        }
         "identity" => Some(Action::Identity(crate::identity::Action::Edit)),
         "autofetch" => Some(Action::AutoFetch(crate::autofetch::Action::Tick)),
         "wfile" => tab.ui.files.get(index).map(|file| {

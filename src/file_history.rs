@@ -280,6 +280,11 @@ pub(crate) fn request(ui: &Ui, path: &Path, side: &Side) -> Option<Request> {
             let followed = ui.stash.from(oid, path).unwrap_or_else(|| path.to_owned());
             return Some(Request { path: followed, shown: path.to_owned(), start: Start::BaseOf(oid.clone()), back: Back::of(ui) });
         }
+        Side::Compare(Rev::Commit(oid)) => Start::Commit(oid.clone()),
+        Side::Compare(Rev::WorkingTree) => {
+            let followed = staged_origin(ui, path, true).unwrap_or_else(|| path.to_owned());
+            return Some(Request { path: followed, shown: path.to_owned(), start: Start::Head, back: Back::of(ui) });
+        }
     };
     Some(Request { path: path.to_owned(), shown: path.to_owned(), start, back: Back::of(ui) })
 }
@@ -289,14 +294,7 @@ pub(crate) fn here(ui: &Ui) -> Option<Request> {
         Selection::File { path, staged } => working_request(ui, path, *staged),
         Selection::Commit(oid) => request(ui, ui.inspection.path.as_deref()?, &Side::Commit(oid.clone())),
         Selection::Stash(oid) => request(ui, ui.stash.open_path()?, &Side::Stash(oid.clone())),
-        Selection::Compare { to, .. } => {
-            let path = ui.compare.path.clone()?;
-            let (start, followed) = match to {
-                Rev::Commit(oid) => (Start::Commit(oid.clone()), path.clone()),
-                Rev::WorkingTree => (Start::Head, staged_origin(ui, &path, true).unwrap_or_else(|| path.clone())),
-            };
-            Some(Request { path: followed, shown: path, start, back: Back::of(ui) })
-        }
+        Selection::Compare { to, .. } => request(ui, ui.compare.path.as_deref()?, &Side::Compare(to.clone())),
         Selection::Changes | Selection::Commits => None,
     }
 }
@@ -314,7 +312,7 @@ fn unavailable(ui: &Ui, path: &Path, side: &Side) -> Option<String> {
                 None
             }
         }
-        Side::Commit(_) | Side::Stash(_) => None,
+        Side::Commit(_) | Side::Stash(_) | Side::Compare(_) => None,
     }
 }
 

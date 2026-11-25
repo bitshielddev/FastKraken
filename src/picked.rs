@@ -192,9 +192,12 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
     .keys("cmd-a")]
 };
 
+fn which(list: ListId) -> crate::file_list::Which {
+    if list == ListId::Staged { crate::file_list::Which::Staged } else { crate::file_list::Which::Unstaged }
+}
+
 pub(crate) fn rows(ui: &Ui, list: ListId) -> Vec<PathBuf> {
-    let staged = list == ListId::Staged;
-    ui.files.iter().filter(|file| file.staged == staged).map(|file| file.path.clone()).collect()
+    crate::file_list::shown_paths(ui, which(list))
 }
 
 fn primary(ui: &Ui) -> Option<(ListId, &PathBuf)> {
@@ -254,12 +257,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             let Some((picked, to)) = Picked::extended(tab.ui.picked.as_ref(), &path, list, &listed, delta) else {
                 return;
             };
-            let unstaged = tab.ui.file_ranges().0.len();
-            if let Some(at) = listed.iter().position(|row| row == &to) {
-                let row = match list {
-                    ListId::Staged => 2 + unstaged + at,
-                    _ => 1 + at,
-                };
+            if let Some(row) = crate::file_list::working_row(&tab.ui, list == ListId::Staged, &to) {
                 tab.ui.file_scroll.scroll_to_item(row, gpui::ScrollStrategy::Center);
             }
             choose(tab, picked, to, window, cx);

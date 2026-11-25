@@ -7,6 +7,7 @@ use crate::{
     view::{self, Desk, Menu, Selection},
 };
 use crate::view::commit_input::{CommitInput, Look};
+use crate::file_list::{self, Row, Which};
 use gpui::{Context, Div, Focusable, FontWeight, SharedString, Window, div, prelude::*, px, rgb, uniform_list};
 use std::{
     collections::HashMap,
@@ -598,16 +599,26 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     .ghost()
                     .on(view::Action::Inspect(Action::AllChanges), cx),
             )
-        });
+        })
+        .when(count > 0, |d| d.child(file_list::tools(ui, file_list::Panel::Commit, cx)));
+    let rows = file_list::rows(ui, Which::Commit);
     let files = uniform_list(
         SharedString::from(format!("committed-file-{oid}")),
-        count,
-        cx.processor(|app, range: Range<usize>, _, cx| {
+        rows.len(),
+        cx.processor(move |app, range: Range<usize>, _, cx| {
             let ui = app.ui();
             let state = &ui.inspection;
             let cursor = ui.navigate.file_cursor(ui);
+            let mode = ui.file_list.mode;
             range
-                .filter_map(|i| {
+                .filter_map(|at| {
+                    let (i, depth) = match rows.get(at)? {
+                        Row::File { index, depth } => (*index, *depth),
+                        row => {
+                            let side = Which::Commit.side(ui);
+                            return Some(file_list::folder_row(("committed-folder", at), Which::Commit, row, side, None, cx));
+                        }
+                    };
                     let file = state.files.get(i)?;
                     let path = file.path.clone();
                     let target = crate::commands::Target::File {
@@ -619,14 +630,15 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     Some(
                         kit::cursor(kit::row(("committed-file", i), open), !open && cursor == Some(i))
                             .h(px(FILE_ROW))
-                            .pl(px(10.))
+                            .pl(px(file_list::indent(mode, depth)))
                             .pr_3()
                             .gap_2()
-                            .child(kit::file_label(
+                            .child(file_list::label(
                                 ("committed-file-label", i),
                                 file.status,
                                 &file.path,
                                 file.from.as_deref(),
+                                mode,
                             ))
                             .when_some(stat, |d, (added, deleted)| {
                                 d.child(
@@ -669,7 +681,8 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                         cx,
                                     )
                                 }),
-                            ),
+                            )
+                            .into_any_element(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -685,6 +698,8 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex_col()
         .child(summary)
         .child(heading)
+        .children(file_list::filter_field(ui, file_list::Panel::Commit, cx))
+        .children(file_list::nothing_matches(ui, file_list::Panel::Commit))
         .child(files)
         .child(kit::scrollbar("committed-files-scrollbar", &state.scroll))
 }

@@ -22,6 +22,7 @@ pub(crate) enum Rule {
     Path,
     Extension,
     Folder,
+    Enclosing(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -65,7 +66,7 @@ fn offered(ui: &Ui, shown: bool) -> commands::Availability {
 fn ignoring(target: &Target, rule: Rule) -> Option<view::Action> {
     let paths = match rule {
         Rule::Path => unstaged(target)?.into_iter().cloned().collect(),
-        Rule::Extension | Rule::Folder => vec![single(target)?.clone()],
+        Rule::Extension | Rule::Folder | Rule::Enclosing(_) => vec![single(target)?.clone()],
     };
     Some(view::Action::Ignore(Action::Ignore { paths, rule }))
 }
@@ -127,6 +128,11 @@ pub(crate) fn folder(path: &Path) -> Option<&Path> {
     path.parent().filter(|parent| !parent.as_os_str().is_empty())
 }
 
+pub(crate) fn enclosing(path: &Path, depth: usize) -> Option<PathBuf> {
+    let parent = folder(path)?;
+    (depth > 0 && parent.components().count() >= depth).then(|| parent.components().take(depth).collect())
+}
+
 fn escaped(text: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len());
     for &byte in text {
@@ -151,6 +157,10 @@ pub(crate) fn line(path: &Path, rule: Rule) -> Result<Vec<u8>, String> {
         }
         Rule::Folder => {
             let dir = folder(path).ok_or_else(|| format!("{} is not in a folder.", name(path)))?;
+            [b"/".as_slice(), &escaped(dir.as_os_str().as_bytes()), b"/"].concat()
+        }
+        Rule::Enclosing(depth) => {
+            let dir = enclosing(path, depth).ok_or_else(|| format!("{} is not in a folder.", name(path)))?;
             [b"/".as_slice(), &escaped(dir.as_os_str().as_bytes()), b"/"].concat()
         }
     };
@@ -203,6 +213,9 @@ fn title(paths: &[PathBuf], rule: Rule) -> String {
         }
         (Rule::Folder, [one, ..]) => {
             format!("Ignored everything in {}/", folder(one).map(|dir| dir.to_string_lossy()).unwrap_or_default())
+        }
+        (Rule::Enclosing(depth), [one, ..]) => {
+            format!("Ignored everything in {}/", enclosing(one, depth).map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default())
         }
         _ => "Ignored".to_owned(),
     }

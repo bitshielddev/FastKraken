@@ -1,5 +1,7 @@
 use crate::{
-    Tab, kit,
+    Tab,
+    file_list::{self, Row, Which},
+    kit,
     picked::{How, ListId, Picked},
     repository::{
         ChangedFile, Diff, DiffOptions, Repository, checked, parse_changed_files, patch_options, read_diff,
@@ -722,28 +724,47 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     .ghost()
                     .on(view::Action::Compare(Action::AllChanges), cx),
             )
-        });
+        })
+        .when(count > 0 && !state.loading, |d| d.child(file_list::tools(ui, file_list::Panel::Compare, cx)));
+    let rows = file_list::rows(ui, Which::Compare);
     let files = uniform_list(
         SharedString::from("compared-files"),
-        count,
-        cx.processor(|app, range: Range<usize>, _, cx| {
+        rows.len(),
+        cx.processor(move |app, range: Range<usize>, _, cx| {
             let ui = app.ui();
             let state = &ui.compare;
+            let mode = ui.file_list.mode;
+            let side = Which::Compare.side(ui);
             range
-                .filter_map(|i| {
+                .filter_map(|at| {
+                    let (i, depth) = match rows.get(at)? {
+                        Row::File { index, depth } => (*index, *depth),
+                        row => return Some(file_list::folder_row(("compared-folder", at), Which::Compare, row, side.clone(), None, cx)),
+                    };
                     let file = state.files.get(i)?;
                     let path = file.path.clone();
                     let open = ui.diff_open && state.path.as_ref() == Some(&file.path);
+                    let target = side.clone().map(|side| crate::commands::Target::File { path: file.path.clone(), side });
                     Some(
                         kit::row(("compared-file", i), open)
                             .h(px(FILE_ROW))
-                            .pl(px(10.))
+                            .pl(px(file_list::indent(mode, depth)))
                             .pr_3()
                             .gap_2()
-                            .child(kit::file_label(("compared-file-label", i), file.status, &file.path, file.from.as_deref()))
+                            .child(file_list::label(("compared-file-label", i), file.status, &file.path, file.from.as_deref(), mode))
                             .on_click(cx.listener(move |app, _, w, cx| {
                                 app.dispatch(view::Action::Compare(Action::OpenFile(path.clone())), w, cx)
-                            })),
+                            }))
+                            .when_some(target, |row, target| {
+                                row.on_mouse_down(
+                                    gpui::MouseButton::Right,
+                                    cx.listener(move |app, event: &gpui::MouseDownEvent, w, cx| {
+                                        let target = target.clone();
+                                        app.dispatch(view::Action::Menu(Some(Menu::Object { target, at: event.position })), w, cx)
+                                    }),
+                                )
+                            })
+                            .into_any_element(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -752,7 +773,11 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     .track_scroll(state.scroll.clone())
     .flex_1()
     .min_h_0();
-    body.child(header).child(files).child(kit::scrollbar("compared-files-scrollbar", &state.scroll))
+    body.child(header)
+        .children(file_list::filter_field(ui, file_list::Panel::Compare, cx))
+        .children(file_list::nothing_matches(ui, file_list::Panel::Compare))
+        .child(files)
+        .child(kit::scrollbar("compared-files-scrollbar", &state.scroll))
 }
 
 pub(crate) fn menu_for(ui: &Ui, oid: &str, at: gpui::Point<gpui::Pixels>) -> Option<view::Action> {

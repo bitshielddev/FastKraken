@@ -459,7 +459,7 @@ fn unavailable(ui: &Ui, path: &Path, side: &Side) -> Option<String> {
             let row = ui.files.iter().find(|row| row.path == path && row.staged == staged);
             row.is_some_and(|row| row.status == "Untracked").then(|| NEVER_COMMITTED.to_owned())
         }
-        Side::Commit(_) | Side::Stash(_) => None,
+        Side::Commit(_) | Side::Stash(_) | Side::Compare(_) => None,
     }
 }
 
@@ -474,6 +474,11 @@ pub(crate) fn request(ui: &Ui, path: &Path, side: &Side) -> Option<Request> {
         Side::Commit(oid) => At::Commit(oid.clone()),
         Side::Stash(oid) if deleted(ui.stash.file(oid, path)) => At::ParentOf(oid.clone()),
         Side::Stash(oid) => At::Commit(oid.clone()),
+        Side::Compare(Rev::Commit(_)) if ui.compare.files.iter().any(|file| file.path == path && file.status == "Deleted") => {
+            return None;
+        }
+        Side::Compare(Rev::Commit(oid)) => At::Commit(oid.clone()),
+        Side::Compare(Rev::WorkingTree) => At::Working,
     };
     Some(Request { blamed: Blamed { path: path.to_owned(), at }, owner: ui.selection.clone(), diff_open: ui.diff_open })
 }
@@ -483,15 +488,7 @@ pub(crate) fn here(ui: &Ui) -> Option<Request> {
         Selection::File { path, staged } => request(ui, path, if *staged { &Side::Staged } else { &Side::Unstaged }),
         Selection::Commit(oid) => request(ui, ui.inspection.path.as_deref()?, &Side::Commit(oid.clone())),
         Selection::Stash(oid) => request(ui, ui.stash.open_path()?, &Side::Stash(oid.clone())),
-        Selection::Compare { to, .. } => {
-            let path = ui.compare.path.clone()?;
-            let at = match to {
-                Rev::Commit(_) if ui.compare.files.iter().any(|file| file.path == path && file.status == "Deleted") => return None,
-                Rev::Commit(oid) => At::Commit(oid.clone()),
-                Rev::WorkingTree => At::Working,
-            };
-            Some(Request { blamed: Blamed { path, at }, owner: ui.selection.clone(), diff_open: ui.diff_open })
-        }
+        Selection::Compare { to, .. } => request(ui, ui.compare.path.as_deref()?, &Side::Compare(to.clone())),
         Selection::Changes | Selection::Commits => None,
     }
 }

@@ -212,12 +212,13 @@ impl Replay<'_> {
         for name in &picks[1..] {
             self.action(Action::Picked(picked::Action::Click { path: name.into(), staged: false, how: How::Toggle }))?;
         }
-        let wanted: Vec<String> = picks.iter().map(|name| name.to_string()).collect();
+        let mut wanted: Vec<String> = picks.iter().map(|name| name.to_string()).collect();
+        wanted.sort();
         self.until("four files picked by Cmd-click", |tab| picked_paths(tab).as_ref() == Some(&wanted)).await?;
         let target = Target::Files { paths: picks.iter().map(PathBuf::from).collect(), side: Side::Unstaged };
         self.choose(&target, "file.discard")?;
         let (lines, danger) = self.asked_about("Discard changes to 4 files?").await?;
-        if !danger || lines[..4] != wanted[..] || lines.last().map(String::as_str) != Some("Restore, in the notice that follows, brings them back.") {
+        if !danger || lines[..4] != picks[..] || lines.last().map(String::as_str) != Some("Restore, in the notice that follows, brings them back.") {
             return Err(format!("The discard prompt shows {lines:?}, danger {danger}").into());
         }
         if self.prompt_focus()? != Some(Stop::Cancel) {
