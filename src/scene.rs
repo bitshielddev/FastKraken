@@ -52,6 +52,25 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             }
             None
         }
+        "browse" => Some(Action::Browse(crate::browse::Action::Open(match &tab.ui.selection {
+            Some(Selection::Commit(oid)) => crate::compare::Rev::Commit(oid.clone()),
+            _ => crate::compare::Rev::WorkingTree,
+        }))),
+        "browsefile" => {
+            let rev = tab.ui.browse.rev().cloned().unwrap_or(crate::compare::Rev::WorkingTree);
+            Some(Action::Browse(crate::browse::Action::Reveal(rev, argument.into())))
+        }
+        "browsefilter" => {
+            let input = tab.ui.browse.filter.clone();
+            input.update(cx, |input, cx| input.set_text(argument, cx));
+            None
+        }
+        "findfile" => {
+            let goal = crate::palette::Goal::History;
+            tab.dispatch(Action::Palette(crate::palette::Action::Open(crate::palette::Mode::Files(goal))), window, cx);
+            tab.ui.palette.field.update(cx, |input, cx| input.set_text(argument, cx));
+            None
+        }
         "identity" => Some(Action::Identity(crate::identity::Action::Edit)),
         "autofetch" => Some(Action::AutoFetch(crate::autofetch::Action::Tick)),
         "wfile" => tab.ui.files.get(index).map(|file| {

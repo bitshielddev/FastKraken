@@ -189,7 +189,7 @@ pub(crate) fn here(ui: &Ui) -> Option<Surface> {
         return None;
     }
     match view::centre(ui) {
-        Centre::Diff | Centre::FileHistory | Centre::Blame if view::diff_shown(ui) && crate::image_diff::showing(ui).is_none() => {
+        Centre::Diff | Centre::FileHistory | Centre::Blame | Centre::Browse if view::diff_shown(ui) && crate::image_diff::showing(ui).is_none() => {
             Some(Surface::Diff)
         }
         Centre::Resolver => Some(Surface::Resolver),
@@ -387,6 +387,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             Some(surface) => open(tab, surface, window, cx),
             None => {
                 let action = match crate::file_list::here(&tab.ui) {
+                    _ if view::centre(&tab.ui) == Centre::Browse => view::Action::Browse(crate::browse::Action::FocusFilter),
                     Some(panel) => view::Action::FileList(crate::file_list::Action::Filter(panel)),
                     None => view::Action::Search(crate::search::Action::Open),
                 };
@@ -500,7 +501,7 @@ pub(crate) fn title(ui: &Ui) -> &'static str {
         Some(Surface::Diff) if ui.diff.file.is_some() => "Find in file…",
         Some(Surface::Diff) => "Find in diff…",
         Some(Surface::Resolver) => "Find in conflict…",
-        None if crate::file_list::here(ui).is_some() => "Filter files…",
+        None if crate::file_list::here(ui).is_some() || view::centre(ui) == Centre::Browse => "Filter files…",
         None => "Find commits…",
     }
 }

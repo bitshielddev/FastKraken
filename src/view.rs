@@ -276,7 +276,7 @@ pub(crate) const REPO_MENU: &[&str] =
     &["repo.open", "repo.close", "repo.refresh", "repo.reveal", "repo.terminal", "repo.editor", "repo.labels"];
 
 pub(crate) const CHANGES_MENU: &[&str] =
-    &["repo.stage-all", "repo.unstage-all", "repo.stash", "repo.stash-options", "repo.discard-all"];
+    &["repo.stage-all", "repo.unstage-all", "repo.stash", "repo.stash-options", "repo.discard-all", "repo.browse-files"];
 
 pub(crate) const COMMANDS: &[crate::commands::Command] = {
     use crate::commands::{Availability, Bar, Command, Group, Side, Target, busy, operating, on_repo};
@@ -590,6 +590,7 @@ pub enum Action {
     FileView(crate::file_view::Action),
     FileHistory(crate::file_history::Action),
     Blame(crate::blame::Action),
+    Browse(crate::browse::Action),
     Recover(crate::recover::Action),
     Discard(crate::discard::Action),
     Ignore(crate::ignore::Action),
@@ -695,6 +696,7 @@ pub struct Ui {
     pub(crate) compare: crate::compare::State,
     pub(crate) file_history: crate::file_history::State,
     pub(crate) blame: crate::blame::State,
+    pub(crate) browse: crate::browse::State,
     pub(crate) lines: crate::lines::State,
     pub(crate) text: crate::diff_select::State,
     pub(crate) message: crate::inspection::Message,
@@ -802,6 +804,7 @@ impl Ui {
             compare: Default::default(),
             file_history: Default::default(),
             blame: Default::default(),
+            browse: crate::browse::State::new(cx),
             lines: Default::default(),
             text: Default::default(),
             message: crate::inspection::Message::new(cx),
@@ -2887,6 +2890,7 @@ pub(crate) enum Centre {
     Diff,
     FileHistory,
     Blame,
+    Browse,
     Search,
     History,
 }
@@ -2896,6 +2900,7 @@ pub(crate) fn diff_shown(ui: &Ui) -> bool {
         Centre::Diff => true,
         Centre::FileHistory => crate::file_history::shows_diff(ui),
         Centre::Blame => true,
+        Centre::Browse => crate::browse::shows_file(ui),
         _ => false,
     }
 }
@@ -2913,6 +2918,8 @@ pub(crate) fn centre(ui: &Ui) -> Centre {
         Centre::Blame
     } else if ui.file_history.open() {
         Centre::FileHistory
+    } else if ui.browse.open() {
+        Centre::Browse
     } else if ui.diff_open && browsing {
         Centre::Diff
     } else if operating && ui.merge.editing().is_some() {
@@ -3220,6 +3227,8 @@ pub fn render<T: Desk>(
                 }
             } else if let Some(panel) = crate::file_list::focused(ui, w, cx).filter(|_| !ui.prompt.open() && ui.menu.is_none()) {
                 app.dispatch(Action::FileList(crate::file_list::Action::CloseFilter(panel)), w, cx);
+            } else if ui.browse.filter.focus_handle(cx).is_focused(w) && !ui.prompt.open() && ui.menu.is_none() {
+                app.dispatch(Action::Browse(crate::browse::Action::ClearFilter), w, cx);
             } else if ui.prompt.open() {
                 app.dispatch(Action::Prompt(crate::prompt::Action::Cancel), w, cx);
             } else if ui.palette.open() {
@@ -3260,6 +3269,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Blame(crate::blame::Action::Back), w, cx);
             } else if centre(ui) == Centre::FileHistory {
                 app.dispatch(Action::FileHistory(crate::file_history::Action::Close), w, cx);
+            } else if centre(ui) == Centre::Browse {
+                app.dispatch(Action::Browse(crate::browse::Action::Back), w, cx);
             } else if centre(ui) == Centre::Diff {
                 app.dispatch(Action::CloseDiff, w, cx);
             } else if centre(ui) == Centre::Resolver && crate::diff_select::current(ui).is_some() {
@@ -3338,6 +3349,7 @@ pub fn render<T: Desk>(
             Centre::Diff => diff_view::render(app, window, cx),
             Centre::FileHistory => crate::file_history::render(app, window, cx),
             Centre::Blame => crate::blame::render(app, window, cx),
+            Centre::Browse => crate::browse::render(app, window, cx),
             Centre::Search => crate::search::results(app, cx),
             Centre::History => history(app, ui.columns_drawn(viewport).1, cx),
         };

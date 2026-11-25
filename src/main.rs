@@ -8,6 +8,7 @@ mod autofetch;
 mod autostash;
 mod blame;
 mod branch;
+mod browse;
 mod changes;
 mod cli;
 mod cleanup;
@@ -531,6 +532,7 @@ impl Tab {
                         picked::refresh(&mut tab.ui);
                         compare::status_changed(tab, cx);
                         blame::status_changed(tab, cx);
+                        browse::status_changed(tab, cx);
                         if let Some(Selection::File { path, staged }) = tab.ui.selection.clone() {
                             if tab
                                 .ui
@@ -617,6 +619,10 @@ impl Tab {
             cx.notify();
             return;
         }
+        if browse::selected(self, &selection, cx) {
+            cx.notify();
+            return;
+        }
         if !matches!(selection, Selection::File { .. })
             && self.ui.selection.as_ref() != Some(&selection)
         {
@@ -650,6 +656,11 @@ impl Tab {
             cx.notify();
             return;
         }
+        if browse::kept(&self.ui) {
+            browse::reshow(self, cx);
+            cx.notify();
+            return;
+        }
         if matches!(selection, Selection::Changes | Selection::Commits | Selection::Compare { .. }) {
             self.clear_diff();
             cx.notify();
@@ -668,6 +679,7 @@ impl Tab {
             return;
         };
         blame::leave(self);
+        browse::leave(self);
         self.clear_diff();
         self.ui.diff_title = match &selection {
             Selection::Commit(oid) => self
@@ -1637,6 +1649,7 @@ impl Tab {
             Action::FileView(action) => file_view::dispatch(self, action, window, cx),
             Action::FileHistory(action) => file_history::dispatch(self, action, window, cx),
             Action::Blame(action) => blame::dispatch(self, action, window, cx),
+            Action::Browse(action) => browse::dispatch(self, action, window, cx),
             Action::Recover(action) => recover::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
@@ -1692,6 +1705,10 @@ impl Tab {
             }
             Action::CloseDiff if self.ui.file_history.open() => {
                 file_history::dispatch(self, file_history::Action::Close, window, cx);
+                view::focus(&self.ui, window);
+            }
+            Action::CloseDiff if browse::showing(&self.ui) => {
+                browse::dispatch(self, browse::Action::Back, window, cx);
                 view::focus(&self.ui, window);
             }
             Action::CloseDiff => {

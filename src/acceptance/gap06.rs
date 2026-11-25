@@ -1219,6 +1219,7 @@ impl Replay<'_> {
             ("repo.stash", "Stash changes"),
             ("repo.stash-options", "Stash with a message…"),
             ("repo.discard-all", "Discard all changes…"),
+            ("repo.browse-files", "Browse files"),
         ];
         if rows.len() != expected.len()
             || rows.iter().zip(expected).any(|(row, (id, title))| row.0 != id || row.1 != title || row.2.is_some())

@@ -208,6 +208,21 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         tab.dispatch(view::Action::Blame(wanted), window, cx);
         return;
     }
+    if crate::view::centre(ui) == crate::view::Centre::Browse && zone == Zone::Graph {
+        use crate::browse::Action as Browse;
+        let wanted = match action {
+            Action::Step(delta) => Browse::Step(delta),
+            Action::Page(pages) => Browse::Step(pages * 10),
+            Action::First | Action::Home => Browse::Step(isize::MIN),
+            Action::Last | Action::End => Browse::Step(isize::MAX),
+            Action::Left => Browse::Sideways(false),
+            Action::Right => Browse::Sideways(true),
+            Action::Choose => Browse::Activate,
+            _ => return,
+        };
+        tab.dispatch(view::Action::Browse(wanted), window, cx);
+        return;
+    }
     if crate::view::centre(ui) == crate::view::Centre::FileHistory && zone != Zone::Sidebar {
         use crate::file_history::Action as History;
         let last = ui.file_history.entries().len().saturating_sub(1);

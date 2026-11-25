@@ -780,6 +780,23 @@ pub(crate) fn tools<T: Desk>(ui: &Ui, panel: Panel, cx: &Context<T>) -> Div {
                 cx,
             ))
         })
+        .when_some(browsed(ui, panel), |d, rev| {
+            d.child(kit::icon_btn(
+                ("files-browse", slot),
+                "folder",
+                "Browse every file",
+                view::Action::Browse(crate::browse::Action::Open(rev)),
+                cx,
+            ))
+        })
+}
+
+fn browsed(ui: &Ui, panel: Panel) -> Option<crate::compare::Rev> {
+    match (panel, &ui.selection) {
+        (Panel::Commit, Some(Selection::Commit(oid))) => Some(crate::compare::Rev::Commit(oid.clone())),
+        (Panel::Working, _) => Some(crate::compare::Rev::WorkingTree),
+        _ => None,
+    }
 }
 
 pub(crate) fn filter_field<T: Desk>(ui: &Ui, panel: Panel, cx: &Context<T>) -> Option<Div> {

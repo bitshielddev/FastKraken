@@ -1,10 +1,11 @@
 use super::*;
 use crate::{
-    blame,
+    blame, browse,
     commands::{self, Side, Target},
     compare::{self, Rev},
     file_history,
     file_list::{self, Mode, Panel, Row, Which},
+    palette::{self, Goal},
     picked::How,
     view::DiffMode,
 };
@@ -147,6 +148,56 @@ fn owned(rows: &[&str]) -> Vec<String> {
     rows.iter().map(|row| (*row).to_owned()).collect()
 }
 
+fn browsed(tab: &Tab) -> Vec<String> {
+    tab.ui
+        .browse
+        .rows()
+        .iter()
+        .map(|row| match row {
+            browse::Row::Entry { name, kind, depth, unfolded, ignored, count, .. } => {
+                let mark = match kind {
+                    browse::Kind::Folder if *unfolded => "- ",
+                    browse::Kind::Folder => "+ ",
+                    _ => "",
+                };
+                let slash = if *kind == browse::Kind::Folder { "/" } else { "" };
+                let count = count.map(|count| format!(" ({count})")).unwrap_or_default();
+                let ignored = if *ignored { " ignored" } else { "" };
+                format!("{}{mark}{name}{slash}{count}{ignored}", "  ".repeat(*depth))
+            }
+            browse::Row::Note { depth, text, .. } => format!("{}[{text}]", "  ".repeat(*depth)),
+        })
+        .collect()
+}
+
+fn browsing(tab: &Tab, rev: &Rev, rows: &[String]) -> bool {
+    view::centre(&tab.ui) == view::Centre::Browse
+        && tab.ui.browse.rev() == Some(rev)
+        && tab.ui.browse.settled()
+        && browsed(tab) == rows
+}
+
+fn browsed_file(tab: &Tab, path: &str, contents: &str) -> bool {
+    view::centre(&tab.ui) == view::Centre::Browse
+        && tab.ui.browse.chosen() == Some(Path::new(path))
+        && view::diff_shown(&tab.ui)
+        && whole_file(tab, contents)
+}
+
+fn tree_names(root: &Path, tree: &str) -> Result<Vec<String>> {
+    let listed = git(root, &["ls-tree", tree])?;
+    let mut entries: Vec<(bool, String)> = listed
+        .lines()
+        .filter_map(|line| {
+            let (meta, name) = line.split_once('\t')?;
+            let folder = meta.split(' ').nth(1) == Some("tree");
+            Some((!folder, if folder { format!("+ {name}/") } else { name.to_owned() }))
+        })
+        .collect();
+    entries.sort_by_key(|(file, name)| (*file, name.trim_start_matches("+ ").to_lowercase()));
+    Ok(entries.into_iter().map(|(_, name)| name).collect())
+}
+
 fn chosen(tab: &Tab) -> Option<(String, PathBuf, Option<(String, PathBuf)>)> {
     let (block, commit) = tab.ui.blame.chosen()?;
     Some((commit.oid.clone(), block.path.clone(), block.previous.clone()))
@@ -163,7 +214,9 @@ impl Replay<'_> {
         self.blame_a_file(dir).await?;
         self.blame_before_a_change(dir).await?;
         self.tree_stages_a_folder(dir).await?;
-        self.filter_a_commits_files(dir).await
+        self.filter_a_commits_files(dir).await?;
+        self.browse_an_old_commit(dir).await?;
+        self.history_by_name(dir).await
     }
 
     fn pick_commit(&mut self, oid: &str, how: How) -> Result<()> {
@@ -1212,6 +1265,234 @@ impl Replay<'_> {
         }
         if untouched(&root)? != before {
             return Err("Filtering a commit's files changed the repository".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn browse_an_old_commit(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0911");
+        let root = init(dir, "Browse-camp")?;
+        fs::create_dir_all(root.join("notes"))?;
+        let map = "Old map\nNorth trail\nSouth ford\n";
+        fs::write(root.join(".gitignore"), "build/\n")?;
+        fs::write(root.join("camp.txt"), "Base camp\n")?;
+        fs::write(root.join("notes/old-map.txt"), map)?;
+        fs::write(root.join("notes/Lake.txt"), "Lake\n")?;
+        git(&root, &["add", "."])?;
+        git(&root, &["commit", "-qm", "Draw the maps"])?;
+        let drawn = oid(&root, "HEAD")?;
+        git(&root, &["rm", "-q", "notes/old-map.txt"])?;
+        fs::write(root.join("camp.txt"), "Base camp\nNew map on the board\n")?;
+        git(&root, &["commit", "-qam", "Retire the old map"])?;
+        let retired = oid(&root, "HEAD")?;
+        fs::create_dir_all(root.join("build"))?;
+        fs::write(root.join("build/out.o"), "built\n")?;
+        fs::write(root.join("loose.txt"), "Loose\n")?;
+        if git(&root, &["ls-tree", "--name-only", "HEAD:notes"])? != "Lake.txt\n"
+            || git(&root, &["ls-tree", "--name-only", &format!("{drawn}:notes")])? != "Lake.txt\nold-map.txt\n"
+        {
+            return Err("Git does not list old-map.txt only in Draw the maps".into());
+        }
+        let at_drawn = tree_names(&root, &drawn)?;
+        if at_drawn != ["+ notes/", ".gitignore", "camp.txt"] {
+            return Err(format!("git ls-tree lists {at_drawn:?} at Draw the maps").into());
+        }
+        self.open(&root)?;
+        self.until("Browse-camp open with two commits", |tab| tab.ui.repo == "Browse-camp" && tab.ui.history.len() == 2).await?;
+        let before = untouched(&root)?;
+        self.select_only(&drawn).await?;
+
+        let menu = Target::Commit(drawn.clone());
+        let offered = self.menu_rows(&menu)?.into_iter().find(|row| row.0 == "commit.browse-files");
+        if offered != Some(("commit.browse-files", "Browse files".to_owned(), None)) {
+            return Err(format!("Draw the maps offers {offered:?}").into());
+        }
+        self.choose(&menu, "commit.browse-files")?;
+        let at = Rev::Commit(drawn.clone());
+        self.until("the files of Draw the maps over the graph", |tab| browsing(tab, &at, &at_drawn)).await?;
+        let heading = self.tab.read_with(self.cx, |tab, _| browse::heading(&tab.ui))?;
+        if heading != format!("Files at {} · Draw the maps", short(&drawn)) {
+            return Err(format!("The file browser is headed {heading:?}").into());
+        }
+        self.action(Action::Browse(browse::Action::Toggle("notes".into())))?;
+        let opened = owned(&["- notes/", "  Lake.txt", "  old-map.txt", ".gitignore", "camp.txt"]);
+        self.until("notes opened, with the old map that was deleted since", |tab| browsing(tab, &at, &opened)).await?;
+        if git(&root, &["cat-file", "-e", &format!("{retired}:notes/old-map.txt")]).is_ok() {
+            return Err("old-map.txt still exists at Retire the old map".into());
+        }
+        self.action(Action::Browse(browse::Action::Choose("notes/old-map.txt".into())))?;
+        let shown = git(&root, &["show", &format!("{drawn}:notes/old-map.txt")])?;
+        if shown != map {
+            return Err(format!("git show lists {shown:?} for the old map").into());
+        }
+        self.until("the old map open as it was", |tab| browsed_file(tab, "notes/old-map.txt", map)).await?;
+        let header = self.tab.read_with(self.cx, |tab, _| (browse::title(&tab.ui), crate::find::title(&tab.ui)))?;
+        if header != (Some(("notes/old-map.txt".to_owned(), format!("At {}", short(&drawn)))), "Find in file…") {
+            return Err(format!("The browsed file is headed {header:?}").into());
+        }
+
+        let history = listed_oids(&root, &[&drawn, "--", "notes/old-map.txt"])?;
+        self.action(Action::Browse(browse::Action::History))?;
+        self.until("the history of the old map from Draw the maps", |tab| {
+            tab.ui.file_history.path() == Some(Path::new("notes/old-map.txt"))
+                && tab.ui.file_history.start() == Some(drawn.as_str())
+                && revisions(tab) == history
+                && in_history(tab, 0, &drawn, "notes/old-map.txt")
+        })
+        .await?;
+        self.focus_desk()?;
+        self.key("escape")?;
+        self.until("Esc from the history returns to the browsed old map", |tab| {
+            !tab.ui.file_history.open() && tab.ui.selection == Some(Selection::Commit(drawn.clone())) && browsed_file(tab, "notes/old-map.txt", map)
+        })
+        .await?;
+        let lines = porcelain(&root, &[&drawn, "--", "notes/old-map.txt"])?;
+        self.action(Action::Browse(browse::Action::Blame))?;
+        self.until("the old map blamed at Draw the maps", |tab| blaming(tab, "notes/old-map.txt", Some(&drawn), &lines)).await?;
+        self.key("escape")?;
+        self.until("Esc from the blame returns to the browsed old map", |tab| {
+            !tab.ui.blame.open() && browsed_file(tab, "notes/old-map.txt", map)
+        })
+        .await?;
+        self.key("escape")?;
+        self.until("Esc closes the file and keeps the browser", |tab| {
+            browsing(tab, &at, &opened) && tab.ui.browse.chosen().is_none() && !view::diff_shown(&tab.ui)
+        })
+        .await?;
+
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.browse.filter.clone().update(cx, |field, cx| field.set_text("MAP", cx)))?;
+        let found = owned(&["- notes/ (1)", "  old-map.txt"]);
+        self.until("only the old map matches, whatever the case", |tab| browsing(tab, &at, &found)).await?;
+        let every = self.tab.read_with(self.cx, |tab, _| tab.ui.browse.every().map(<[PathBuf]>::to_vec))?;
+        let listed: Vec<PathBuf> = git(&root, &["ls-tree", "-r", "--name-only", &drawn])?.lines().map(PathBuf::from).collect();
+        if every.as_ref() != Some(&listed) {
+            return Err(format!("The filter searched {every:?}, git lists {listed:?}").into());
+        }
+        self.key("escape")?;
+        self.until("Esc clears the filter", |tab| tab.ui.browse.query().is_empty() && browsing(tab, &at, &opened)).await?;
+        self.key("escape")?;
+        self.until("Esc returns to the graph with Draw the maps selected", |tab| {
+            !tab.ui.browse.open() && view::centre(&tab.ui) == view::Centre::History && tab.ui.selection == Some(Selection::Commit(drawn.clone()))
+        })
+        .await?;
+
+        let changes = self.menu_rows(&Target::Repo)?.into_iter().find(|row| row.0 == "repo.browse-files");
+        if changes != Some(("repo.browse-files", "Browse files".to_owned(), None)) {
+            return Err(format!("The working tree offers {changes:?}").into());
+        }
+        self.action(Action::Browse(browse::Action::Open(Rev::WorkingTree)))?;
+        let working = owned(&["+ build/ ignored", "+ notes/", ".gitignore", "camp.txt", "loose.txt"]);
+        self.until("my files read from disk, with build ignored", |tab| {
+            browsing(tab, &Rev::WorkingTree, &working) && tab.ui.selection == Some(Selection::Changes)
+        })
+        .await?;
+        self.action(Action::Browse(browse::Action::Choose("loose.txt".into())))?;
+        self.until("the untracked loose.txt open", |tab| browsed_file(tab, "loose.txt", "Loose\n")).await?;
+        let refused = self.tab.read_with(self.cx, |tab, _| (browse::refusal(&tab.ui), browse::title(&tab.ui)))?;
+        if refused != (Some(browse::NEVER_COMMITTED.to_owned()), Some(("loose.txt".to_owned(), "Working copy".to_owned()))) {
+            return Err(format!("The browsed loose.txt reads {refused:?}").into());
+        }
+        self.action(Action::Browse(browse::Action::Blame))?;
+        let still = self.tab.read_with(self.cx, |tab, _| (tab.ui.blame.open(), view::centre(&tab.ui)))?;
+        if still != (false, view::Centre::Browse) {
+            return Err(format!("Blaming the untracked loose.txt from the browser left {still:?}").into());
+        }
+        self.action(Action::Browse(browse::Action::Close))?;
+        self.until("the browser closed", |tab| !tab.ui.browse.open() && view::centre(&tab.ui) == view::Centre::History).await?;
+        if untouched(&root)? != before {
+            return Err("Browsing files changed a ref, the index or a file".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn history_by_name(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0912");
+        let root = init(dir, "Name-camp")?;
+        fs::create_dir_all(root.join("trail"))?;
+        record(&root, "trail/map.txt", "Map\n", "Draw the map")?;
+        record(&root, "camp.txt", "Camp\nFire\n", "Pitch the camp")?;
+        record(&root, "trail/map.txt", "Map\nRidge\n", "Add the ridge")?;
+        record(&root, "trail/notes.txt", "Notes\n", "Take notes")?;
+        fs::write(root.join("camp.txt"), "Camp\nKettle\n")?;
+        fs::write(root.join("loose.txt"), "Loose\n")?;
+        let head = oid(&root, "HEAD")?;
+        let history = listed_oids(&root, &["HEAD", "--", "trail/map.txt"])?;
+        if history.len() != 2 {
+            return Err(format!("git log lists {history:?} for trail/map.txt").into());
+        }
+        self.open(&root)?;
+        self.until("Name-camp open with its changes", |tab| {
+            tab.ui.repo == "Name-camp" && tab.ui.history.len() == 4 && files(tab, &[], &["camp.txt", "loose.txt"])
+        })
+        .await?;
+        let before = untouched(&root)?;
+        let tracked: Vec<PathBuf> = git(&root, &["ls-files"])?.lines().map(PathBuf::from).collect();
+        let listing = |tab: &Tab| -> Vec<PathBuf> {
+            let finder = &tab.ui.palette.finder;
+            (0..finder.count()).filter_map(|row| finder.at(row).map(Path::to_path_buf)).collect()
+        };
+        self.focus_desk()?;
+        self.key("cmd-shift-h")?;
+        self.until("the palette finding files for their history, listing every tracked file", |tab| {
+            tab.ui.palette.open() && tab.ui.palette.mode() == palette::Mode::Files(Goal::History) && !tab.ui.palette.finder.loading() && listing(tab) == tracked
+        })
+        .await?;
+        if tracked.contains(&PathBuf::from("loose.txt")) || tracked.len() != 3 {
+            return Err(format!("git ls-files lists {tracked:?}").into());
+        }
+        self.type_keys("map")?;
+        self.until("trail/map.txt ranked first for map", |tab| {
+            listing(tab).first().map(PathBuf::as_path) == Some(Path::new("trail/map.txt"))
+        })
+        .await?;
+        self.key("enter")?;
+        self.until("the history of trail/map.txt from HEAD", |tab| {
+            !tab.ui.palette.open()
+                && tab.ui.file_history.path() == Some(Path::new("trail/map.txt"))
+                && tab.ui.file_history.start() == Some(head.as_str())
+                && revisions(tab) == history
+                && in_history(tab, 0, &history[0], "trail/map.txt")
+        })
+        .await?;
+        self.key("escape")?;
+        self.until("Esc closes the history", |tab| !tab.ui.file_history.open()).await?;
+
+        self.key("cmd-p")?;
+        self.until("the palette open", |tab| tab.ui.palette.open() && tab.ui.palette.mode() == palette::Mode::Commands).await?;
+        self.type_keys("blame file")?;
+        let (rows, _) = self.palette_rows()?;
+        if rows.first().map(|row| (row.0, row.1.as_str(), row.3.is_none())) != Some(("file.blame-by-name", "Blame file…", true)) {
+            return Err(format!("\"blame file\" lists {rows:?}").into());
+        }
+        self.key("enter")?;
+        self.until("the palette finding a file to blame", |tab| {
+            tab.ui.palette.open() && tab.ui.palette.mode() == palette::Mode::Files(Goal::Blame) && !tab.ui.palette.finder.loading()
+        })
+        .await?;
+        self.type_keys("camp")?;
+        self.until("camp.txt ranked first", |tab| listing(tab).first().map(PathBuf::as_path) == Some(Path::new("camp.txt"))).await?;
+        let working = porcelain(&root, &["--", "camp.txt"])?;
+        self.key("enter")?;
+        self.until("my camp.txt blamed", |tab| !tab.ui.palette.open() && blaming(tab, "camp.txt", None, &working)).await?;
+        self.key("escape")?;
+        self.until("Esc closes the blame", |tab| !tab.ui.blame.open()).await?;
+
+        self.action(Action::Palette(palette::Action::Open(palette::Mode::Files(Goal::Open))))?;
+        self.until("the palette finding a file to open", |tab| tab.ui.palette.open() && !tab.ui.palette.finder.loading()).await?;
+        self.type_keys("notes")?;
+        self.until("trail/notes.txt ranked first", |tab| listing(tab).first().map(PathBuf::as_path) == Some(Path::new("trail/notes.txt"))).await?;
+        self.key("enter")?;
+        let shown = owned(&["- trail/", "  map.txt", "  notes.txt", "camp.txt", "loose.txt"]);
+        self.until("my trail/notes.txt open in the browser with its folder opened", |tab| {
+            browsing(tab, &Rev::WorkingTree, &shown) && browsed_file(tab, "trail/notes.txt", "Notes\n")
+        })
+        .await?;
+        self.action(Action::Browse(browse::Action::Close))?;
+        self.until("the browser closed", |tab| !tab.ui.browse.open()).await?;
+        if untouched(&root)? != before {
+            return Err("Finding files by name changed a ref, the index or a file".into());
         }
         self.pass();
         Ok(())

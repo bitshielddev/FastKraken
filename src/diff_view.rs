@@ -431,8 +431,11 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     let picture = crate::image_diff::showing(ui);
     let texts = picture.is_none();
     let blaming = crate::blame::showing(ui);
+    let browsing = crate::browse::showing_file(ui);
     let header = if blaming {
         blame_header(ui, cx)
+    } else if browsing {
+        browse_header(ui, cx)
     } else {
         div()
             .min_h(px(34.))
@@ -522,6 +525,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     };
     let list_id = match &ui.selection {
         _ if blaming => format!("blame-{:?}-{:?}", ui.blame.blamed(), ui.blame.resolved()),
+        _ if browsing => format!("browse-{:?}-{:?}", ui.browse.rev(), ui.browse.chosen()),
         Some(Selection::File { path, staged }) => {
             format!("patch-{staged}-{}", path.to_string_lossy())
         }
@@ -732,8 +736,40 @@ fn blame_header<T: Desk>(ui: &Ui, cx: &Context<T>) -> Div {
         .child(kit::icon_btn("close-blame", "x", "Back to where you were (Esc)", Action::Blame(crate::blame::Action::Close), cx))
 }
 
+fn browse_header<T: Desk>(ui: &Ui, cx: &Context<T>) -> Div {
+    let (path, at) = crate::browse::title(ui).unwrap_or_default();
+    div()
+        .min_h(px(34.))
+        .flex_shrink_0()
+        .pl_3()
+        .pr_2()
+        .py_1()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_x_2()
+        .gap_y_1()
+        .bg(rgb(PANEL))
+        .border_b_1()
+        .border_color(rgb(LINE))
+        .child(kit::fit(path).size(12.5).weight(FontWeight::SEMIBOLD).cut(kit::Cut::Start))
+        .child(kit::chip(kit::Chip::Plain, at))
+        .when(crate::browse::ignored(ui), |d| d.child(kit::chip(kit::Chip::Plain, "Ignored")))
+        .child(kit::grow())
+        .child(crate::browse::history_button(ui, cx))
+        .child(crate::browse::blame_button(ui, cx))
+        .when(!ui.diff.lines.is_empty(), |d| d.child(options_control(ui, true, cx)))
+        .child(kit::icon_btn(
+            "close-browsed-file",
+            "x",
+            "Back to the files (Esc)",
+            Action::Browse(crate::browse::Action::Unchoose),
+            cx,
+        ))
+}
+
 pub(crate) fn placeholder_text(ui: &Ui, renamed: bool) -> Option<String> {
-    if let Some(text) = crate::blame::placeholder(ui) {
+    if let Some(text) = crate::blame::placeholder(ui).or_else(|| crate::browse::placeholder(ui)) {
         return Some(text);
     }
     let whole = match &ui.selection {

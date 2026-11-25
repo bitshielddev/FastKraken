@@ -50,6 +50,12 @@ pub(crate) struct Request {
     diff_open: bool,
 }
 
+impl Request {
+    pub(crate) fn at(ui: &Ui, path: &Path, at: At) -> Self {
+        Self { blamed: Blamed { path: path.to_owned(), at }, owner: ui.selection.clone(), diff_open: ui.diff_open }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Commit {
     pub(crate) oid: String,

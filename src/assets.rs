@@ -35,6 +35,7 @@ icons!(
     "eye",
     "eye-off",
     "fetch",
+    "file",
     "folder",
     "funnel",
     "globe",

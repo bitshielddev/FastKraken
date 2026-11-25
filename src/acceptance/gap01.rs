@@ -688,6 +688,7 @@ impl Replay<'_> {
                 "commit.revert",
                 "commit.reset",
                 "commit.compare-working",
+                "commit.browse-files",
                 "commit.copy-sha",
                 "commit.copy-message",
             ]

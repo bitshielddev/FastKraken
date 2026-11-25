@@ -139,6 +139,7 @@ pub(crate) fn offered(ui: &Ui) -> bool {
     let Some(selection) = &ui.selection else { return false };
     view::diff_shown(ui)
         && !ui.blame.open()
+        && !crate::browse::showing(ui)
         && single(selection, image_diff::selection_open(ui).as_deref()).is_some()
 }
 
@@ -359,7 +360,7 @@ fn picture(
     })
 }
 
-fn failed(version: Version, reason: String) -> DiffDoc {
+pub(crate) fn failed(version: Version, reason: String) -> DiffDoc {
     let mut doc = DiffDoc::default();
     doc.state = PatchState::Unreadable(reason);
     doc.file = Some(Box::new(Shown { version, ..Shown::default() }));
