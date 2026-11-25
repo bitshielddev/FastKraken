@@ -4,11 +4,13 @@ use crate::{
     columns::{self, Column, Layout, Widths},
     commands::{self, Target},
     containing, graph_view, inspection, notice, paging,
+    picked::How,
+    prompt, sidebar,
     refs::Kind,
     reveal, search,
     theme::ROW,
 };
-use gpui::{ScrollStrategy, point};
+use gpui::{Focusable, ScrollStrategy, point};
 use std::{io::Write, process::Stdio};
 
 const DEPTH: usize = 5_000;
@@ -178,7 +180,9 @@ impl Replay<'_> {
         self.where_a_commit_lives(dir).await?;
         self.hide_a_branch(dir).await?;
         self.solo_a_branch(dir).await?;
-        self.hide_a_remote(dir).await
+        self.hide_a_remote(dir).await?;
+        self.delete_merged_branches(dir).await?;
+        self.tidy_the_sidebar(dir).await
     }
 
     fn drawn_columns(&mut self) -> Result<Widths> {
@@ -1363,6 +1367,312 @@ impl Replay<'_> {
         if let Some(stored) = self.remembered()? {
             return Err(format!("After showing every remote state.json still remembers {stored}").into());
         }
+        self.pass();
+        Ok(())
+    }
+
+    fn heads(root: &Path) -> Result<String> {
+        git(root, &["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"])
+    }
+
+    fn shown_prompt(&mut self) -> Result<Option<(String, Vec<String>, Vec<(String, String, bool)>, String, bool)>> {
+        Ok(self.tab.read_with(self.cx, |tab, _| {
+            prompt::shown(&tab.ui).map(|spec| {
+                let ticks = prompt::ticks(&spec.items, tab.ui.prompt.items());
+                let items = spec.items.iter().zip(ticks).map(|(item, on)| (item.label.clone(), item.detail.clone(), on)).collect();
+                (spec.title, spec.lines, items, spec.confirm.to_string(), spec.danger)
+            })
+        })?)
+    }
+
+    async fn delete_merged_branches(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0812");
+        let root = init(dir, "Clean-camp")?;
+        record(&root, "camp.txt", "Camp\n", "Pitch the clean camp")?;
+        for name in ["feature/ford", "develop"] {
+            git(&root, &["switch", "-qc", name])?;
+            record(&root, &format!("{}.txt", name.replace('/', "-")), "Done\n", &format!("Finish {name}"))?;
+            git(&root, &["switch", "-q", "main"])?;
+            git(&root, &["merge", "-q", "--no-ff", "--no-edit", name])?;
+        }
+        git(&root, &["branch", "feature/bridge"])?;
+        let bare = dir.join("Clean-camp-origin.git");
+        fs::create_dir(&bare)?;
+        git(&bare, &["init", "-q", "--bare", "-b", "main"])?;
+        git(&root, &["remote", "add", "origin", &bare.display().to_string()])?;
+        git(&root, &["switch", "-qc", "stale"])?;
+        record(&root, "stale.txt", "Scout\n", "Scout the stale trail")?;
+        git(&root, &["push", "-q", "-u", "origin", "stale"])?;
+        git(&root, &["push", "-q", "origin", "--delete", "stale"])?;
+        git(&root, &["switch", "-qc", "wip", "main"])?;
+        record(&root, "wip.txt", "Half\n", "Start unfinished work")?;
+        git(&root, &["switch", "-q", "main"])?;
+        let before = Self::heads(&root)?;
+        let index = git(&root, &["ls-files", "--stage"])?;
+        self.open(&root)?;
+        self.until("Clean-camp open with stale's remote branch gone", |tab| {
+            tab.ui.repo == "Clean-camp"
+                && tab.ui.refs.local(std::ffi::OsStr::new("stale")).is_some_and(|item| item.gone)
+                && tab.ui.refs.lists(Kind::Branch, "feature/bridge")
+        })
+        .await?;
+
+        let heading: Vec<String> = self.graph_menu(Target::Section(refs::Section::Branches))?.into_iter().map(|row| row.1).collect();
+        for wanted in ["New branch…", "Delete merged branches…", "Hide all local branches", "Collapse all", "Hide this section"] {
+            if !heading.iter().any(|title| title == wanted) {
+                return Err(format!("The Branches heading menu lacks {wanted:?}: {heading:?}").into());
+            }
+        }
+        self.choose_in_graph_menu(Target::Section(refs::Section::Branches), "repo.delete-merged", "Delete merged branches…")?;
+        self.until("the clean-up dialog", |tab| prompt::shown(&tab.ui).is_some_and(|spec| spec.title == "Delete merged branches")).await?;
+        let (_, _, items, confirm, danger) = self.shown_prompt()?.ok_or("The clean-up dialog closed")?;
+        let item = |name: &str, detail: &str, on: bool| (name.to_owned(), detail.to_owned(), on);
+        let listed = vec![
+            item("feature/bridge", "merged", true),
+            item("feature/ford", "merged", true),
+            item("stale", "remote branch gone · 1 commit not in main", false),
+        ];
+        if items != listed || confirm != "Delete 2 branches" || danger {
+            return Err(format!("The clean-up dialog lists {items:?}, confirm {confirm:?}, danger {danger}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::ToggleItem(0)))?;
+        self.action(Action::Prompt(prompt::Action::ToggleItem(2)))?;
+        let (_, _, items, confirm, danger) = self.shown_prompt()?.ok_or("The clean-up dialog closed")?;
+        let ticks: Vec<bool> = items.iter().map(|row| row.2).collect();
+        if ticks != [false, true, true] || confirm != "Delete 2 branches" || !danger {
+            return Err(format!("After ticking, the dialog has {ticks:?}, confirm {confirm:?}, danger {danger}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let (detail, offers) = self.noticed("Deleted 2 branches").await?;
+        if detail != "feature/ford and stale" || offers != ["Restore all"] {
+            return Err(format!("The clean-up notice reads {detail:?} and offers {offers:?}").into());
+        }
+        let left = Self::heads(&root)?;
+        let names: Vec<&str> = left.lines().filter_map(|line| line.split(' ').next()).collect();
+        if names != ["develop", "feature/bridge", "main", "wip"] {
+            return Err(format!("After the clean-up the branches are {names:?}").into());
+        }
+        if git(&root, &["config", "--local", "--list"])?.contains("branch.stale.") {
+            return Err("stale's upstream setting survived its deletion".into());
+        }
+        git_is(&root, &["ls-files", "--stage"], &index)?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
+
+        let offered = self.newest_notice()?;
+        self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
+        self.noticed("Restored 2 branches").await?;
+        git_is(&root, &["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], &before)?;
+        git_is(&root, &["config", "branch.stale.remote"], "origin\n")?;
+        git_is(&root, &["config", "branch.stale.merge"], "refs/heads/stale\n")?;
+        self.until("the restored branches listed", |tab| tab.ui.refs.lists(Kind::Branch, "stale")).await?;
+
+        self.action(Action::Sidebar(sidebar::Action::Pick { name: "feature/bridge".into(), how: None }))?;
+        self.action(Action::Sidebar(sidebar::Action::Pick { name: "wip".into(), how: Some(How::Toggle) }))?;
+        self.action(Action::Sidebar(sidebar::Action::Pick { name: "main".into(), how: Some(How::Toggle) }))?;
+        let target = self.tab.read_with(self.cx, |tab, _| sidebar::menu_target(&tab.ui, &"wip".into()))?;
+        let names = || ["feature/bridge", "main", "wip"].iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        if target != Target::Branches(names()) {
+            return Err(format!("Three picked branches open the menu of {target:?}").into());
+        }
+        let rows = self.graph_menu(target.clone())?;
+        let titled = |id: &str| rows.iter().find(|row| row.0 == id).map(|row| row.1.clone());
+        if titled("branch.delete-picked").as_deref() != Some("Delete 2 branches…")
+            || titled("graph.hide-picked").as_deref() != Some("Hide 3 branches in the graph")
+        {
+            let listed: Vec<_> = rows.iter().map(|row| (row.0, row.1.clone())).collect();
+            return Err(format!("The menu of the picked branches lists {listed:?}").into());
+        }
+        self.choose(&target, "branch.delete-picked")?;
+        let (lines, danger) = self.asked_about("Delete 2 branches?").await?;
+        let wanted = [
+            "feature/bridge",
+            "wip",
+            "1 of them has commits found nowhere else. Those commits will no longer appear in the graph.",
+            "main is checked out, so it is kept.",
+            "Restore all, in the notice that follows, brings them back.",
+        ];
+        if lines != wanted || !danger {
+            return Err(format!("The delete prompt reads {lines:?}, danger {danger}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let (detail, offers) = self.noticed("Deleted 2 branches").await?;
+        if detail != "feature/bridge and wip" || offers != ["Restore all"] {
+            return Err(format!("The picked delete reads {detail:?} and offers {offers:?}").into());
+        }
+        let left = Self::heads(&root)?;
+        if left.contains("wip ") || left.contains("feature/bridge ") || !left.contains("main ") {
+            return Err(format!("After deleting the picked branches Git has {left:?}").into());
+        }
+        let offered = self.newest_notice()?;
+        self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
+        self.noticed("Restored 2 branches").await?;
+        git_is(&root, &["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], &before)?;
+        self.until("wip listed again", |tab| tab.ui.refs.lists(Kind::Branch, "wip")).await?;
+
+        self.action(Action::Sidebar(sidebar::Action::PickFolder("feature/".into())))?;
+        let picked = self.tab.read_with(self.cx, |tab, _| sidebar::picked(&tab.ui).map(|picked| picked.ordered(&sidebar::locals(&tab.ui))))?;
+        let folder = vec![std::ffi::OsString::from("feature/bridge"), std::ffi::OsString::from("feature/ford")];
+        if picked.as_ref() != Some(&folder) {
+            return Err(format!("Picking the feature folder picked {picked:?}").into());
+        }
+        let rows = self.graph_menu(Target::Branches(folder))?;
+        if !rows.iter().any(|row| row.0 == "branch.delete-picked" && row.1 == "Delete 2 branches…" && row.3.is_some()) {
+            return Err("The feature folder offers no Delete 2 branches…".into());
+        }
+        self.key("escape")?;
+        self.until("Esc unpicked the folder", |tab| sidebar::picked(&tab.ui).is_none()).await?;
+        git_is(&root, &["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], &before)?;
+        self.pass();
+        Ok(())
+    }
+
+    fn sidebar_sections(&mut self) -> Result<Vec<refs::Section>> {
+        Ok(self.tab.read_with(self.cx, |tab, _| {
+            tab.ui
+                .refs
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    refs::SideRow::Header { section, .. } => Some(*section),
+                    _ => None,
+                })
+                .collect()
+        })?)
+    }
+
+    fn saved_sections(&mut self) -> Result<serde_json::Value> {
+        self.cx.update(|cx| settings::flush(cx))?;
+        let state = storage::override_directory().ok_or("No state folder for the replay")?;
+        let chosen: serde_json::Value = serde_json::from_slice(&fs::read(state.join("settings.json"))?)?;
+        Ok(chosen["hidden_sections"].clone())
+    }
+
+    async fn tidy_the_sidebar(&mut self, dir: &Path) -> Result<()> {
+        use refs::Section;
+        self.start("GAP0814");
+        let root = init(dir, "Tidy-camp")?;
+        record(&root, "camp.txt", "Camp\n", "Pitch the tidy camp")?;
+        for name in ["feature/map", "feature/stove", "fix/tent"] {
+            git(&root, &["branch", name])?;
+        }
+        git(&root, &["tag", "v1"])?;
+        let bare = dir.join("Tidy-camp-origin.git");
+        fs::create_dir(&bare)?;
+        git(&bare, &["init", "-q", "--bare", "-b", "main"])?;
+        git(&root, &["remote", "add", "origin", &bare.display().to_string()])?;
+        git(&root, &["push", "-q", "origin", "main", "feature/map"])?;
+        git(&root, &["fetch", "-q", "origin"])?;
+        git(&bare, &["branch", "-D", "feature/map"])?;
+        fs::write(root.join("camp.txt"), "Camp\nSocks\n")?;
+        git(&root, &["stash", "push", "-q", "-m", "Dry the socks"])?;
+        let stashes = git(&root, &["stash", "list", "--format=%H %gs"])?;
+        let head = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Tidy-camp open with its stash and remote", |tab| {
+            tab.ui.repo == "Tidy-camp"
+                && tab.ui.stash.entries.len() == 1
+                && tab.ui.refs.lists(Kind::Remote, "origin/feature/map")
+                && tab.ui.refs.lists(Kind::Branch, "fix/tent")
+        })
+        .await?;
+
+        self.key("alt-cmd-f")?;
+        self.until("Cmd-Option-F focused the sidebar filter", |_| true).await?;
+        let focused = self.tab.update(self.cx, |tab, window, cx| tab.ui.refs.filter.focus_handle(cx).is_focused(window))?;
+        if !focused {
+            return Err("Cmd-Option-F did not focus the sidebar filter".into());
+        }
+        self.tab.update(self.cx, |tab, window, cx| {
+            tab.ui.refs.filter.update(cx, |field, cx| field.replace_text_in_range(None, "stove", window, cx));
+        })?;
+        self.until("only feature/stove left among the branches", |tab| {
+            tab.ui.refs.lists(Kind::Branch, "feature/stove") && !tab.ui.refs.lists(Kind::Branch, "fix/tent")
+        })
+        .await?;
+        self.key("escape")?;
+        let (text, focused) = self.tab.update(self.cx, |tab, window, cx| {
+            (tab.ui.refs.filter.read(cx).text().to_owned(), tab.ui.refs.filter.focus_handle(cx).is_focused(window))
+        })?;
+        if !text.is_empty() || !focused {
+            return Err(format!("The first Esc left the filter reading {text:?}, focused {focused}").into());
+        }
+        self.until("every branch listed again", |tab| tab.ui.refs.lists(Kind::Branch, "fix/tent")).await?;
+        self.key("escape")?;
+        let focused = self.tab.update(self.cx, |tab, window, cx| tab.ui.refs.filter.focus_handle(cx).is_focused(window))?;
+        if focused {
+            return Err("The second Esc did not leave the sidebar filter".into());
+        }
+
+        let tags: Vec<(&str, String)> =
+            self.graph_menu(Target::Section(Section::Tags))?.into_iter().map(|row| (row.0, row.1)).collect();
+        for (id, title) in [("repo.new-tag", "New tag…"), ("graph.hide-section", "Hide all tags"), ("sidebar.hide-section", "Hide this section")] {
+            if !tags.iter().any(|row| row.0 == id && row.1 == title) {
+                return Err(format!("The Tags heading menu lacks {title:?}: {tags:?}").into());
+            }
+        }
+        self.choose_in_graph_menu(Target::Section(Section::Tags), "repo.new-tag", "New tag…")?;
+        self.until("a new tag drafted at HEAD", |tab| tab.ui.refs.draft_target() == Some((Kind::Tag, head.as_str()))).await?;
+        self.ref_action(refs::Action::Escape)?;
+        self.until("the tag draft closed", |tab| tab.ui.refs.draft.is_none()).await?;
+
+        self.choose_in_graph_menu(Target::Section(Section::Tags), "sidebar.hide-section", "Hide this section")?;
+        self.until("the Tags section gone", |tab| !tab.ui.refs.hidden_sections.is_empty()).await?;
+        if self.sidebar_sections()? != [Section::Branches, Section::Remotes, Section::Stashes] {
+            return Err(format!("With Tags hidden the sidebar shows {:?}", self.sidebar_sections()?).into());
+        }
+        if self.saved_sections()? != json!(["tags"]) {
+            return Err(format!("settings.json holds hidden sections {}", self.saved_sections()?).into());
+        }
+        let shown = self.graph_menu(Target::Repo)?;
+        if !shown.iter().any(|row| row.0 == "sidebar.tags" && row.1 == "Show the Tags section") {
+            return Err("The View menu does not offer to show the Tags section".into());
+        }
+        self.action(Action::Run("sidebar.tags"))?;
+        self.until("the Tags section back", |tab| tab.ui.refs.hidden_sections.is_empty()).await?;
+        if self.sidebar_sections()? != [Section::Branches, Section::Remotes, Section::Tags, Section::Stashes] || self.saved_sections()? != json!([]) {
+            return Err("Showing Tags again did not bring back every section".into());
+        }
+
+        self.choose_in_graph_menu(Target::Section(Section::Branches), "sidebar.collapse-all", "Collapse all")?;
+        self.until("every branch folder folded", |tab| {
+            !tab.ui.refs.lists(Kind::Branch, "feature/map") && !tab.ui.refs.lists(Kind::Branch, "fix/tent") && tab.ui.refs.lists(Kind::Branch, "main")
+        })
+        .await?;
+        self.choose_in_graph_menu(Target::Section(Section::Branches), "sidebar.collapse-all", "Expand all")?;
+        self.until("every branch folder open again", |tab| {
+            tab.ui.refs.lists(Kind::Branch, "feature/map") && tab.ui.refs.lists(Kind::Branch, "fix/tent")
+        })
+        .await?;
+
+        let remotes: Vec<(&str, String)> =
+            self.graph_menu(Target::Section(Section::Remotes))?.into_iter().map(|row| (row.0, row.1)).collect();
+        for (id, title) in [("repo.add-remote", "Add existing remote…"), ("repo.fetch-all", "Fetch all remotes")] {
+            if !remotes.iter().any(|row| row.0 == id && row.1 == title) {
+                return Err(format!("The Remotes heading menu lacks {title:?}: {remotes:?}").into());
+            }
+        }
+        self.choose_in_graph_menu(Target::Section(Section::Remotes), "repo.prune-now", "Remove deleted branches now")?;
+        self.until("origin/feature/map removed", |tab| !tab.ui.busy() && !tab.ui.refs.lists(Kind::Remote, "origin/feature/map")).await?;
+        git_is(&root, &["for-each-ref", "--format=%(refname)", "refs/remotes/origin/feature"], "")?;
+        git_is(&root, &["for-each-ref", "--format=%(refname)", "refs/remotes/origin/main"], "refs/remotes/origin/main\n")?;
+        git_is(&root, &["for-each-ref", "--format=%(refname)", "refs/heads/feature/map"], "refs/heads/feature/map\n")?;
+
+        self.choose_in_graph_menu(Target::Section(Section::Stashes), "stash.drop-all", "Drop all stashes…")?;
+        let (lines, danger) = self.asked_about("Drop the stash?").await?;
+        if !danger || lines != ["Its changes leave the stash list. Restore, in the notice that follows, puts it back."] {
+            return Err(format!("The drop-all prompt reads {lines:?}, danger {danger}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let (_, offers) = self.noticed("Dropped 1 stash").await?;
+        if offers != ["Restore"] {
+            return Err(format!("Dropping every stash offers {offers:?}").into());
+        }
+        git_is(&root, &["stash", "list"], "")?;
+        let offered = self.newest_notice()?;
+        self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
+        self.noticed("Restored 1 stash").await?;
+        git_is(&root, &["stash", "list", "--format=%H %gs"], &stashes)?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
         self.pass();
         Ok(())
     }

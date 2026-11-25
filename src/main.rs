@@ -8,6 +8,7 @@ mod autofetch;
 mod autostash;
 mod branch;
 mod cli;
+mod cleanup;
 mod clone;
 mod columns;
 mod commands;
@@ -64,6 +65,7 @@ mod scene;
 mod scrollbar;
 mod search;
 mod settings;
+mod sidebar;
 mod start;
 mod stash;
 mod storage;
@@ -1600,6 +1602,8 @@ impl Tab {
             Action::Containing(action) => containing::dispatch(self, action, window, cx),
             Action::GraphView(action) => graph_view::dispatch(self, action, window, cx),
             Action::Columns(action) => columns::dispatch(self, action, window, cx),
+            Action::Sidebar(action) => sidebar::dispatch(self, action, window, cx),
+            Action::Cleanup(action) => cleanup::dispatch(self, action, window, cx),
             Action::ViewChanges => {
                 if let Some(first) = self.ui.files.first() {
                     self.follow = Follow::Nothing;

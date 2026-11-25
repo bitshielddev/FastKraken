@@ -557,6 +557,8 @@ pub enum Action {
     Containing(crate::containing::Action),
     GraphView(crate::graph_view::Action),
     Columns(crate::columns::Action),
+    Sidebar(crate::sidebar::Action),
+    Cleanup(crate::cleanup::Action),
     Stash(crate::stash::Action),
     Sync(crate::sync::Action),
     Publish(crate::publish::Action),
@@ -1268,6 +1270,8 @@ pub(crate) fn menu_bar(ui: &Ui, recents: &[(String, PathBuf)], cx: &App) -> Vec<
     ];
     edit.extend(bar_items(ui, Bar::Edit));
     let mut view = bar_items(ui, Bar::View);
+    let at = bar_index(Bar::View, "view.sidebar").map_or(view.len(), |at| (at + 1).min(view.len()));
+    view.insert(at, MenuItem::submenu(Menu { name: "Sidebar Sections".into(), items: crate::sidebar::bar_items(ui) }));
     view.extend([MenuItem::separator(), MenuItem::action("Enter Full Screen", FullScreen)]);
     let mut file = bar_items(ui, Bar::File);
     let at = bar_index(Bar::File, "repo.open").map_or(file.len(), |at| (at + 1).min(file.len()));
@@ -1304,6 +1308,7 @@ fn sync_chrome<T: Desk>(app: &mut T, window: &mut Window, cx: &mut Context<T>) {
     }
     let recents = crate::start::others(app.ui(), cx, crate::start::IN_BAR);
     let mut titles = crate::commands::bar_titles(app.ui());
+    titles.extend(crate::sidebar::bar_titles(app.ui()));
     titles.extend(recents.iter().map(|(title, path)| format!("{title}\0{}", path.display())));
     titles.extend(crate::tabs::bar_titles(cx));
     if app.ui().bar_shown != titles {
@@ -1311,6 +1316,43 @@ fn sync_chrome<T: Desk>(app: &mut T, window: &mut Window, cx: &mut Context<T>) {
         cx.set_menus(menus);
         app.ui_mut().bar_shown = titles;
     }
+}
+
+fn sidebar_filter<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement {
+    let ui = app.ui();
+    let typed = !ui.refs.filter.read(cx).text().is_empty();
+    div()
+        .p_2()
+        .relative()
+        .child(ui.refs.filter.clone())
+        .when(typed, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .top(px(8.))
+                    .bottom(px(8.))
+                    .right(px(12.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .id("sidebar-filter-clear")
+                            .size(px(18.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(HOVER)))
+                            .child(kit::icon("x").size(px(11.)).text_color(rgb(TEXT_3)))
+                            .tooltip(kit::tip("Clear the filter (Esc)"))
+                            .on_click(cx.listener(|app, _, w, cx| {
+                                cx.stop_propagation();
+                                app.dispatch(Action::Sidebar(crate::sidebar::Action::ClearFilter), w, cx)
+                            })),
+                    ),
+            )
+        })
 }
 
 pub(crate) fn renamed_row_origin(files: &[FileRow], path: &Path, staged: bool) -> Option<PathBuf> {
@@ -2899,7 +2941,13 @@ pub fn render<T: Desk>(
         }))
         .on_action(cx.listener(|app, _: &FocusDesk, w, cx| {
             let ui = app.ui();
-            if ui.prompt.open() {
+            if ui.refs.filter.focus_handle(cx).is_focused(w) && !ui.prompt.open() && ui.menu.is_none() {
+                if ui.refs.filter.read(cx).text().is_empty() {
+                    focus(ui, w);
+                } else {
+                    app.dispatch(Action::Sidebar(crate::sidebar::Action::ClearFilter), w, cx);
+                }
+            } else if ui.prompt.open() {
                 app.dispatch(Action::Prompt(crate::prompt::Action::Cancel), w, cx);
             } else if ui.palette.open() {
                 app.dispatch(Action::Palette(crate::palette::Action::Close), w, cx);
@@ -2955,6 +3003,8 @@ pub fn render<T: Desk>(
                 || ui.message.focused(w, cx)
             {
                 focus(ui, w);
+            } else if crate::sidebar::picked(ui).is_some() {
+                app.dispatch(Action::Sidebar(crate::sidebar::Action::Unpick), w, cx);
             } else if let Some(id) = ui.notices.dismissable() {
                 app.dispatch(Action::Notice(crate::notice::Action::Dismiss(id)), w, cx);
             } else {
@@ -3001,7 +3051,7 @@ pub fn render<T: Desk>(
             .flex_col()
             .overflow_hidden()
             .bg(rgb(PANEL))
-            .child(div().p_2().child(ui.refs.filter.clone()))
+            .child(sidebar_filter(app, cx))
             .child(crate::refs::sidebar(app, cx))
             .child(kit::scrollbar("sidebar-scrollbar", &ui.refs.scroll));
         let centre = match centre(ui) {

@@ -14,6 +14,7 @@ use std::{
 pub(crate) enum ListId {
     Unstaged,
     Staged,
+    Branches,
 }
 
 impl ListId {
@@ -21,10 +22,11 @@ impl ListId {
         if staged { Self::Staged } else { Self::Unstaged }
     }
 
-    fn side(self) -> Side {
+    fn side(self) -> Option<Side> {
         match self {
-            Self::Unstaged => Side::Unstaged,
-            Self::Staged => Side::Staged,
+            Self::Unstaged => Some(Side::Unstaged),
+            Self::Staged => Some(Side::Staged),
+            Self::Branches => None,
         }
     }
 }
@@ -204,7 +206,7 @@ fn primary(ui: &Ui) -> Option<(ListId, &PathBuf)> {
 pub(crate) fn files(ui: &Ui) -> Option<(Vec<PathBuf>, Side)> {
     let (list, path) = primary(ui)?;
     let picked = ui.picked.as_ref().filter(|picked| picked.list == list && picked.len() > 1 && picked.contains(path))?;
-    Some((picked.ordered(&rows(ui, list)), list.side()))
+    Some((picked.ordered(&rows(ui, list)), list.side()?))
 }
 
 pub(crate) fn kept_by(ui: &Ui, selection: &Selection) -> bool {
@@ -254,8 +256,8 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             let unstaged = tab.ui.file_ranges().0.len();
             if let Some(at) = listed.iter().position(|row| row == &to) {
                 let row = match list {
-                    ListId::Unstaged => 1 + at,
                     ListId::Staged => 2 + unstaged + at,
+                    _ => 1 + at,
                 };
                 tab.ui.file_scroll.scroll_to_item(row, gpui::ScrollStrategy::Center);
             }

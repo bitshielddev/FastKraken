@@ -1157,7 +1157,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
     };
     let allowed = match action {
         A::Open | A::Refresh | A::Operation(_) | A::Merge(_) | A::Conflict(_) | A::Prompt(_) => true,
-        A::Select(_) | A::Inspect(_) | A::Search(_) | A::Reveal(_) | A::Containing(_) | A::GraphView(_) | A::Columns(_) | A::More | A::OpenDiff | A::CloseDiff | A::DiffMode(_) => true,
+        A::Select(_) | A::Inspect(_) | A::Search(_) | A::Reveal(_) | A::Containing(_) | A::GraphView(_) | A::Columns(_) | A::Sidebar(_) | A::More | A::OpenDiff | A::CloseDiff | A::DiffMode(_) => true,
         A::Text(_) | A::Syntax(_) | A::DiffOptions(_) | A::DiffText(_) | A::Find(_) | A::Images(_) | A::FileView(_) => true,
         A::Dismiss
         | A::Notice(_)
@@ -1190,14 +1190,16 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::Navigate(_) => true,
         A::Refs(action) => {
             use crate::refs::Action as R;
-            matches!(action, R::Inspect(..) | R::ToggleSection(_) | R::ToggleFolder(_) | R::ToggleList | R::Escape)
+            matches!(action, R::Inspect(..) | R::ToggleSection(_) | R::ToggleFolder(_) | R::FoldAll { .. } | R::ToggleList | R::Escape)
         }
         A::Branch(action) => matches!(action, crate::branch::Action::Restore { .. }),
+        A::Cleanup(action) => matches!(action, crate::cleanup::Action::RestoreAll(_)),
         A::Tag(action) => matches!(action, crate::tag::Action::Restore { .. }),
         A::Tracking(action) => matches!(action, crate::tracking::Action::RestoreRemote { .. }),
         A::Stash(action) => matches!(
             action,
             crate::stash::Action::Restore { .. }
+                | crate::stash::Action::RestoreAll(_)
                 | crate::stash::Action::Dismiss
                 | crate::stash::Action::OpenFile(_)
                 | crate::stash::Action::AllChanges

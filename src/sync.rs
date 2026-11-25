@@ -106,6 +106,15 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         .words(&["download", "update remote"])
         .icon("fetch"),
         Command::new(
+            "repo.prune-now",
+            Group::Sync,
+            |_, _| "Remove deleted branches now".into(),
+            |ui, target, _| fetch(ui, target),
+            |_, _| Some(view::Action::Sync(Action::PruneNow)),
+        )
+        .words(&["prune", "fetch and prune", "stale remote branches", "deleted remote branches"])
+        .icon("fetch"),
+        Command::new(
             "repo.fetch-prune",
             Group::Sync,
             |_, _| PRUNE.into(),
@@ -409,6 +418,7 @@ pub(crate) enum Action {
     Pull,
     FetchAll,
     FetchRemote(String),
+    PruneNow,
     TogglePrune,
     ToggleOptions,
     Button,
@@ -657,7 +667,8 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             cx.notify();
             return;
         }
-        Action::FetchAll => fetch_all(tab, cx),
+        Action::FetchAll => fetch_all(tab, tab.ui.sync.prune, cx),
+        Action::PruneNow => fetch_all(tab, true, cx),
         Action::FetchRemote(name) => fetch_remote(tab, name, cx),
         Action::TogglePrune => {
             toggle_prune(tab, cx);
@@ -665,7 +676,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         }
         Action::Push => push_current(tab, cx),
         Action::Pull => pull_current(tab, None, tab.ui.sync.strategy(), cx),
-        Action::Button if tab.ui.sync.default.fetch => fetch_all(tab, cx),
+        Action::Button if tab.ui.sync.default.fetch => fetch_all(tab, tab.ui.sync.prune, cx),
         Action::Button => pull_current(tab, None, tab.ui.sync.strategy(), cx),
         Action::PullWith(strategy) => pull_current(tab, None, strategy, cx),
         Action::SetDefault(mode) => {
@@ -711,10 +722,9 @@ fn remote_of(tab: &Tab, upstream: Option<&str>) -> Option<String> {
     Some(remote.to_owned())
 }
 
-fn fetch_all(tab: &mut Tab, cx: &mut Context<Tab>) {
+fn fetch_all(tab: &mut Tab, prune: bool, cx: &mut Context<Tab>) {
     let remotes = &tab.ui.refs.remotes;
     let remote = (remotes.len() == 1).then(|| remotes[0].clone());
-    let prune = tab.ui.sync.prune;
     tab.run_network_or(
         cx,
         jobs::Spec::fetch(remote),

@@ -141,6 +141,22 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         .keys("cmd-b")
         .bar(Bar::Branch),
         Command::new(
+            "repo.new-tag",
+            Group::Create,
+            |_, _| "New tag…".into(),
+            |ui, target, _| {
+                if !on_repo(ui, target) {
+                    return Availability::Hidden;
+                }
+                Availability::unless(busy(ui).or_else(|| operating(ui)).or_else(|| {
+                    ui.head.is_none().then(|| "Make the first commit before creating a tag".to_owned())
+                }))
+            },
+            |ui, _| Some(view::Action::Refs(Action::NewAt(Kind::Tag, ui.head.clone()?))),
+        )
+        .words(&["create tag", "release", "version"])
+        .icon("tag"),
+        Command::new(
             "repo.switch-branch",
             Group::Switch,
             |_, _| "Switch branch…".into(),
@@ -188,6 +204,7 @@ pub enum Action {
     Switch(OsString),
     ToggleSection(Section),
     ToggleFolder(String),
+    FoldAll { section: Section, fold: bool },
     CreateBranch(String),
 }
 
@@ -256,6 +273,9 @@ pub struct State {
     pub show_labels: bool,
     closed: Vec<Section>,
     folded: HashSet<String>,
+    pub(crate) hidden_sections: Vec<Section>,
+    pub(crate) picked: Option<crate::picked::Picked<OsString>>,
+    pub(crate) primary: Option<OsString>,
     pub(crate) rows: Vec<SideRow>,
     ticket: u64,
     pub(crate) scroll: gpui::UniformListScrollHandle,
@@ -287,6 +307,9 @@ impl State {
             show_labels,
             closed: Vec::new(),
             folded: HashSet::new(),
+            hidden_sections: Vec::new(),
+            picked: None,
+            primary: None,
             rows: Vec::new(),
             ticket: 0,
             scroll: Default::default(),
@@ -301,6 +324,10 @@ impl State {
         self.folded = view
             .map(|view| view.folded.iter().cloned().collect())
             .unwrap_or_default();
+    }
+
+    pub(crate) fn folded(&self, key: &str) -> bool {
+        self.folded.contains(key)
     }
 
     fn remembered(&self) -> (Vec<Section>, Vec<String>) {
@@ -696,6 +723,20 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             cx.notify();
             return;
         }
+        Action::FoldAll { section, fold } => {
+            let keys = folder_keys(&tab.ui.refs, *section);
+            let folded = &mut tab.ui.refs.folded;
+            for key in keys {
+                if *fold {
+                    folded.insert(key);
+                } else {
+                    folded.remove(&key);
+                }
+            }
+            remember_view(tab, cx);
+            cx.notify();
+            return;
+        }
         _ => {}
     }
     if tab.ui.busy() || tab.repo.is_none() {
@@ -793,7 +834,7 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             let stash = tab.ui.autostash.always;
             switch_to(tab, name, stash, window, cx);
         }
-        Action::Escape | Action::ToggleSection(_) | Action::ToggleFolder(_) => unreachable!(),
+        Action::Escape | Action::ToggleSection(_) | Action::ToggleFolder(_) | Action::FoldAll { .. } => unreachable!(),
     }
     cx.notify();
 }
@@ -924,7 +965,52 @@ pub(crate) fn activate_row(tab: &mut Tab, index: usize, window: &mut Window, cx:
 }
 
 
+fn kind_of(section: Section) -> Option<Kind> {
+    match section {
+        Section::Branches => Some(Kind::Branch),
+        Section::Remotes => Some(Kind::Remote),
+        Section::Tags => Some(Kind::Tag),
+        Section::Stashes => None,
+    }
+}
+
+fn parts<'a>(remotes: &'a [String], kind: Kind, name: &'a str) -> Vec<&'a str> {
+    let remote = (kind == Kind::Remote)
+        .then(|| {
+            remotes
+                .iter()
+                .filter_map(|remote| Some((remote.as_str(), name.strip_prefix(remote.as_str())?.strip_prefix('/')?)))
+                .max_by_key(|(remote, _)| remote.len())
+        })
+        .flatten();
+    match remote {
+        Some((remote, branch)) => std::iter::once(remote).chain(branch.split('/')).collect(),
+        None => name.split('/').collect(),
+    }
+}
+
+pub(crate) fn folder_keys(state: &State, section: Section) -> Vec<String> {
+    let Some(kind) = kind_of(section) else { return Vec::new() };
+    let names: Vec<String> = state.items[state.range(kind)].iter().map(|item| item.name.to_string_lossy().into_owned()).collect();
+    keys_of(section, kind, &names, &state.remotes)
+}
+
+fn keys_of(section: Section, kind: Kind, names: &[String], remotes: &[String]) -> Vec<String> {
+    let mut keys = Vec::new();
+    for name in names {
+        let parts = parts(remotes, kind, name);
+        for depth in 1..parts.len() {
+            let key = format!("{section:?}:{}", parts[..depth].join("/"));
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
+}
+
 pub(crate) fn rebuild_rows(ui: &mut view::Ui, cx: &App) {
+    crate::sidebar::retain(ui);
     let filter = ui.refs.filter.read(cx).text().trim().to_lowercase();
     let state = &ui.refs;
     let mut rows = Vec::new();
@@ -934,6 +1020,9 @@ pub(crate) fn rebuild_rows(ui: &mut view::Ui, cx: &App) {
         (Section::Tags, Some(Kind::Tag)),
         (Section::Stashes, None),
     ] {
+        if state.hidden_sections.contains(&section) {
+            continue;
+        }
         let open = !state.closed.contains(&section);
         let Some(kind) = kind else {
             let count = ui.stash.entries.len();
@@ -1191,6 +1280,31 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                             )),
                                     )
                                 })
+                                .child(
+                                    div()
+                                        .id(("side-more", i))
+                                        .invisible()
+                                        .group_hover("side-header", |s| s.visible())
+                                        .size(px(18.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(4.))
+                                        .hover(|s| s.bg(rgb(HOVER)))
+                                        .child(kit::icon("more").size(px(12.)))
+                                        .tooltip(kit::tip(format!("{title} actions")))
+                                        .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
+                                            cx.stop_propagation();
+                                            app.dispatch(
+                                                view::Action::Menu(Some(Menu::Object {
+                                                    target: Target::Section(section),
+                                                    at: event.position(),
+                                                })),
+                                                w,
+                                                cx,
+                                            )
+                                        })),
+                                )
                                 .when(left_out, |d| {
                                     d.child(
                                         div()
@@ -1230,6 +1344,12 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             remote,
                         } => {
                             let key = key.clone();
+                            let local_folder = crate::sidebar::folder_prefix(&key);
+                            let menu_folder = local_folder.clone();
+                            let folder_picked = crate::sidebar::picked(ui).is_some() && local_folder.as_ref().is_some_and(|prefix| {
+                                let inside = crate::sidebar::in_folder(ui, prefix);
+                                !inside.is_empty() && inside.iter().all(|name| crate::sidebar::is_picked(ui, name))
+                            });
                             let remote_name = name.clone();
                             let pointer_name = name.clone();
                             let folder_ref = format!("{}{name}/", crate::graph_view::REMOTES);
@@ -1248,6 +1368,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .items_center()
                                 .gap(px(5.))
                                 .cursor_pointer()
+                                .when(folder_picked, |d| d.bg(rgb(SELECTED)))
                                 .hover(|s| s.bg(rgb(HOVER)))
                                 .child(
                                     kit::icon(if *open {
@@ -1259,6 +1380,18 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                     .text_color(rgb(TEXT_3)),
                                 )
                                 .child(kit::fit(name.clone()).size(12.5).color(if left_out { TEXT_3 } else { TEXT_2 }).grow())
+                                .when_some(menu_folder, |d, prefix| {
+                                    d.on_mouse_down(MouseButton::Right, cx.listener(move |app, event: &MouseDownEvent, w, cx| {
+                                        let inside = crate::sidebar::in_folder(app.ui(), &prefix);
+                                        if inside.is_empty() {
+                                            return;
+                                        }
+                                        app.dispatch(view::Action::Menu(Some(Menu::Object {
+                                            target: Target::Branches(inside),
+                                            at: event.position,
+                                        })), w, cx);
+                                    }))
+                                })
                                 .children(eye)
                                 .when(*remote && !ui.busy(), |d| {
                                     d.on_mouse_down(MouseButton::Right, cx.listener(move |app, event: &gpui::MouseDownEvent, w, cx| {
@@ -1289,12 +1422,15 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                             })),
                                     )
                                 })
-                                .on_click(cx.listener(move |app, _, w, cx| {
-                                    app.dispatch(
-                                        view::Action::Refs(Action::ToggleFolder(key.clone())),
-                                        w,
-                                        cx,
-                                    )
+                                .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
+                                    let modifiers = event.modifiers();
+                                    let action = match &local_folder {
+                                        Some(prefix) if modifiers.platform || modifiers.shift => {
+                                            view::Action::Sidebar(crate::sidebar::Action::PickFolder(prefix.clone()))
+                                        }
+                                        _ => view::Action::Refs(Action::ToggleFolder(key.clone())),
+                                    };
+                                    app.dispatch(action, w, cx)
                                 }))
                                 .into_any_element()
                         }
@@ -1310,6 +1446,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let shown = matches!((&ui.selection, &item.oid),
                                 (Some(Selection::Commit(id)), Some(oid)) if id == oid);
                             let (switch_name, menu_name) = (item.name.clone(), item.name.clone());
+                            let picked = kind == Kind::Branch && crate::sidebar::is_picked(ui, &item.name);
                             let full = crate::graph_view::of_ref(kind, &item.name.to_string_lossy());
                             let left_out = crate::graph_view::left_out(ui, &full);
                             let eye = crate::graph_view::eye(ui, full, ("side-eye", i), "side-ref", cx);
@@ -1324,6 +1461,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .items_center()
                                 .gap(px(6.))
                                 .cursor_pointer()
+                                .when(picked, |d| d.bg(rgb(SELECTED)))
                                 .hover(|s| s.bg(rgb(HOVER)))
                                 .child(
                                     div()
@@ -1356,15 +1494,34 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .when(kind == Kind::Tag, |d| d.tooltip(kit::tip(crate::tag::tooltip(item))))
                                 .children(eye)
                                 .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
+                                    let modifiers = event.modifiers();
+                                    let how = if modifiers.platform {
+                                        Some(crate::picked::How::Toggle)
+                                    } else if modifiers.shift {
+                                        Some(crate::picked::How::Range)
+                                    } else {
+                                        None
+                                    };
+                                    if kind == Kind::Branch {
+                                        let pick = crate::sidebar::Action::Pick { name: switch_name.clone(), how };
+                                        app.dispatch(view::Action::Sidebar(pick), w, cx);
+                                        if how.is_some() {
+                                            return;
+                                        }
+                                    }
                                     let action = sidebar_click(kind, current, &switch_name, event.click_count());
                                     app.dispatch(action, w, cx)
                                 }))
                                 .on_mouse_down(
                                     MouseButton::Right,
                                     cx.listener(move |app, event: &MouseDownEvent, w, cx| {
+                                        let target = match kind {
+                                            Kind::Branch => crate::sidebar::menu_target(app.ui(), &menu_name),
+                                            _ => Target::of_ref(kind, menu_name.clone()),
+                                        };
                                         app.dispatch(
                                             view::Action::Menu(Some(Menu::Object {
-                                                target: Target::of_ref(kind, menu_name.clone()),
+                                                target,
                                                 at: event.position,
                                             })),
                                             w,
@@ -1966,6 +2123,22 @@ mod tests {
             name_problem(Kind::Tag, "v 1", []).as_deref(),
             Some("Tag names cannot contain spaces")
         );
+    }
+
+    #[test]
+    fn collapse_all_folds_every_folder_of_a_section_and_a_remote_counts_as_one() {
+        let names: Vec<String> = ["feature/ui/menu", "feature/ui/strip", "fix/one", "main"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            keys_of(Section::Branches, Kind::Branch, &names, &[]),
+            ["Branches:feature", "Branches:feature/ui", "Branches:fix"]
+        );
+        let remotes = vec!["origin".to_owned(), "origin/fork".to_owned()];
+        let names: Vec<String> = ["origin/main", "origin/fork/topic", "origin/team/x"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            keys_of(Section::Remotes, Kind::Remote, &names, &remotes),
+            ["Remotes:origin", "Remotes:origin/fork", "Remotes:origin/team"]
+        );
+        assert!(keys_of(Section::Tags, Kind::Tag, &["v1".to_owned()], &[]).is_empty());
     }
 
     #[test]

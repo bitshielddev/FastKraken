@@ -63,6 +63,8 @@ pub(crate) struct Settings {
     pub(crate) line_numbers: bool,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) graph_columns: crate::columns::Layout,
+    #[serde(deserialize_with = "storage::lenient_list")]
+    pub(crate) hidden_sections: Vec<Section>,
 }
 
 impl Settings {
@@ -111,6 +113,7 @@ impl Default for Settings {
             tab_width: None,
             line_numbers: true,
             graph_columns: crate::columns::Layout::default(),
+            hidden_sections: Vec::new(),
         }
     }
 }
@@ -628,6 +631,7 @@ mod tests {
                 date: 96.,
                 sha: 70.,
             },
+            hidden_sections: vec![Section::Tags, Section::Stashes],
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

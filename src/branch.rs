@@ -593,13 +593,13 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
     cx.notify();
 }
 
-fn full(name: &OsStr) -> OsString {
+pub(crate) fn full(name: &OsStr) -> OsString {
     let mut full = OsString::from("refs/heads/");
     full.push(name);
     full
 }
 
-fn plain(name: &OsStr) -> Result<(), String> {
+pub(crate) fn plain(name: &OsStr) -> Result<(), String> {
     if name.is_empty() || name.as_bytes()[0] == b'-' {
         return Err("Select a branch by its name.".into());
     }
@@ -631,7 +631,7 @@ fn key(name: &OsStr, field: &str) -> OsString {
     key
 }
 
-pub(crate) fn delete(repo: &Repository, name: &OsStr, tip: &str) -> Result<Outcome, String> {
+pub(crate) fn remove(repo: &Repository, name: &OsStr, tip: &str) -> Result<Option<Tracking>, String> {
     plain(name)?;
     repo.expect_ref(&full(name), tip)?;
     let tracking = match (config(repo, &key(name, "remote"))?, config(repo, &key(name, "merge"))?) {
@@ -639,6 +639,11 @@ pub(crate) fn delete(repo: &Repository, name: &OsStr, tip: &str) -> Result<Outco
         _ => None,
     };
     checked(repo.command().args(["branch", "-D", "--"]).arg(name))?;
+    Ok(tracking)
+}
+
+pub(crate) fn delete(repo: &Repository, name: &OsStr, tip: &str) -> Result<Outcome, String> {
+    let tracking = remove(repo, name, tip)?;
     let shown = name.to_string_lossy();
     let restore = Action::Restore { name: name.to_owned(), oid: tip.to_owned(), tracking };
     Ok(Outcome::titled(format!("Deleted branch {shown}"), format!("was {}", notice::short(tip)))
@@ -646,7 +651,7 @@ pub(crate) fn delete(repo: &Repository, name: &OsStr, tip: &str) -> Result<Outco
         .sticky())
 }
 
-fn restore(repo: &Repository, name: &OsStr, oid: &str, tracking: Option<&Tracking>) -> Result<Outcome, String> {
+pub(crate) fn restore(repo: &Repository, name: &OsStr, oid: &str, tracking: Option<&Tracking>) -> Result<Outcome, String> {
     plain(name)?;
     validate_oid(oid)?;
     if let Some(tracking) = tracking {

@@ -10,6 +10,8 @@ use gpui::{
 
 actions!(fastkraken_prompt, [Return, Accept]);
 
+const ITEMS_HEIGHT: f32 = 240.;
+
 pub(crate) fn bindings(cx: &mut App) {
     let modifier = if cfg!(target_os = "macos") {
         "cmd"
@@ -33,8 +35,16 @@ pub(crate) struct Spec {
     pub second: Option<Field>,
     pub note: Option<Note>,
     pub tick: Option<(SharedString, bool)>,
+    pub items: Vec<Item>,
     pub choices: Vec<Choice>,
     pub unblocked: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Item {
+    pub label: String,
+    pub detail: String,
+    pub ticked: bool,
 }
 
 pub(crate) struct Note {
@@ -58,9 +68,15 @@ impl Spec {
             second: None,
             note: None,
             tick: None,
+            items: Vec::new(),
             choices: Vec::new(),
             unblocked: false,
         }
+    }
+
+    pub(crate) fn item(mut self, label: impl Into<String>, detail: impl Into<String>, ticked: bool) -> Self {
+        self.items.push(Item { label: label.into(), detail: detail.into(), ticked });
+        self
     }
 
     pub(crate) fn line(mut self, line: impl Into<String>) -> Self {
@@ -93,6 +109,7 @@ pub(crate) struct Answer {
     pub second: String,
     pub choice: Option<usize>,
     pub tick: bool,
+    pub items: Vec<bool>,
 }
 
 #[derive(Debug)]
@@ -115,6 +132,7 @@ pub(crate) enum Kind {
     Address(crate::address::Ask),
     Ignore(crate::ignore::Ask),
     Recover(crate::recover::Ask),
+    Cleanup(crate::cleanup::Ask),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -137,6 +155,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Address(ask) => crate::address::describe(ask, ui),
         Kind::Ignore(ask) => crate::ignore::describe(ask),
         Kind::Recover(ask) => crate::recover::describe(ask, ui),
+        Kind::Cleanup(ask) => crate::cleanup::describe(ask, ui),
     }
 }
 
@@ -160,6 +179,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Address(ask) => crate::address::confirm(tab, ask, answer, cx),
         Kind::Ignore(ask) => crate::ignore::confirm(tab, ask, cx),
         Kind::Recover(ask) => crate::recover::confirm(tab, ask, cx),
+        Kind::Cleanup(ask) => crate::cleanup::confirm(tab, ask, answer, cx),
     }
 }
 
@@ -169,6 +189,7 @@ pub(crate) enum Action {
     Cancel,
     Return,
     Toggle,
+    ToggleItem(usize),
     Choose(usize),
     Next,
     Previous,
@@ -179,6 +200,7 @@ pub(crate) enum Stop {
     Field,
     Second,
     Tick,
+    Item(usize),
     Cancel,
     Confirm,
     Choice(usize),
@@ -189,9 +211,11 @@ pub(crate) struct State {
     field: Option<Entity<CommitInput>>,
     second: Option<Entity<CommitInput>>,
     tick: bool,
+    items: Vec<bool>,
     cancel: FocusHandle,
     confirm: FocusHandle,
     toggle: FocusHandle,
+    item_handles: Vec<FocusHandle>,
     choices: Vec<FocusHandle>,
     focus_pending: bool,
     restore: Option<FocusHandle>,
@@ -204,9 +228,11 @@ impl State {
             field: None,
             second: None,
             tick: false,
+            items: Vec::new(),
             cancel: cx.focus_handle(),
             confirm: cx.focus_handle(),
             toggle: cx.focus_handle(),
+            item_handles: Vec::new(),
             choices: Vec::new(),
             focus_pending: false,
             restore: None,
@@ -226,6 +252,7 @@ impl State {
             Stop::Field => self.field.as_ref().map(|field| field.focus_handle(cx)),
             Stop::Second => self.second.as_ref().map(|field| field.focus_handle(cx)),
             Stop::Tick => Some(self.toggle.clone()),
+            Stop::Item(i) => self.item_handles.get(i).cloned(),
             Stop::Cancel => Some(self.cancel.clone()),
             Stop::Confirm => Some(self.confirm.clone()),
             Stop::Choice(i) => self.choices.get(i).cloned(),
@@ -235,6 +262,7 @@ impl State {
     pub(crate) fn focused(&self, window: &Window, cx: &App) -> Option<Stop> {
         [Stop::Field, Stop::Second, Stop::Tick, Stop::Cancel, Stop::Confirm]
             .into_iter()
+            .chain((0..self.item_handles.len()).map(Stop::Item))
             .chain((0..self.choices.len()).map(Stop::Choice))
             .find(|stop| self.handle(*stop, cx).is_some_and(|h| h.is_focused(window)))
     }
@@ -264,6 +292,18 @@ impl State {
     pub(crate) fn ticked(&self) -> bool {
         self.tick
     }
+
+    pub(crate) fn items(&self) -> &[bool] {
+        &self.items
+    }
+}
+
+pub(crate) fn ticks(spec_items: &[Item], state: &[bool]) -> Vec<bool> {
+    if state.len() == spec_items.len() {
+        state.to_vec()
+    } else {
+        spec_items.iter().map(|item| item.ticked).collect()
+    }
 }
 
 pub(crate) fn ask(ui: &mut Ui, kind: Kind, cx: &mut Context<Tab>) {
@@ -285,6 +325,8 @@ pub(crate) fn ask(ui: &mut Ui, kind: Kind, cx: &mut Context<Tab>) {
     state.field = spec.field.map(&mut made);
     state.second = spec.second.map(&mut made);
     state.tick = spec.tick.is_some_and(|(_, ticked)| ticked);
+    state.items = spec.items.iter().map(|item| item.ticked).collect();
+    state.item_handles = spec.items.iter().map(|_| cx.focus_handle()).collect();
     state.choices = spec.choices.iter().map(|_| cx.focus_handle()).collect();
     state.asked = Some(kind);
     state.focus_pending = true;
@@ -296,6 +338,9 @@ pub(crate) fn shown(ui: &Ui) -> Option<Spec> {
 }
 
 fn problem(spec: &Spec, text: &str, second: &str, ui: &Ui) -> Option<String> {
+    if !spec.items.is_empty() && !ticks(&spec.items, ui.prompt.items()).contains(&true) {
+        return Some(String::new());
+    }
     spec.field
         .as_ref()
         .and_then(|field| (field.validate)(text, ui))
@@ -307,6 +352,8 @@ pub(crate) fn withdraw(ui: &mut Ui, cx: &mut Context<Tab>) {
     state.asked = None;
     state.field = None;
     state.second = None;
+    state.items.clear();
+    state.item_handles.clear();
     state.choices.clear();
     state.focus_pending = false;
     state.restore = None;
@@ -315,7 +362,7 @@ pub(crate) fn withdraw(ui: &mut Ui, cx: &mut Context<Tab>) {
 }
 
 pub(crate) fn stops(spec: &Spec, can_confirm: bool) -> Vec<Stop> {
-    let mut stops = Vec::with_capacity(5 + spec.choices.len());
+    let mut stops = Vec::with_capacity(5 + spec.items.len() + spec.choices.len());
     if spec.field.is_some() {
         stops.push(Stop::Field);
     }
@@ -325,6 +372,7 @@ pub(crate) fn stops(spec: &Spec, can_confirm: bool) -> Vec<Stop> {
     if spec.tick.is_some() {
         stops.push(Stop::Tick);
     }
+    stops.extend((0..spec.items.len()).map(Stop::Item));
     if spec.choices.is_empty() {
         stops.push(Stop::Cancel);
         if can_confirm {
@@ -364,6 +412,7 @@ pub(crate) fn on_return(spec: &Spec, focused: Option<Stop>) -> Action {
     match focused {
         Some(Stop::Cancel) => Action::Cancel,
         Some(Stop::Tick) => Action::Toggle,
+        Some(Stop::Item(i)) => Action::ToggleItem(i),
         Some(Stop::Choice(i)) => match spec.choices.get(i) {
             Some(choice) if !choice.danger => Action::Choose(i),
             _ => Action::Cancel,
@@ -401,6 +450,7 @@ fn close(tab: &mut Tab, window: &mut Window) {
     }
     state.field = None;
     state.second = None;
+    state.item_handles.clear();
     state.choices.clear();
     state.focus_pending = false;
     let restore = state.restore.take();
@@ -430,6 +480,11 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::Confirm | Action::Return | Action::Choose(_) => {}
         Action::Toggle if spec.tick.is_some() => tab.ui.prompt.tick = !tab.ui.prompt.tick,
         Action::Toggle => {}
+        Action::ToggleItem(i) => {
+            if let Some(ticked) = tab.ui.prompt.items.get_mut(i) {
+                *ticked = !*ticked;
+            }
+        }
         Action::Next | Action::Previous => {
             let stops = stops(&spec, can_confirm);
             let from = tab.ui.prompt.focused(window, cx);
@@ -448,6 +503,7 @@ fn answer(tab: &mut Tab, text: String, second: String, choice: Option<usize>, wi
         second,
         choice,
         tick: tab.ui.prompt.tick,
+        items: std::mem::take(&mut tab.ui.prompt.items),
     };
     let Some(kind) = tab.ui.prompt.asked.take() else {
         return;
@@ -464,7 +520,11 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
     let second = state.second_text(cx);
     let first_problem = spec.field.as_ref().and_then(|field| (field.validate)(&text, ui));
     let second_problem = spec.second.as_ref().and_then(|field| (field.validate)(&second, ui));
-    let can_confirm = (spec.unblocked || !ui.busy()) && first_problem.is_none() && second_problem.is_none();
+    let ticked = ticks(&spec.items, state.items());
+    let can_confirm = (spec.unblocked || !ui.busy())
+        && first_problem.is_none()
+        && second_problem.is_none()
+        && (spec.items.is_empty() || ticked.contains(&true));
     let help = |field: &Field, problem: Option<String>| -> Option<SharedString> {
         match problem.filter(|problem| !problem.is_empty()) {
             Some(problem) => Some(problem.into()),
@@ -529,6 +589,54 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
                     app.dispatch(toggle.clone(), w, cx)
                 })),
         );
+    }
+    if !spec.items.is_empty() {
+        let mut list = div()
+            .id("prompt-items")
+            .max_h(px(ITEMS_HEIGHT))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .rounded(px(RADIUS))
+            .border_1()
+            .border_color(rgb(LINE))
+            .bg(rgb(CANVAS))
+            .py_1();
+        for (i, (item, handle)) in spec.items.iter().zip(&state.item_handles).enumerate() {
+            let toggle = act(Action::ToggleItem(i));
+            let on = ticked.get(i).copied().unwrap_or(item.ticked);
+            list = list.child(
+                div()
+                    .id(("prompt-item", i))
+                    .key_context("DeskButton")
+                    .track_focus(handle)
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap_2()
+                    .mx_1()
+                    .px_2()
+                    .py(px(3.))
+                    .rounded(px(RADIUS_CHIP))
+                    .border_1()
+                    .border_color(kit::clear())
+                    .focus(|s| s.border_color(rgb(ACCENT)))
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .cursor_pointer()
+                    .text_size(px(12.5))
+                    .child(kit::checkbox(on))
+                    .child(kit::fit(item.label.clone()).grow())
+                    .child(kit::muted(item.detail.clone()).flex_shrink_0())
+                    .on_click(cx.listener({
+                        let toggle = toggle.clone();
+                        move |app, _, w, cx| app.dispatch(toggle.clone(), w, cx)
+                    }))
+                    .on_action(cx.listener(move |app, _: &ActivateControl, w, cx| {
+                        app.dispatch(toggle.clone(), w, cx)
+                    })),
+            );
+        }
+        body = body.child(list);
     }
     let confirm = kit::btn("prompt-confirm", spec.confirm.clone()).enabled(can_confirm);
     let confirm = if spec.danger {
@@ -656,6 +764,19 @@ mod tests {
         assert_eq!(order, [Stop::Cancel, Stop::Confirm]);
         assert_eq!(cycle(&order, Some(Stop::Confirm), true), Stop::Cancel);
         assert_eq!(cycle(&order, Some(Stop::Cancel), false), Stop::Confirm);
+    }
+
+    #[test]
+    fn ticked_rows_sit_between_the_field_and_the_buttons_and_return_toggles_them() {
+        let spec = Spec::new("Delete merged branches", "Delete branches")
+            .item("feature/ford", "merged", true)
+            .item("stale", "remote branch gone", false);
+        assert_eq!(stops(&spec, true), [Stop::Item(0), Stop::Item(1), Stop::Cancel, Stop::Confirm]);
+        assert!(matches!(on_return(&spec, Some(Stop::Item(1))), Action::ToggleItem(1)));
+        assert!(matches!(on_return(&spec, Some(Stop::Confirm)), Action::Confirm));
+        assert_eq!(ticks(&spec.items, &[]), [true, false]);
+        assert_eq!(ticks(&spec.items, &[false, true]), [false, true]);
+        assert_eq!(ticks(&spec.items, &[false]), [true, false]);
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub(crate) enum Target {
     Repo,
     Commit(String),
     Branch(OsString),
+    Branches(Vec<OsString>),
     RemoteBranch(OsString),
     Tag(OsString),
     Stash(String),
@@ -291,6 +292,8 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::cli::COMMANDS,
         crate::columns::COMMANDS,
         crate::graph_view::COMMANDS,
+        crate::sidebar::COMMANDS,
+        crate::cleanup::COMMANDS,
     ]
     .into_iter()
     .flatten()
@@ -393,6 +396,9 @@ fn rows(ui: &Ui, target: &Target, cx: &App, flat: bool) -> Vec<Entry> {
         if let Some(row) = switch_here(ui, oid, cx) {
             entries.insert(0, row);
         }
+    }
+    if let Target::Section(section) = target {
+        entries.extend(listed(ui, &Target::Repo, crate::sidebar::repo_rows(*section), cx));
     }
     entries.sort_by_key(|entry| entry.group);
     entries
@@ -1053,7 +1059,7 @@ mod tests {
         assert_eq!(ids(Bar::Window), ["tab.next", "tab.previous"]);
         assert_eq!(bar_index(Bar::File, "repo.labels"), None);
         assert_eq!(ids(Bar::Edit), ["repo.find", "view.find-next", "view.find-previous"]);
-        assert_eq!(ids(Bar::View), ["view.sidebar", "view.panel", "view.diff-mode", "view.activity", "repo.labels", "graph.only-current", "graph.author"]);
+        assert_eq!(ids(Bar::View), ["view.sidebar", "view.panel", "view.diff-mode", "view.activity", "repo.labels", "graph.only-current", "graph.author", "view.filter-sidebar"]);
         assert_eq!(
             ids(Bar::Repository),
             [

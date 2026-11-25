@@ -314,6 +314,7 @@ pub(crate) fn mirror(tab: &mut Tab, cx: &mut Context<Tab>) {
         ui.rewrap();
     }
     ui.refs.show_labels = chosen.show_ref_labels;
+    ui.refs.hidden_sections = chosen.hidden_sections.clone();
     ui.graph_columns.layout = chosen.graph_columns.clone();
     ui.sync.prune = chosen.prune_on_fetch;
     ui.autostash.always = chosen.stash_in_the_way;

@@ -135,6 +135,23 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             tab.ui.refs.message.update(cx, |input, cx| input.set_text(argument, cx));
             None
         }
+        "cleanup" => Some(Action::Cleanup(crate::cleanup::Action::AskMerged)),
+        "pickbranch" => Some(Action::Sidebar(crate::sidebar::Action::Pick {
+            name: argument.into(),
+            how: Some(crate::picked::How::Toggle),
+        })),
+        "sectionmenu" => {
+            let section = match argument {
+                "remotes" => refs::Section::Remotes,
+                "tags" => refs::Section::Tags,
+                "stashes" => refs::Section::Stashes,
+                _ => refs::Section::Branches,
+            };
+            Some(Action::Menu(Some(Menu::Object {
+                target: crate::commands::Target::Section(section),
+                at: gpui::point(px(150.), px(80.)),
+            })))
+        }
         "pull" => Some(Action::Sync(sync::Action::ToggleOptions)),
         "fetch" => Some(Action::Sync(sync::Action::FetchAll)),
         "push" => Some(Action::Sync(sync::Action::Push)),

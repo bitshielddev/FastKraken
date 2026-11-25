@@ -176,6 +176,24 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         .words(&["delete stash", "remove stash"])
         .icon("x")
         .danger(),
+        Command::new(
+            "stash.drop-all",
+            Group::Manage,
+            |_, _| "Drop all stashes…".into(),
+            |ui, target, _| {
+                let on_section = matches!(target, Target::Section(crate::refs::Section::Stashes)) && !ui.repo.is_empty();
+                if !on_section && !on_repo(ui, target) {
+                    return Availability::Hidden;
+                }
+                Availability::unless(busy(ui).or_else(|| operating(ui)).or_else(|| {
+                    ui.stash.entries.is_empty().then(|| "There are no stashes".to_owned())
+                }))
+            },
+            |_, _| Some(view::Action::Stash(Action::DropAll)),
+        )
+        .words(&["clear stashes", "delete every stash", "remove all stashes"])
+        .icon("x")
+        .danger(),
     ]
 };
 
@@ -1024,6 +1042,47 @@ impl Repository {
         .sticky())
     }
 
+    pub(crate) fn drop_all_stashes(&self, expected: &[String]) -> Result<Outcome, String> {
+        let entries = self.stashes()?;
+        let listed: Vec<&str> = entries.iter().map(|entry| entry.oid.as_str()).collect();
+        if listed.is_empty() || listed != expected.iter().map(String::as_str).collect::<Vec<_>>() {
+            return Err("The stash list changed. Review it and try again.".into());
+        }
+        checked(self.command().args(["update-ref", "-d", "refs/stash", listed[0]]))?;
+        let kept: Vec<(String, String)> = entries.iter().map(|entry| (entry.oid.clone(), entry.message.clone())).collect();
+        let title = match kept.len() {
+            1 => "Dropped 1 stash".to_owned(),
+            n => format!("Dropped {n} stashes"),
+        };
+        let offer = if kept.len() == 1 { "Restore" } else { "Restore all" };
+        Ok(Outcome::titled(title, "The stash list is empty.")
+            .offer(offer, view::Action::Stash(Action::RestoreAll(kept)))
+            .sticky())
+    }
+
+    pub(crate) fn restore_all_stashes(&self, kept: &[(String, String)]) -> Result<Outcome, String> {
+        let entries = self.stashes()?;
+        let mut restored = 0;
+        for (oid, message) in kept.iter().rev() {
+            validate_oid(oid)?;
+            if entries.iter().any(|entry| &entry.oid == oid) {
+                continue;
+            }
+            self.store_stash(oid, message)?;
+            restored += 1;
+        }
+        if restored == 0 {
+            return Err("These stashes are already in the stash list.".into());
+        }
+        Ok(Outcome::titled(
+            match restored {
+                1 => "Restored 1 stash".to_owned(),
+                n => format!("Restored {n} stashes"),
+            },
+            "",
+        ))
+    }
+
     fn restore_stash(&self, oid: &str, message: &str) -> Result<Outcome, String> {
         validate_oid(oid)?;
         let entries = self.stashes()?;
@@ -1224,7 +1283,9 @@ pub enum Action {
     Rename(String),
     Drop(String),
     DropNow(String),
+    DropAll,
     Restore { oid: String, message: String },
+    RestoreAll(Vec<(String, String)>),
 }
 
 #[derive(Debug)]
@@ -1241,6 +1302,7 @@ pub(crate) enum Ask {
         position: usize,
     },
     RestoreFile(Restore),
+    DropAll { oids: Vec<String> },
 }
 
 pub(crate) fn describe(ask: &Ask, _: &Ui) -> Spec {
@@ -1270,6 +1332,17 @@ pub(crate) fn describe(ask: &Ask, _: &Ui) -> Spec {
                 }),
             });
             spec
+        }
+        Ask::DropAll { oids } => {
+            let what = match oids.len() {
+                1 => "the stash".to_owned(),
+                n => format!("all {n} stashes"),
+            };
+            let (confirm, line) = match oids.len() {
+                1 => ("Drop stash", "Its changes leave the stash list. Restore, in the notice that follows, puts it back."),
+                _ => ("Drop all stashes", "Their changes leave the stash list. Restore all, in the notice that follows, puts them back."),
+            };
+            Spec::new(format!("Drop {what}?"), confirm).line(line).danger()
         }
         Ask::RestoreFile(restore) => {
             let name = restore.name();
@@ -1316,6 +1389,14 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<
             |_, _| {},
         ),
         Ask::RestoreFile(restore) => restore_file(tab, restore, cx),
+        Ask::DropAll { oids } => tab.run_operation_then(
+            cx,
+            "Dropping the stashes…",
+            "Stashes dropped",
+            false,
+            move |repo| repo.drop_all_stashes(&oids),
+            |_, _| {},
+        ),
     }
 }
 
@@ -1523,6 +1604,22 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
         ),
         Action::Rename(oid) => ask_about(tab, oid, false, cx),
         Action::Drop(oid) => ask_about(tab, oid, true, cx),
+        Action::DropAll => {
+            if tab.ui.busy() || tab.ui.dialog_open() || tab.ui.stash.entries.is_empty() {
+                return;
+            }
+            let oids = tab.ui.stash.entries.iter().map(|entry| entry.oid.clone()).collect();
+            tab.ui.menu = None;
+            prompt::ask(&mut tab.ui, prompt::Kind::Stash(Ask::DropAll { oids }), cx);
+        }
+        Action::RestoreAll(kept) => tab.run_operation_then(
+            cx,
+            "Restoring the stashes…",
+            "Stashes restored",
+            false,
+            move |repo| repo.restore_all_stashes(&kept),
+            |_, _| {},
+        ),
         Action::AskRestoreFile { oid, path } => {
             if tab.ui.busy() || tab.ui.dialog_open() || restore_refusal(&tab.ui).is_some() {
                 return;
@@ -2311,6 +2408,43 @@ mod tests {
         assert_eq!(f.repo.restore_stash(&oid, &message).unwrap_err(), "This stash is already in the stash list.");
         assert!(f.repo.restore_stash(&head, "On main: not a stash").is_err());
         assert_eq!(f.repo.stashes().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn dropping_every_stash_empties_the_list_and_restore_all_brings_them_back_in_order() {
+        let (f, oids) = stacked(&["first", "second", "third"]);
+        let head = rev(&f, "HEAD");
+        let before = listed(&f);
+        let newest_first: Vec<String> = oids.iter().rev().cloned().collect();
+        let outcome = f.repo.drop_all_stashes(&newest_first).unwrap();
+        assert_eq!(outcome.title, "Dropped 3 stashes");
+        assert!(outcome.sticky);
+        assert!(!exists(&f, "refs/stash"));
+        assert_eq!(rev(&f, "HEAD"), head);
+        assert_eq!(f.git(&["status", "--porcelain=v1"]), b"");
+        let Some((label, view::Action::Stash(Action::RestoreAll(kept)))) = outcome.actions.into_iter().next() else {
+            panic!("Drop all offers no restore");
+        };
+        assert_eq!(label.as_ref(), "Restore all");
+        let restored = f.repo.restore_all_stashes(&kept).unwrap();
+        assert_eq!(restored.title, "Restored 3 stashes");
+        assert_eq!(listed(&f), before);
+        assert_eq!(f.repo.restore_all_stashes(&kept).unwrap_err(), "These stashes are already in the stash list.");
+    }
+
+    #[test]
+    fn dropping_every_stash_is_refused_when_the_list_changed() {
+        let (f, oids) = stacked(&["first", "second"]);
+        let before = listed(&f);
+        let stale: Vec<String> = vec![oids[1].clone()];
+        assert_eq!(f.repo.drop_all_stashes(&stale).unwrap_err(), "The stash list changed. Review it and try again.");
+        assert_eq!(listed(&f), before);
+        f.git(&["stash", "drop", "-q", "stash@{0}"]);
+        let both: Vec<String> = oids.iter().rev().cloned().collect();
+        assert_eq!(f.repo.drop_all_stashes(&both).unwrap_err(), "The stash list changed. Review it and try again.");
+        assert!(exists(&f, "refs/stash"));
+        f.git(&["stash", "drop", "-q"]);
+        assert!(f.repo.drop_all_stashes(&[]).is_err());
     }
 
     #[test]

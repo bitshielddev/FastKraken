@@ -322,6 +322,8 @@ fn highlighted(ui: &Ui, cx: &App) -> Option<usize> {
 #[derive(Clone, Debug)]
 pub enum Action {
     Hide(String),
+    HideEach(Vec<String>),
+    SoloEach(Vec<String>),
     Show(String),
     ShowAll(String),
     Solo(String),
@@ -389,6 +391,20 @@ fn change(tab: &mut Tab, widened: bool, window: &mut Window, cx: &mut Context<Ta
     remember(tab, cx);
 }
 
+fn hide(view: &mut GraphView, name: String) {
+    if name.ends_with('/') {
+        view.hidden.retain(|entry| !entry.starts_with(&name));
+    }
+    view.solo.retain(|entry| !covers(&name, entry));
+    view.hidden.insert(name);
+}
+
+fn solo(view: &mut GraphView, name: String) {
+    view.only_current = false;
+    view.hidden.retain(|entry| !covers(entry, &name));
+    view.solo.insert(name);
+}
+
 pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
     match action {
         Action::Hide(name) => {
@@ -396,13 +412,21 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
                 tab.error(format!("{name} is not a ref FastKraken can hide from the graph."), cx);
                 return;
             }
-            change(tab, false, window, cx, |view| {
-                if name.ends_with('/') {
-                    view.hidden.retain(|entry| !entry.starts_with(&name));
-                }
-                view.solo.retain(|entry| !covers(&name, entry));
-                view.hidden.insert(name);
-            });
+            change(tab, false, window, cx, |view| hide(view, name));
+        }
+        Action::HideEach(names) => {
+            if let Some(name) = names.iter().find(|name| !hideable(name)) {
+                tab.error(format!("{name} is not a ref FastKraken can hide from the graph."), cx);
+                return;
+            }
+            change(tab, false, window, cx, |view| names.into_iter().for_each(|name| hide(view, name)));
+        }
+        Action::SoloEach(names) => {
+            if let Some(name) = names.iter().find(|name| !hideable(name)) {
+                tab.error(format!("{name} is not a ref FastKraken can show alone in the graph."), cx);
+                return;
+            }
+            change(tab, false, window, cx, |view| names.into_iter().for_each(|name| solo(view, name)));
         }
         Action::Show(name) => change(tab, true, window, cx, |view| {
             view.hidden.retain(|entry| !covers(entry, &name));
@@ -415,11 +439,7 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
                 tab.error(format!("{name} is not a ref FastKraken can show alone in the graph."), cx);
                 return;
             }
-            change(tab, false, window, cx, |view| {
-                view.only_current = false;
-                view.hidden.retain(|entry| !covers(entry, &name));
-                view.solo.insert(name);
-            });
+            change(tab, false, window, cx, |view| solo(view, name));
         }
         Action::Unsolo(name) => change(tab, true, window, cx, |view| {
             view.solo.remove(&name);
@@ -620,6 +640,12 @@ fn when_ref(ui: &Ui, target: &Target, wanted: impl Fn(&GraphView, &str) -> bool)
     }
 }
 
+fn picked_names(target: &Target) -> Option<Vec<String>> {
+    let Target::Branches(names) = target else { return None };
+    let names: Vec<String> = names.iter().map(|name| of_ref(Kind::Branch, &name.to_string_lossy())).collect();
+    names.iter().all(|name| hideable(name)).then_some(names)
+}
+
 fn on_section(target: &Target) -> Option<Section> {
     match target {
         Target::Section(section) => Some(*section),
@@ -669,6 +695,32 @@ pub(crate) const COMMANDS: &[Command] = &[
         |_, _| "Stop soloing".into(),
         |ui, target, _| when_ref(ui, target, |view, name| view.solo.contains(name)),
         |ui, target| Some(view::Action::GraphView(Action::Unsolo(hideable_target(ui, target)?))),
+    )
+    .icon("crosshair"),
+    Command::new(
+        "graph.hide-picked",
+        Group::View,
+        |_, target| picked_names(target).map_or_else(String::new, |names| format!("Hide {} branches in the graph", names.len())),
+        |ui, target, _| match picked_names(target) {
+            Some(names) if !ui.repo.is_empty() && names.iter().any(|name| ui.graph_view.hidden_by(name).is_none()) => {
+                Availability::Enabled
+            }
+            _ => Availability::Hidden,
+        },
+        |_, target| Some(view::Action::GraphView(Action::HideEach(picked_names(target)?))),
+    )
+    .icon("eye-off"),
+    Command::new(
+        "graph.solo-picked",
+        Group::View,
+        |_, target| picked_names(target).map_or_else(String::new, |names| format!("Solo {} branches", names.len())),
+        |ui, target, _| match picked_names(target) {
+            Some(names) if !ui.repo.is_empty() && names.iter().any(|name| !ui.graph_view.solo.contains(name)) => {
+                Availability::Enabled
+            }
+            _ => Availability::Hidden,
+        },
+        |_, target| Some(view::Action::GraphView(Action::SoloEach(picked_names(target)?))),
     )
     .icon("crosshair"),
     Command::new(
