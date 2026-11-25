@@ -1194,6 +1194,8 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         }
         A::Branch(action) => matches!(action, crate::branch::Action::Restore { .. }),
         A::Cleanup(action) => matches!(action, crate::cleanup::Action::RestoreAll(_)),
+        A::Drag(action) => matches!(action, crate::drag::Action::Drop { .. } | crate::drag::Action::Restore { .. }),
+        A::PushTo(_) => false,
         A::Tag(action) => matches!(action, crate::tag::Action::Restore { .. }),
         A::Tracking(action) => matches!(action, crate::tracking::Action::RestoreRemote { .. }),
         A::Stash(action) => matches!(

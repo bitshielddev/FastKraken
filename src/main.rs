@@ -22,6 +22,7 @@ mod diff_options;
 mod diff_select;
 mod diff_text;
 mod discard;
+mod drag;
 mod environment;
 mod explain;
 mod file_view;
@@ -56,6 +57,7 @@ mod rebase;
 mod recover;
 mod prompt;
 mod publish;
+mod push_to;
 mod refs;
 mod remotes;
 mod repository;
@@ -1604,6 +1606,8 @@ impl Tab {
             Action::Columns(action) => columns::dispatch(self, action, window, cx),
             Action::Sidebar(action) => sidebar::dispatch(self, action, window, cx),
             Action::Cleanup(action) => cleanup::dispatch(self, action, window, cx),
+            Action::Drag(action) => drag::dispatch(self, action, window, cx),
+            Action::PushTo(action) => push_to::dispatch(self, action, window, cx),
             Action::ViewChanges => {
                 if let Some(first) = self.ui.files.first() {
                     self.follow = Follow::Nothing;

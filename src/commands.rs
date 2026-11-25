@@ -32,6 +32,7 @@ pub(crate) enum Target {
     Lines { path: PathBuf, side: Side, count: usize },
     Columns,
     Section(crate::refs::Section),
+    Pair { dragged: Box<Target>, onto: Box<Target> },
 }
 
 impl Target {
@@ -294,6 +295,8 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::graph_view::COMMANDS,
         crate::sidebar::COMMANDS,
         crate::cleanup::COMMANDS,
+        crate::push_to::COMMANDS,
+        crate::drag::COMMANDS,
     ]
     .into_iter()
     .flatten()
@@ -399,6 +402,12 @@ fn rows(ui: &Ui, target: &Target, cx: &App, flat: bool) -> Vec<Entry> {
     }
     if let Target::Section(section) = target {
         entries.extend(listed(ui, &Target::Repo, crate::sidebar::repo_rows(*section), cx));
+    }
+    for (title, other) in crate::drag::alternatives(ui, target) {
+        let children = rows(ui, &other, cx, true);
+        if !children.is_empty() {
+            entries.push(submenu("drop.also", title, "cloud", Group::View, children));
+        }
     }
     entries.sort_by_key(|entry| entry.group);
     entries
@@ -724,7 +733,7 @@ pub(crate) fn surface<T: Desk>(entries: Vec<Entry>, width: f32, cursor: Cursor, 
         let highlighted = cursor.row == Some(index);
         let parent = !entry.children.is_empty();
         if highlighted && cursor.open && parent {
-            let marked = entry.children.iter().any(|child| child.mark.is_some());
+            let marked = entry.children.iter().any(|child| child.mark.is_some()) || entry.id == "drop.also";
             let rows: Vec<_> = entry
                 .children
                 .drain(..)

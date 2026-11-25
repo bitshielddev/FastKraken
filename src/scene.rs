@@ -136,6 +136,15 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             None
         }
         "cleanup" => Some(Action::Cleanup(crate::cleanup::Action::AskMerged)),
+        "drop" => argument.split_once('>').map(|(dragged, onto)| {
+            Action::Drag(crate::drag::Action::Drop {
+                dragged: crate::commands::Target::Branch(dragged.into()),
+                dragged_also: None,
+                onto: crate::commands::Target::Branch(onto.into()),
+                onto_also: None,
+                at: gpui::point(px(520.), px(150.)),
+            })
+        }),
         "pickbranch" => Some(Action::Sidebar(crate::sidebar::Action::Pick {
             name: argument.into(),
             how: Some(crate::picked::How::Toggle),

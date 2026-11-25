@@ -3,7 +3,7 @@ use crate::{
     PAGE,
     columns::{self, Column, Layout, Widths},
     commands::{self, Target},
-    containing, graph_view, inspection, notice, paging,
+    containing, drag, graph_view, inspection, notice, paging,
     picked::How,
     prompt, sidebar,
     refs::Kind,
@@ -182,6 +182,7 @@ impl Replay<'_> {
         self.solo_a_branch(dir).await?;
         self.hide_a_remote(dir).await?;
         self.delete_merged_branches(dir).await?;
+        self.drop_a_branch_on_another(dir).await?;
         self.tidy_the_sidebar(dir).await
     }
 
@@ -1522,6 +1523,218 @@ impl Replay<'_> {
         self.key("escape")?;
         self.until("Esc unpicked the folder", |tab| sidebar::picked(&tab.ui).is_none()).await?;
         git_is(&root, &["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], &before)?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn dropped(&mut self, dragged: Target, onto: Target, onto_also: Option<Target>) -> Result<Vec<(String, &'static str, bool, Option<Action>)>> {
+        let at = point(px(420.), px(240.));
+        let drop = drag::Action::Drop { dragged: dragged.clone(), dragged_also: None, onto: onto.clone(), onto_also, at };
+        self.action(Action::Drag(drop))?;
+        let wanted = drag::pair(dragged, onto);
+        self.until("the drop menu open", |tab| {
+            matches!(&tab.ui.menu, Some(view::Menu::Object { target, at: shown }) if *target == wanted && *shown == at)
+        })
+        .await?;
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            let Some(open) = tab.ui.menu.clone() else { return Vec::new() };
+            let mut rows = Vec::new();
+            for entry in commands::entries_of(&tab.ui, &open, cx) {
+                rows.push((entry.title.clone(), entry.id, entry.disabled.is_some(), entry.action.clone()));
+                for child in entry.children {
+                    rows.push((format!("{} › {}", entry.title, child.title), child.id, child.disabled.is_some(), child.action));
+                }
+            }
+            rows
+        })?)
+    }
+
+    fn pick_dropped(rows: &[(String, &'static str, bool, Option<Action>)], title: &str) -> Result<Action> {
+        match rows.iter().find(|row| row.0 == title) {
+            Some((_, _, false, Some(action))) => Ok(action.clone()),
+            _ => {
+                let listed: Vec<&str> = rows.iter().map(|row| row.0.as_str()).collect();
+                Err(format!("The drop menu has no usable {title:?}: {listed:?}").into())
+            }
+        }
+    }
+
+    async fn drop_a_branch_on_another(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0813");
+        let root = init(dir, "Ford-camp")?;
+        record(&root, "camp.txt", "Camp\n", "Pitch the ford camp")?;
+        let base = oid(&root, "main")?;
+        git(&root, &["branch", "lookout"])?;
+        git(&root, &["switch", "-qc", "spur"])?;
+        record(&root, "spur.txt", "Scout\n", "Scout the spur")?;
+        git(&root, &["switch", "-qc", "feature", "main"])?;
+        record(&root, "map.txt", "Ford\n", "Map the ford")?;
+        git(&root, &["switch", "-q", "main"])?;
+        record(&root, "notes.txt", "River\n", "Note the river")?;
+        let (before, feature) = (oid(&root, "main")?, oid(&root, "feature")?);
+        let mut bares = Vec::new();
+        for name in ["origin", "fork"] {
+            let bare = dir.join(format!("Ford-camp-{name}.git"));
+            fs::create_dir(&bare)?;
+            git(&bare, &["init", "-q", "--bare", "-b", "main"])?;
+            git(&root, &["remote", "add", name, &bare.display().to_string()])?;
+            bares.push(bare.display().to_string());
+        }
+        let (origin, fork) = (bares[0].clone(), bares[1].clone());
+        git(&root, &["push", "-q", "-u", "origin", "main"])?;
+        let tip_at = |bare: &str, name: &str| -> Result<Option<String>> {
+            let listed = git(&root, &["ls-remote", "--", bare, name])?;
+            Ok(listed.lines().find_map(|line| line.split_once('\t').filter(|(_, at)| *at == name).map(|(oid, _)| oid.to_owned())))
+        };
+        self.open(&root)?;
+        self.until("Ford-camp open with origin/main listed", |tab| {
+            tab.ui.repo == "Ford-camp"
+                && tab.ui.refs.oid_of(&Target::RemoteBranch("origin/main".into())) == Some(before.as_str())
+                && tab.ui.refs.lists(Kind::Branch, "spur")
+        })
+        .await?;
+        let (main, ridge) = (|| Target::Branch("main".into()), || Target::Branch("feature".into()));
+        let (lookout, spur) = (|| Target::Branch("lookout".into()), || Target::Branch("spur".into()));
+        let origin_main = || Target::RemoteBranch("origin/main".into());
+
+        let rows = self.dropped(ridge(), main(), Some(origin_main())).await?;
+        let titles: Vec<&str> = rows.iter().map(|row| row.0.as_str()).collect();
+        for wanted in [
+            "Merge feature into main",
+            "Switch to feature and rebase it onto main…",
+            "Reset main to feature",
+            "Reset main to feature › Hard: discard all changes…",
+            "origin/main › Push feature to origin/main",
+            "origin/main › Set origin/main as upstream of feature",
+            "origin/main › Switch to feature and merge origin/main",
+        ] {
+            if !titles.contains(&wanted) {
+                return Err(format!("Dropping feature on main lacks {wanted:?}: {titles:?}").into());
+            }
+        }
+        if let Some(stray) = rows.iter().find(|row| !row.1.starts_with("drop.")) {
+            return Err(format!("Dropping feature on main also lists {:?} ({})", stray.0, stray.1).into());
+        }
+        if titles.iter().any(|title| title.starts_with("Fast-forward")) {
+            return Err(format!("Dropping feature on main offers a fast-forward: {titles:?}").into());
+        }
+        let merge = Self::pick_dropped(&rows, "Merge feature into main")?;
+        self.action(merge)?;
+        self.noticed("Merged feature into main").await?;
+        git_is(&root, &["rev-parse", "main^1", "main^2"], &format!("{before}\n{feature}\n"))?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
+        let merged = oid(&root, "main")?;
+        self.until("main at the merge", |tab| tab.ui.refs.oid_of(&main()) == Some(merged.as_str())).await?;
+
+        let rows = self.dropped(main(), lookout(), None).await?;
+        let forward = Self::pick_dropped(&rows, "Fast-forward lookout to main")?;
+        Self::pick_dropped(&rows, "Switch to lookout and merge main")?;
+        Self::pick_dropped(&rows, "Reset lookout to main…")?;
+        self.action(forward)?;
+        self.noticed("Fast-forwarded lookout").await?;
+        git_is(&root, &["rev-parse", "lookout"], &format!("{merged}\n"))?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
+        self.until("lookout at the merge", |tab| tab.ui.refs.oid_of(&lookout()) == Some(merged.as_str())).await?;
+
+        let rows = self.dropped(lookout(), Target::Commit(base.clone()), None).await?;
+        Self::pick_dropped(&rows, "Switch to lookout and rebase it onto this commit…")?;
+        let reset = Self::pick_dropped(&rows, "Reset lookout to this commit…")?;
+        self.action(reset)?;
+        let short = &base[..7];
+        let (lines, danger) = self.asked_about(&format!("Reset lookout to {short}?")).await?;
+        let wanted = [
+            format!("lookout moves from {} to {short}. It is not checked out, so your files stay as they are.", &merged[..7]),
+            "3 commits leave lookout.".to_owned(),
+        ];
+        if lines != wanted || danger {
+            return Err(format!("The reset prompt reads {lines:?}, danger {danger}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let (_, offers) = self.noticed(&format!("Reset lookout to {short}")).await?;
+        if offers != ["Restore"] {
+            return Err(format!("The reset notice offers {offers:?}").into());
+        }
+        git_is(&root, &["rev-parse", "lookout", "main", "feature"], &format!("{base}\n{merged}\n{feature}\n"))?;
+        let offered = self.newest_notice()?;
+        self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
+        self.noticed("Restored lookout").await?;
+        git_is(&root, &["rev-parse", "lookout"], &format!("{merged}\n"))?;
+        self.until("lookout restored", |tab| tab.ui.refs.oid_of(&lookout()) == Some(merged.as_str())).await?;
+
+        let rows = self.dropped(ridge(), Target::Remote("origin".into()), None).await?;
+        let push = Self::pick_dropped(&rows, "Push feature to origin")?;
+        self.action(push)?;
+        let (detail, _) = self.noticed("Pushed feature").await?;
+        if detail != "Created origin/feature." || tip_at(&origin, "refs/heads/feature")?.as_deref() != Some(feature.as_str()) {
+            return Err(format!("Pushing feature to origin said {detail:?}").into());
+        }
+
+        self.until("origin/feature listed", |tab| tab.ui.refs.oid_of(&Target::RemoteBranch("origin/feature".into())).is_some()).await?;
+        let rows = self.graph_menu(ridge())?;
+        let titled = |id: &str| rows.iter().find(|row| row.0 == id).map(|row| row.1.clone());
+        if titled("branch.push-to").as_deref() != Some("Push feature to…") || titled("branch.push-all").as_deref() != Some("Push feature to all remotes") {
+            let listed: Vec<_> = rows.iter().map(|row| (row.0, row.1.clone())).collect();
+            return Err(format!("The menu of feature lists {listed:?}").into());
+        }
+        self.choose(&ridge(), "branch.push-all")?;
+        let (detail, _) = self.noticed("Pushed feature to all remotes").await?;
+        if detail != "Created fork/feature. origin/feature was already up to date." {
+            return Err(format!("Pushing feature to all remotes said {detail:?}").into());
+        }
+        if tip_at(&fork, "refs/heads/feature")?.as_deref() != Some(feature.as_str()) {
+            return Err("fork has no feature after pushing to all remotes".into());
+        }
+
+        self.choose(&lookout(), "branch.push-to")?;
+        let (lines, _) = self.asked_about("Push lookout to…").await?;
+        if lines.first().map(String::as_str) != Some("Choose a remote and the branch there that lookout should update.") {
+            return Err(format!("The push prompt reads {lines:?}").into());
+        }
+        let filled = self.tab.update(self.cx, |tab, _, cx| {
+            let (Some(field), Some(second)) = (tab.ui.prompt.field().cloned(), tab.ui.prompt.second().cloned()) else {
+                return None;
+            };
+            let initial = (field.read(cx).text().to_owned(), second.read(cx).text().to_owned());
+            field.update(cx, |field, cx| field.set_text("fork", cx));
+            second.update(cx, |field, cx| field.set_text("review/lookout", cx));
+            Some(initial)
+        })?;
+        if filled != Some(("origin".to_owned(), "lookout".to_owned())) {
+            return Err(format!("The push prompt started with {filled:?}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let (detail, _) = self.noticed("Pushed lookout").await?;
+        if detail != "Created fork/review/lookout." || tip_at(&fork, "refs/heads/review/lookout")?.as_deref() != Some(merged.as_str()) {
+            return Err(format!("Pushing lookout to fork said {detail:?}").into());
+        }
+
+        let rows = self.dropped(lookout(), origin_main(), None).await?;
+        let track = Self::pick_dropped(&rows, "Set origin/main as upstream of lookout")?;
+        Self::pick_dropped(&rows, "Push lookout to origin/main")?;
+        self.action(track)?;
+        self.noticed("lookout tracks origin/main").await?;
+        git_is(&root, &["config", "branch.lookout.merge"], "refs/heads/main\n")?;
+        git_is(&root, &["config", "branch.lookout.remote"], "origin\n")?;
+
+        let rows = self.dropped(main(), ridge(), None).await?;
+        let switch = Self::pick_dropped(&rows, "Switch to feature and merge main")?;
+        self.action(switch)?;
+        self.noticed("Merged main into feature").await?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/feature\n")?;
+        git_is(&root, &["rev-parse", "feature"], &format!("{merged}\n"))?;
+        self.until("feature checked out at the merge", |tab| tab.ui.branch == "feature" && tab.ui.head.as_deref() == Some(merged.as_str())).await?;
+
+        let rows = self.dropped(spur(), main(), None).await?;
+        let rebase = Self::pick_dropped(&rows, "Switch to spur and rebase it onto main…")?;
+        self.action(rebase)?;
+        self.asked_about("Rebase spur onto main?").await?;
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        self.noticed("Rebased spur onto main").await?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/spur\n")?;
+        git_is(&root, &["rev-parse", "spur^"], &format!("{merged}\n"))?;
+        git_is(&root, &["log", "-1", "--format=%s", "spur"], "Scout the spur\n")?;
+        git_is(&root, &["status", "--porcelain"], "")?;
+        self.until("spur checked out", |tab| tab.ui.branch == "spur").await?;
         self.pass();
         Ok(())
     }

@@ -164,6 +164,7 @@ pub(crate) enum Action {
     DeleteRemote { name: OsString, local: Option<OsString> },
     RestoreRemote { remote: String, branch: OsString, oid: String },
     SetUpstream(OsString),
+    Track { name: OsString, seen: Option<String>, chosen: String },
 }
 
 #[derive(Clone, Debug)]
@@ -407,6 +408,16 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
             move |repo| restore_remote(&repo, &remote, &branch, &oid),
             |_, _| {},
         ),
+        Action::Track { name, seen, chosen } => {
+            tab.run_operation_then(
+                cx,
+                "Setting the upstream…",
+                "Upstream set",
+                false,
+                move |repo| set_upstream(&repo, &name, seen.as_deref(), Some(&chosen)),
+                |_, _| {},
+            );
+        }
         Action::SetUpstream(name) => {
             let Some(item) = tab.ui.refs.local(&name) else { return };
             let (upstream, gone) = (item.upstream.clone(), item.gone);

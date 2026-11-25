@@ -844,6 +844,19 @@ pub(crate) fn switch_to(tab: &mut Tab, name: OsString, stash: bool, window: &mut
         return;
     }
     view::focus(&tab.ui, window);
+    switch_then(tab, name, stash, |_, _| {}, cx);
+}
+
+pub(crate) fn switch_then(
+    tab: &mut Tab,
+    name: OsString,
+    stash: bool,
+    then: impl FnOnce(&mut Tab, &mut Context<Tab>) + 'static,
+    cx: &mut Context<Tab>,
+) {
+    if !tab.ui.refs.items.iter().any(|item| item.kind == Kind::Branch && item.name == name) {
+        return;
+    }
     let kept = crate::autostash::Kept::default();
     let stopped = kept.clone();
     tab.run_operation_or(
@@ -852,10 +865,11 @@ pub(crate) fn switch_to(tab: &mut Tab, name: OsString, stash: bool, window: &mut
         "Switched branch",
         true,
         move |repo| switched(&repo, &name, stash, &kept),
-        |tab, _| {
+        move |tab, cx| {
             tab.follow = crate::Follow::ChangesOrHead;
             tab.ui.refs.list_open = false;
             tab.ui.refs.draft = None;
+            then(tab, cx);
         },
         move |tab, _| {
             if let Some(stash) = stopped.take() {
@@ -1357,8 +1371,10 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let eye = remote
                                 .then(|| crate::graph_view::eye(ui, folder_ref, ("remote-eye", i), "side-folder", cx))
                                 .flatten();
+                            let dropped_on = Target::Remote(name.clone());
                             div()
                                 .id(("side-folder", i))
+                                .when(*remote, |d| crate::drag::target(d, dropped_on, None, crate::drag::Look::Row, cx))
                                 .group("side-folder")
                                 .h(px(TREE_ROW))
                                 .w_full()
@@ -1450,8 +1466,17 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let full = crate::graph_view::of_ref(kind, &item.name.to_string_lossy());
                             let left_out = crate::graph_view::left_out(ui, &full);
                             let eye = crate::graph_view::eye(ui, full, ("side-eye", i), "side-ref", cx);
-                            div()
-                                .id(("side-ref", i))
+                            let chip = match kind {
+                                Kind::Branch if current => kit::Chip::Head,
+                                Kind::Branch => kit::Chip::Local,
+                                Kind::Remote => kit::Chip::Remote,
+                                Kind::Tag => kit::Chip::Tag,
+                            };
+                            let shown_ref = Target::of_ref(kind, item.name.clone());
+                            let carried = crate::drag::Carried::new(shown_ref.clone(), None, chip, item.name.to_string_lossy())
+                                .at(item.oid.clone());
+                            let row = crate::drag::source(div().id(("side-ref", i)), carried);
+                            crate::drag::target(row, shown_ref, None, crate::drag::Look::Row, cx)
                                 .group("side-ref")
                                 .h(px(TREE_ROW))
                                 .w_full()

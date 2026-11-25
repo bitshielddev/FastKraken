@@ -428,6 +428,7 @@ pub(crate) enum Action {
     PushBranch { name: OsString, tip: String },
     PullBranch { name: OsString, tip: String },
     FastForward { name: OsString, tip: String, upstream: String, to: String },
+    Advance { name: OsString, tip: String, to: String, source: crate::merge::Source },
     PullInto(OsString),
     ForcePush { name: OsString, checked_out: bool },
     RestoreForced { remote: String, remote_ref: OsString, tracking: OsString, old: String, new: String },
@@ -600,7 +601,7 @@ fn refused_push(repo: &Repository, branch: &str, head: &str, current: bool, erro
 }
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
-    let writes = matches!(action, Action::FastForward { .. } | Action::ForcePush { .. });
+    let writes = matches!(action, Action::FastForward { .. } | Action::Advance { .. } | Action::ForcePush { .. });
     if tab.repo.is_none() && !matches!(action, Action::TogglePrune) || writes && tab.ui.busy() {
         return;
     }
@@ -655,6 +656,21 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
                 false,
                 move |repo| {
                     backend::fast_forward(&repo, &branch, &tip, &tracking, &to)
+                        .map(|(title, detail)| crate::notice::Outcome::titled(title, detail))
+                        .map_err(|err| format!("Fast-forward Failed — {err}"))
+                },
+                |_, _| {},
+            );
+        }
+        Action::Advance { name, tip, to, source } => {
+            let Some(branch) = utf8(tab, &name, cx) else { return };
+            tab.run_operation_then(
+                cx,
+                "Fast-forwarding the branch…",
+                "Fast-forwarded",
+                false,
+                move |repo| {
+                    backend::advance_to(&repo, &branch, &tip, &source, &to)
                         .map(|(title, detail)| crate::notice::Outcome::titled(title, detail))
                         .map_err(|err| format!("Fast-forward Failed — {err}"))
                 },

@@ -192,6 +192,34 @@ pub(super) fn fast_forward(
     })
 }
 
+pub(super) fn advance_to(
+    repo: &Repository,
+    branch: &str,
+    head: &str,
+    source: &crate::merge::Source,
+    to: &str,
+) -> Result<(String, String), String> {
+    validate_oid(to)?;
+    let label = source.label();
+    match source {
+        crate::merge::Source::Commit(oid) => {
+            let mut commit = std::ffi::OsString::from(oid);
+            commit.push("^{commit}");
+            if oid != to || repo.resolve(&commit).ok().as_deref() != Some(to) {
+                return Err("That commit is not in the repository. Refresh and try again.".into());
+            }
+        }
+        _ => repo.expect_names_commit(&source.full(), to)?,
+    }
+    Ok(match advance(repo, branch, head, to, &label)? {
+        Some(count) => (
+            format!("Fast-forwarded {branch}"),
+            format!("{} from {label}. Now at {}.", notice::commits(count), notice::short(to)),
+        ),
+        None => (format!("{branch} is up to date"), format!("{branch} already contains {label}.")),
+    })
+}
+
 fn advance(repo: &Repository, branch: &str, head: &str, to: &str, source: &str) -> Result<Option<usize>, String> {
     validate_oid(head)?;
     validate_oid(to)?;
@@ -1409,5 +1437,38 @@ fi
         assert!(!prunable(&f.repo, &["mirror".to_owned()]).unwrap());
         assert!(prunable(&f.repo, &["team".to_owned()]).unwrap());
         assert!(!prunable(&f.repo, &["team".to_owned(), "mirror".to_owned()]).unwrap());
+    }
+
+    #[test]
+    fn a_branch_that_is_not_checked_out_fast_forwards_to_any_ref_and_refuses_what_moved() {
+        let f = Fixture::new();
+        f.git(&["commit", "--allow-empty", "-qm", "Pitch the camp"]);
+        let base = String::from_utf8(f.git(&["rev-parse", "HEAD"])).unwrap().trim().to_owned();
+        f.git(&["branch", "lookout"]);
+        f.git(&["switch", "-qc", "ridge"]);
+        f.git(&["commit", "--allow-empty", "-qm", "Climb the ridge"]);
+        f.git(&["commit", "--allow-empty", "-qm", "Reach the summit"]);
+        let ridge = String::from_utf8(f.git(&["rev-parse", "HEAD"])).unwrap().trim().to_owned();
+        f.git(&["switch", "-q", "main"]);
+        f.git(&["tag", "summit", &ridge]);
+        let index = f.git(&["ls-files", "--stage"]);
+        let source = crate::merge::Source::Branch("ridge".into());
+        let err = advance_to(&f.repo, "lookout", &base, &source, &base).unwrap_err();
+        assert!(err.contains("changed since you chose it"), "{err}");
+        let tag = crate::merge::Source::Tag("summit".into());
+        let (title, detail) = advance_to(&f.repo, "lookout", &base, &tag, &ridge).unwrap();
+        assert_eq!((title.as_str(), detail.as_str()), ("Fast-forwarded lookout", format!("2 commits from summit. Now at {}.", &ridge[..7]).as_str()));
+        assert_eq!(String::from_utf8(f.git(&["rev-parse", "lookout"])).unwrap().trim(), ridge);
+        assert_eq!(f.git(&["symbolic-ref", "HEAD"]), b"refs/heads/main\n");
+        assert_eq!(String::from_utf8(f.git(&["rev-parse", "HEAD"])).unwrap().trim(), base);
+        assert_eq!(f.git(&["ls-files", "--stage"]), index);
+        let err = advance_to(&f.repo, "lookout", &base, &source, &ridge).unwrap_err();
+        assert!(err.contains("lookout changed"), "{err}");
+        let err = advance_to(&f.repo, "main", &base, &source, &ridge).unwrap_err();
+        assert!(!err.is_empty());
+        assert_eq!(String::from_utf8(f.git(&["rev-parse", "main"])).unwrap().trim(), base);
+        let commit = crate::merge::Source::Commit("0123456789abcdef0123456789abcdef01234567".into());
+        let err = advance_to(&f.repo, "lookout", &ridge, &commit, "0123456789abcdef0123456789abcdef01234567").unwrap_err();
+        assert_eq!(err, "That commit is not in the repository. Refresh and try again.");
     }
 }

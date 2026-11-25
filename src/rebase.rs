@@ -139,6 +139,7 @@ fn branch_ref(name: &OsStr) -> OsString {
 pub enum Action {
     Onto(Source),
     Branch(OsString),
+    Pair { branch: OsString, onto: Source },
 }
 
 #[derive(Clone, Debug)]
@@ -486,6 +487,10 @@ pub fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<
     }
     let seen = Seen::of(ui);
     let current = OsStr::from_bytes(head_ref.as_bytes().strip_prefix(b"refs/heads/").unwrap_or_default()).to_owned();
+    let action = match action {
+        Action::Pair { branch, onto } if branch == current => Action::Onto(onto),
+        action => action,
+    };
     let ask = match action {
         Action::Onto(onto) => {
             if matches!(&onto, Source::Branch(name) if *name == current) {
@@ -523,6 +528,29 @@ pub fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<
                 onto: Source::Branch(current),
                 target: head,
                 label: ui.branch.clone(),
+                commits: 0,
+                merges: 0,
+                upstream: None,
+                keep_merges: false,
+            }
+        }
+        Action::Pair { branch, onto } => {
+            if matches!(&onto, Source::Branch(name) if *name == branch) {
+                return;
+            }
+            let Some(tip) = ui.refs.oid_of(&crate::commands::Target::Branch(branch.clone())).map(str::to_owned) else {
+                return;
+            };
+            let Some(target) = onto.shown(ui) else { return };
+            Ask {
+                branch: branch.to_string_lossy().into_owned(),
+                full: branch_ref(&branch),
+                switch: true,
+                seen,
+                tip,
+                label: onto.label(),
+                onto,
+                target,
                 commits: 0,
                 merges: 0,
                 upstream: None,

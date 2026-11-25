@@ -578,12 +578,25 @@ pub(crate) fn start(
     stash: bool,
     cx: &mut Context<Tab>,
 ) {
+    let current = tab.ui.branch.clone();
+    start_on(tab, current, source, mode, expected, seen, stash, cx);
+}
+
+pub(crate) fn start_on(
+    tab: &mut Tab,
+    current: String,
+    source: Source,
+    mode: Mode,
+    expected: String,
+    seen: crate::guard::Seen,
+    stash: bool,
+    cx: &mut Context<Tab>,
+) {
     if let Some(reason) = tab.ui.operation.refusal() {
         tab.ui.notices.show(crate::notice::Notice::new(crate::view::Tone::Info, reason, ""));
         cx.notify();
         return;
     }
-    let current = tab.ui.branch.clone();
     let label = source.label();
     let squash = mode == Mode::Squash;
     if !squash {

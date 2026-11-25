@@ -559,6 +559,8 @@ pub enum Action {
     Columns(crate::columns::Action),
     Sidebar(crate::sidebar::Action),
     Cleanup(crate::cleanup::Action),
+    Drag(crate::drag::Action),
+    PushTo(crate::push_to::Action),
     Stash(crate::stash::Action),
     Sync(crate::sync::Action),
     Publish(crate::publish::Action),
@@ -751,6 +753,7 @@ pub struct Ui {
     requested_at: Option<usize>,
     graph: Graph,
     pub(crate) graph_columns: crate::columns::State,
+    pub(crate) drag: crate::drag::State,
 }
 
 impl Ui {
@@ -837,6 +840,7 @@ impl Ui {
             focus_on_open: true,
             graph: Graph::default(),
             graph_columns: crate::columns::State::new(settings.graph_columns.clone()),
+            drag: Default::default(),
             diff_layout: DiffLayout::default(),
             diff_mode: settings.diff_mode,
             split_pan: ScrollHandle::new(),
@@ -1713,12 +1717,16 @@ pub(crate) fn pair_menu(branch: OsString, remote: OsString, at: Point<Pixels>) -
 fn live_label<T: Desk>(
     chip: gpui::Stateful<Div>,
     oid: String,
+    carried: crate::drag::Carried,
     target: crate::commands::Target,
     remote: Option<String>,
     cx: &Context<T>,
 ) -> gpui::Stateful<Div> {
     let menu_target = target.clone();
-    chip.cursor_pointer()
+    let also = remote.as_ref().map(|name| crate::commands::Target::RemoteBranch(name.into()));
+    let chip = crate::drag::source(chip, carried);
+    crate::drag::target(chip, target.clone(), also, crate::drag::Look::Chip, cx)
+        .cursor_pointer()
         .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
             cx.stop_propagation();
             focus(app.ui(), w);
@@ -1760,15 +1768,19 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
                 _ => None,
             };
             let distance = branch.and_then(crate::refs::distance);
+            let carried = label.target.clone().map(|target| {
+                let also = label.remote.as_ref().map(|name| crate::commands::Target::RemoteBranch(name.into()));
+                crate::drag::Carried::new(target, also, label.chip, label.name.clone()).at(Some(oid.to_owned()))
+            });
             let text = match &distance {
                 Some(distance) => format!("{} {distance}", label.name),
                 None => label.name,
             };
             let mark = label.remote.is_some().then_some("cloud");
             let chip = kit::chip_marked(label.chip, text, mark).id(("label", i)).tooltip(kit::tip(tip));
-            match label.target {
-                Some(target) => live_label(chip, oid.to_owned(), target, label.remote, cx).into_any_element(),
-                None => chip.into_any_element(),
+            match (label.target, carried) {
+                (Some(target), Some(carried)) => live_label(chip, oid.to_owned(), carried, target, label.remote, cx).into_any_element(),
+                _ => chip.into_any_element(),
             }
         }))
         .when(hidden > 0, |d| {
@@ -2146,7 +2158,8 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     let marking = ui.search.in_graph();
                     let marked = ui.search.marks(&row.oid);
                     let dimmed = ui.graph_view.dims(&row.author, &row.email);
-                    kit::row(("commit", i), active)
+                    let dropped_on = crate::commands::Target::Commit(row.oid.clone());
+                    crate::drag::target(kit::row(("commit", i), active), dropped_on, None, crate::drag::Look::Row, cx)
                         .h(px(ROW))
                         .when(marked && !active, |d| d.bg(soft(FIND_MATCH, 0x8c)).border_color(rgb(FIND_CURRENT)))
                         .on_click(cx.listener(move |app, _, w, cx| {
@@ -2697,6 +2710,7 @@ fn context_menu<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoElemen
                 Target::Remote(_) => 186.,
                 Target::Stash(_) => 200.,
                 Target::Columns => 220.,
+                Target::Pair { .. } => 340.,
                 _ => 260.,
             },
         ),
@@ -2940,6 +2954,9 @@ pub fn render<T: Desk>(
             app.dispatch(Action::Tabs(crate::tabs::Action::Show(show.index)), w, cx)
         }))
         .on_action(cx.listener(|app, _: &FocusDesk, w, cx| {
+            if cx.stop_active_drag(w) {
+                return;
+            }
             let ui = app.ui();
             if ui.refs.filter.focus_handle(cx).is_focused(w) && !ui.prompt.open() && ui.menu.is_none() {
                 if ui.refs.filter.read(cx).text().is_empty() {

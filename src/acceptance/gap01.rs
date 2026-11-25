@@ -703,6 +703,7 @@ impl Replay<'_> {
         let expected = [
             ("branch.push", format!("Push {first}")),
             ("branch.pull", format!("Pull {first}")),
+            ("branch.push-to", format!("Push {first} to…")),
             ("ref.branch", "Create branch here…".to_owned()),
             ("branch.switch", format!("Switch to {first}")),
             ("branch.merge", format!("Merge {first} into main")),

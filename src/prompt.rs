@@ -133,6 +133,8 @@ pub(crate) enum Kind {
     Ignore(crate::ignore::Ask),
     Recover(crate::recover::Ask),
     Cleanup(crate::cleanup::Ask),
+    Drag(crate::drag::Ask),
+    PushTo(crate::push_to::Ask),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -156,6 +158,8 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Ignore(ask) => crate::ignore::describe(ask),
         Kind::Recover(ask) => crate::recover::describe(ask, ui),
         Kind::Cleanup(ask) => crate::cleanup::describe(ask, ui),
+        Kind::Drag(ask) => crate::drag::describe(ask, ui),
+        Kind::PushTo(ask) => crate::push_to::describe(ask, ui),
     }
 }
 
@@ -180,6 +184,8 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Ignore(ask) => crate::ignore::confirm(tab, ask, cx),
         Kind::Recover(ask) => crate::recover::confirm(tab, ask, cx),
         Kind::Cleanup(ask) => crate::cleanup::confirm(tab, ask, answer, cx),
+        Kind::Drag(ask) => crate::drag::confirm(tab, ask, answer, cx),
+        Kind::PushTo(ask) => crate::push_to::confirm(tab, ask, answer, cx),
     }
 }
 
