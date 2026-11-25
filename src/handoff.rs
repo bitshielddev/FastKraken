@@ -164,6 +164,7 @@ pub(crate) enum Action {
     Edit { path: PathBuf, line: Option<u32> },
     EditRepo,
     OpenUrl(String),
+    RevealSaved(PathBuf),
 }
 
 static OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -233,9 +234,18 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         }
         return;
     }
+    if let Action::RevealSaved(path) = &action {
+        if path.is_absolute() && path.exists() {
+            reveal(cx, path);
+        } else {
+            tab.ui.say(Tone::Error, format!("{} is no longer there", path.display()));
+            cx.notify();
+        }
+        return;
+    }
     let Some(repo) = tab.repo.clone() else { return };
     match action {
-        Action::OpenUrl(_) => {}
+        Action::OpenUrl(_) | Action::RevealSaved(_) => {}
         Action::CopyMessage(oid) => Tab::work(
             cx,
             move || message(&repo, &oid),

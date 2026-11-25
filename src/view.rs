@@ -276,7 +276,7 @@ pub(crate) const REPO_MENU: &[&str] =
     &["repo.open", "repo.close", "repo.refresh", "repo.reveal", "repo.terminal", "repo.editor", "repo.labels"];
 
 pub(crate) const CHANGES_MENU: &[&str] =
-    &["repo.stage-all", "repo.unstage-all", "repo.stash", "repo.stash-options", "repo.discard-all", "repo.browse-files"];
+    &["repo.stage-all", "repo.unstage-all", "repo.stash", "repo.stash-options", "repo.discard-all", "repo.browse-files", "repo.save-patch"];
 
 pub(crate) const COMMANDS: &[crate::commands::Command] = {
     use crate::commands::{Availability, Bar, Command, Group, Side, Target, busy, operating, on_repo};
@@ -591,6 +591,7 @@ pub enum Action {
     FileHistory(crate::file_history::Action),
     Blame(crate::blame::Action),
     Browse(crate::browse::Action),
+    Patch(crate::patch::Action),
     Recover(crate::recover::Action),
     Discard(crate::discard::Action),
     Ignore(crate::ignore::Action),
@@ -697,6 +698,7 @@ pub struct Ui {
     pub(crate) file_history: crate::file_history::State,
     pub(crate) blame: crate::blame::State,
     pub(crate) browse: crate::browse::State,
+    pub(crate) patch: crate::patch::State,
     pub(crate) lines: crate::lines::State,
     pub(crate) text: crate::diff_select::State,
     pub(crate) message: crate::inspection::Message,
@@ -805,6 +807,7 @@ impl Ui {
             file_history: Default::default(),
             blame: Default::default(),
             browse: crate::browse::State::new(cx),
+            patch: crate::patch::State::default(),
             lines: Default::default(),
             text: Default::default(),
             message: crate::inspection::Message::new(cx),

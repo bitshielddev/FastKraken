@@ -1147,7 +1147,7 @@ impl Replay<'_> {
         Ok(())
     }
 
-    fn changes_menu(&mut self) -> Result<Vec<(&'static str, String, Option<String>)>> {
+    pub(super) fn changes_menu(&mut self) -> Result<Vec<(&'static str, String, Option<String>)>> {
         self.action(Action::Menu(Some(view::Menu::Changes { at: gpui::Point::default() })))?;
         let open = self.tab.read_with(self.cx, |tab, _| matches!(tab.ui.menu, Some(view::Menu::Changes { .. })))?;
         if !open {
@@ -1161,7 +1161,7 @@ impl Replay<'_> {
         })?)
     }
 
-    fn choose_on_changes(&mut self, id: &str) -> Result<()> {
+    pub(super) fn choose_on_changes(&mut self, id: &str) -> Result<()> {
         let chosen = self.tab.read_with(self.cx, |tab, cx| {
             commands::entries_of(&tab.ui, &view::Menu::Changes { at: gpui::Point::default() }, cx)
                 .into_iter()
@@ -1220,6 +1220,7 @@ impl Replay<'_> {
             ("repo.stash-options", "Stash with a message…"),
             ("repo.discard-all", "Discard all changes…"),
             ("repo.browse-files", "Browse files"),
+            ("repo.save-patch", "Save all changes as a patch…"),
         ];
         if rows.len() != expected.len()
             || rows.iter().zip(expected).any(|(row, (id, title))| row.0 != id || row.1 != title || row.2.is_some())

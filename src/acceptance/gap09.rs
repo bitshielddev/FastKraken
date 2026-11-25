@@ -216,7 +216,9 @@ impl Replay<'_> {
         self.tree_stages_a_folder(dir).await?;
         self.filter_a_commits_files(dir).await?;
         self.browse_an_old_commit(dir).await?;
-        self.history_by_name(dir).await
+        self.history_by_name(dir).await?;
+        self.save_and_apply_a_patch(dir).await?;
+        self.refuse_a_patch(dir).await
     }
 
     fn pick_commit(&mut self, oid: &str, how: How) -> Result<()> {
@@ -1080,7 +1082,7 @@ impl Replay<'_> {
         self.until("src/app folded", |tab| drawn(tab, Which::Unstaged) == folded).await?;
         let folder = Target::Folder { path: app.clone(), side: Side::Unstaged };
         let offered: Vec<&str> = self.ticked(&folder)?.into_iter().map(|(id, _)| id).collect();
-        if offered != ["folder.stage", "folder.discard", "folder.ignore", "folder.stash", "folder.copy-path"] {
+        if offered != ["folder.stage", "folder.discard", "folder.ignore", "folder.stash", "folder.copy-path", "folder.save-patch"] {
             return Err(format!("The menu on src/app offers {offered:?}").into());
         }
         self.run_entry(&folder, "folder.stage", "Stage folder").await?;
@@ -1099,7 +1101,7 @@ impl Replay<'_> {
 
         let models = Target::Folder { path: PathBuf::from("src/app/models"), side: Side::Staged };
         let offered: Vec<&str> = self.ticked(&models)?.into_iter().map(|(id, _)| id).collect();
-        if offered != ["folder.unstage", "folder.stash", "folder.copy-path"] {
+        if offered != ["folder.unstage", "folder.stash", "folder.copy-path", "folder.save-patch"] {
             return Err(format!("The menu on the staged models folder offers {offered:?}").into());
         }
         self.run_entry(&models, "folder.unstage", "Unstage folder").await?;
@@ -1493,6 +1495,267 @@ impl Replay<'_> {
         self.until("the browser closed", |tab| !tab.ui.browse.open()).await?;
         if untouched(&root)? != before {
             return Err("Finding files by name changed a ref, the index or a file".into());
+        }
+        self.pass();
+        Ok(())
+    }
+    fn save_asked(&self, from: usize) -> Option<(PathBuf, String)> {
+        crate::patch::asked().into_iter().skip(from).find_map(|asked| match asked {
+            crate::patch::Asked::Save { folder, name } => Some((folder, name)),
+            crate::patch::Asked::Open => None,
+        })
+    }
+
+    async fn saved(&mut self, folder: &Path, path: &Path, from: usize, name: &str) -> Result<()> {
+        let shown = path.display().to_string();
+        self.until(&format!("the notice that {shown} is saved"), |tab| {
+            !tab.ui.busy() && tab.ui.notices.newest().is_some_and(|n| n.title == "Patch saved" && n.detail.starts_with(&shown))
+        })
+        .await?;
+        let (detail, offers) = self.noticed("Patch saved").await?;
+        if offers != ["Reveal in Finder"] {
+            return Err(format!("The saved notice reads {detail:?} with {offers:?}").into());
+        }
+        let asked = self.save_asked(from);
+        let expected = fs::canonicalize(folder)?;
+        match asked {
+            Some((opened, suggested)) if fs::canonicalize(&opened)? == expected && suggested == name => Ok(()),
+            asked => Err(format!("The save dialog was asked {asked:?}, not {name} in {}", folder.display()).into()),
+        }
+    }
+
+    async fn patch_prompt(&mut self, title: &str) -> Result<(Vec<String>, Vec<String>)> {
+        self.until(&format!("the prompt {title:?}"), |tab| {
+            !tab.ui.patch.checking()
+                && matches!(tab.ui.prompt.asked(), Some(crate::prompt::Kind::Patch(_)))
+                && crate::prompt::shown(&tab.ui).is_some_and(|spec| spec.title == title)
+        })
+        .await?;
+        let shown = self.tab.read_with(self.cx, |tab, _| {
+            crate::prompt::shown(&tab.ui).map(|spec| (spec.lines, spec.choices.iter().map(|choice| choice.label.to_string()).collect()))
+        })?;
+        shown.ok_or_else(|| format!("The prompt {title:?} closed").into())
+    }
+
+    async fn save_and_apply_a_patch(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0913");
+        let root = init(dir, "Patch-camp")?;
+        record(&root, "camp.txt", "Camp\nFire ring\n", "Pitch the camp")?;
+        record(&root, "trail.txt", "Trail\nRidge\nLake\n", "Mark the trail")?;
+        let trail = oid(&root, "HEAD")?;
+        record(&root, "trail.txt", "Trail\nHigh ridge\nLake\n", "Raise the ridge")?;
+        let ridge = oid(&root, "HEAD")?;
+        record(&root, "lake.txt", "Cold water\n", "Map the lake")?;
+        let lake = oid(&root, "HEAD")?;
+        record(&root, "kettle.txt", "Kettle on the fire\n", "Fill the kettle")?;
+        let kettle = oid(&root, "HEAD")?;
+        let other = init(dir, "Patch-ferry")?;
+        for path in ["camp.txt", "trail.txt"] {
+            fs::write(other.join(path), git(&root, &["show", &format!("{trail}:{path}")])?)?;
+        }
+        git(&other, &["add", "--", "."])?;
+        git(&other, &["commit", "-qm", "Start the ferry"])?;
+        if git(&other, &["rev-parse", "HEAD^{tree}"])? != git(&root, &["rev-parse", &format!("{trail}^{{tree}}")])? {
+            return Err("Patch-ferry does not hold the files of Mark the trail".into());
+        }
+        let patches = dir.join("patches");
+        fs::create_dir_all(&patches)?;
+
+        self.open(&root)?;
+        self.until("Patch-camp open with five commits", |tab| tab.ui.repo == "Patch-camp" && tab.ui.history.len() == 5).await?;
+        let before = untouched(&root)?;
+        let menu = Target::Commit(ridge.clone());
+        let offered = self.menu_rows(&menu)?.into_iter().find(|row| row.0 == "commit.save-patch");
+        if offered != Some(("commit.save-patch", "Save as patch…".to_owned(), None)) {
+            return Err(format!("The commit's menu offers {offered:?}").into());
+        }
+        let one = patches.join("Raise-the-ridge.patch");
+        let from = crate::patch::asked().len();
+        crate::patch::answer(Some(one.clone()));
+        self.choose(&menu, "commit.save-patch")?;
+        self.saved(dir, &one, from, "Raise-the-ridge.patch").await?;
+        if fs::read_to_string(&one)? != git(&root, &["format-patch", "-1", "--stdout", &ridge])? {
+            return Err("The saved patch is not what git format-patch prints for Raise the ridge".into());
+        }
+        let reveal = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.notices.newest().and_then(|notice| notice.actions.first().map(|(_, action)| action.clone()))
+        })?;
+        let mark = crate::tools::launched().len();
+        self.action(reveal.ok_or("The saved notice offers nothing")?)?;
+        let revealed: Vec<Vec<String>> = crate::tools::launched().into_iter().skip(mark).collect();
+        if revealed != [vec!["reveal".to_owned(), one.display().to_string()]] {
+            return Err(format!("Reveal in Finder handed on {revealed:?}").into());
+        }
+
+        self.select_only(&kettle).await?;
+        self.pick_commit(&lake, How::Toggle)?;
+        self.until("two commits picked", |tab| tab.ui.compare.count() == 2).await?;
+        let picked = Target::Commits(vec![kettle.clone(), lake.clone()]);
+        let rows = self.menu_rows(&picked)?;
+        let offered = rows.iter().find(|row| row.0 == "commits.save-patch");
+        if offered != Some(&("commits.save-patch", "Save 2 commits as a patch…".to_owned(), None)) {
+            return Err(format!("The picked commits' menu lists {rows:?}").into());
+        }
+        let name = format!("2-commits-{}-{}.patch", short(&lake), short(&kettle));
+        let two = patches.join(&name);
+        let from = crate::patch::asked().len();
+        crate::patch::answer(Some(two.clone()));
+        self.choose(&picked, "commits.save-patch")?;
+        self.saved(&patches, &two, from, &name).await?;
+        if fs::read_to_string(&two)? != git(&root, &["format-patch", "--stdout", &format!("{ridge}..{kettle}")])? {
+            return Err("The saved patch is not what git format-patch prints for the two commits, oldest first".into());
+        }
+        if untouched(&root)? != before {
+            return Err("Saving patches changed a ref, the index or a file".into());
+        }
+
+        self.open(&other)?;
+        self.until("Patch-ferry open", |tab| tab.ui.repo == "Patch-ferry" && tab.ui.history.len() == 1 && files(tab, &[], &[])).await?;
+        let start = oid(&other, "HEAD")?;
+        crate::patch::answer(Some(one.clone()));
+        self.action(Action::Run("repo.apply-patch"))?;
+        let (lines, choices) = self.patch_prompt("Apply Raise-the-ridge.patch?").await?;
+        if lines.first().map(String::as_str) != Some("Changes 1 file: trail.txt") || choices != ["Apply as a commit"] {
+            return Err(format!("The apply prompt reads {lines:?} with {choices:?}").into());
+        }
+        self.action(Action::Prompt(crate::prompt::Action::Choose(0)))?;
+        self.until("Raise the ridge committed in Patch-ferry", |tab| {
+            !tab.ui.busy() && tab.ui.history.len() == 2 && tab.ui.history[0].subject == "Raise the ridge"
+        })
+        .await?;
+        let applied = oid(&other, "HEAD")?;
+        if git(&other, &["rev-parse", "HEAD^"])?.trim_end() != start {
+            return Err("The commit is not on top of Start the ferry".into());
+        }
+        let change = |root: &Path, oid: &str| git(root, &["diff", "--no-color", &format!("{oid}^"), oid]);
+        if change(&other, &applied)? != change(&root, &ridge)? {
+            return Err("The applied commit does not carry the same change".into());
+        }
+        let author = |root: &Path, oid: &str| git(root, &["log", "-1", "--format=%an <%ae>%n%B", oid]);
+        if author(&other, &applied)? != author(&root, &ridge)? {
+            return Err("The applied commit has another author or message".into());
+        }
+        git_is(&other, &["status", "--porcelain=v1"], "")?;
+
+        crate::patch::answer(Some(two.clone()));
+        self.action(Action::Run("repo.apply-patch"))?;
+        let (lines, choices) = self.patch_prompt(&format!("Apply {name}?")).await?;
+        if lines.first().map(String::as_str) != Some("Changes 2 files: lake.txt, kettle.txt") || choices != ["Apply as 2 commits"] {
+            return Err(format!("The apply prompt reads {lines:?} with {choices:?}").into());
+        }
+        self.action(Action::Prompt(crate::prompt::Action::Confirm))?;
+        self.until("the two commits' changes staged in Patch-ferry", |tab| {
+            !tab.ui.busy() && tab.ui.selection == Some(Selection::Changes) && files(tab, &["kettle.txt", "lake.txt"], &[])
+        })
+        .await?;
+        git_is(&other, &["rev-parse", "HEAD"], &format!("{applied}\n"))?;
+        if git(&other, &["diff", "--cached", "--no-color", "HEAD"])? != git(&root, &["diff", "--no-color", &ridge, &kettle])? {
+            return Err("The staged changes are not the two commits' changes".into());
+        }
+
+        self.open(&root)?;
+        fs::write(root.join("camp.txt"), "Camp\nFire ring\nKettle stand\n")?;
+        fs::write(root.join("notes.txt"), "Check the ferry times\n")?;
+        self.action(Action::Refresh)?;
+        self.until("Patch-camp open with its changes", |tab| tab.ui.repo == "Patch-camp" && files(tab, &[], &["camp.txt", "notes.txt"])).await?;
+        let rows = self.changes_menu()?;
+        if rows.last() != Some(&("repo.save-patch", "Save all changes as a patch…".to_owned(), None)) {
+            return Err(format!("The uncommitted row's menu lists {rows:?}").into());
+        }
+        let changes = patches.join("changes.patch");
+        let from = crate::patch::asked().len();
+        crate::patch::answer(Some(changes.clone()));
+        self.choose_on_changes("repo.save-patch")?;
+        self.saved(dir, &changes, from, "changes.patch").await?;
+        let with_changes = untouched(&root)?;
+        git(&root, &["stash", "push", "-q", "--include-untracked"])?;
+        let target = changes.display().to_string();
+        git(&root, &["apply", "--check", &target])?;
+        git(&root, &["apply", &target])?;
+        let restored = (fs::read_to_string(root.join("camp.txt"))?, fs::read_to_string(root.join("notes.txt"))?);
+        git(&root, &["checkout", "-q", "--", "camp.txt"])?;
+        fs::remove_file(root.join("notes.txt"))?;
+        git(&root, &["stash", "pop", "-q"])?;
+        if restored != ("Camp\nFire ring\nKettle stand\n".to_owned(), "Check the ferry times\n".to_owned()) {
+            return Err(format!("The saved changes rebuild {restored:?}").into());
+        }
+        if untouched(&root)? != with_changes {
+            return Err("Checking the saved changes left Patch-camp changed".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn refuse_a_patch(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0914");
+        let source = init(dir, "Patch-source")?;
+        record(&source, "trail.txt", "Trail\nRidge\nLake\n", "Mark the trail")?;
+        record(&source, "trail.txt", "Trail\nHigh ridge\nLake\n", "Raise the ridge")?;
+        let patches = dir.join("refused");
+        fs::create_dir_all(&patches)?;
+        let ridge = patches.join("ridge.patch");
+        fs::write(&ridge, git(&source, &["format-patch", "-1", "--stdout", "HEAD"])?)?;
+        let notes = patches.join("notes.txt");
+        fs::write(&notes, "Just some notes about the trail\n")?;
+        let root = init(dir, "Patch-lake")?;
+        record(&root, "camp.txt", "Camp\n", "Pitch the camp")?;
+        record(&root, "trail.txt", "Path\nto the lake\n", "Mark the lake path")?;
+        fs::write(root.join("camp.txt"), "Camp\nKettle\n")?;
+        fs::write(root.join("loose.txt"), "Loose\n")?;
+        self.open(&root)?;
+        self.until("Patch-lake open with its changes", |tab| tab.ui.repo == "Patch-lake" && files(tab, &[], &["camp.txt", "loose.txt"])).await?;
+        let before = untouched(&root)?;
+        let said = self.tab.read_with(self.cx, |tab, _| tab.ui.notices.newest().map(|notice| notice.id))?;
+
+        let from = crate::patch::asked().len();
+        crate::patch::answer(None);
+        self.action(Action::Run("repo.apply-patch"))?;
+        let asked: Vec<_> = crate::patch::asked().into_iter().skip(from).collect();
+        let quiet = self.tab.read_with(self.cx, |tab, _| {
+            !tab.ui.prompt.open() && !tab.ui.patch.checking() && tab.ui.notices.newest().map(|notice| notice.id) == said
+        })?;
+        if asked != [crate::patch::Asked::Open] || !quiet {
+            return Err(format!("Cancelling the dialog asked {asked:?} and left something open or said").into());
+        }
+
+        for (path, detail) in [
+            (&ridge, "trail.txt has changed near line 1 since the patch was made. Nothing was changed."),
+            (&notes, "The file holds no changes Git can read. Nothing was changed."),
+        ] {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            crate::patch::answer(Some(path.clone()));
+            self.action(Action::Run("repo.apply-patch"))?;
+            let title = format!("{name} does not apply");
+            self.until(&format!("the notice {title:?}"), |tab| {
+                !tab.ui.patch.checking() && tab.ui.notices.newest().is_some_and(|notice| notice.title == title)
+            })
+            .await?;
+            let read = self.tab.read_with(self.cx, |tab, _| {
+                (tab.ui.prompt.open(), tab.ui.notices.newest().map(|notice| (notice.tone, notice.detail.clone())))
+            })?;
+            if read != (false, Some((crate::notice::Tone::Error, detail.to_owned()))) {
+                return Err(format!("Applying {name} reads {read:?}").into());
+            }
+        }
+        if untouched(&root)? != before {
+            return Err("A refused patch changed a ref, the index or a file".into());
+        }
+
+        self.open(&source)?;
+        self.until("Patch-source open", |tab| tab.ui.repo == "Patch-source" && tab.ui.history.len() == 2 && files(tab, &[], &[])).await?;
+        let before = untouched(&source)?;
+        crate::patch::answer(Some(ridge.clone()));
+        self.action(Action::Run("repo.apply-patch"))?;
+        self.until("the notice that ridge.patch is already applied", |tab| {
+            !tab.ui.patch.checking() && tab.ui.notices.newest().is_some_and(|notice| notice.title == "ridge.patch is already applied")
+        })
+        .await?;
+        let read = self.tab.read_with(self.cx, |tab, _| (tab.ui.prompt.open(), tab.ui.notices.newest().map(|notice| notice.detail.clone())))?;
+        if read != (false, Some(crate::patch::ALREADY.to_owned())) {
+            return Err(format!("Applying ridge.patch to its own repository reads {read:?}").into());
+        }
+        if untouched(&source)? != before {
+            return Err("An already applied patch changed a ref, the index or a file".into());
         }
         self.pass();
         Ok(())

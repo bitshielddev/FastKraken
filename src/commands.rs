@@ -294,6 +294,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::browse::COMMANDS,
         crate::diff_select::COMMANDS,
         crate::handoff::COMMANDS,
+        crate::patch::COMMANDS,
         crate::diff_select::SELECT_COMMANDS,
         crate::syntax::COMMANDS,
         crate::diff_options::COMMANDS,
@@ -1076,11 +1077,12 @@ mod tests {
         assert_eq!(ids(Bar::App), ["app.about", "app.preferences", "app.install-command"]);
         assert_eq!(
             ids(Bar::File),
-            ["tab.new", "tab.close", "repo.clone", "repo.init", "repo.open", "repo.close", "repo.refresh", "repo.reveal", "repo.terminal", "repo.editor"]
+            ["tab.new", "tab.close", "repo.clone", "repo.init", "repo.open", "repo.close", "repo.refresh", "repo.apply-patch", "repo.reveal", "repo.terminal", "repo.editor"]
         );
         assert_eq!(bar_index(Bar::File, "repo.clone"), Some(3));
         assert_eq!(bar_index(Bar::File, "repo.open"), Some(5));
-        assert_eq!(bar_index(Bar::File, "repo.reveal"), Some(9));
+        assert_eq!(bar_index(Bar::File, "repo.apply-patch"), Some(9));
+        assert_eq!(bar_index(Bar::File, "repo.reveal"), Some(11));
         assert_eq!(ids(Bar::Window), ["tab.next", "tab.previous"]);
         assert_eq!(bar_index(Bar::File, "repo.labels"), None);
         assert_eq!(ids(Bar::Edit), ["repo.find", "view.find-next", "view.find-previous"]);

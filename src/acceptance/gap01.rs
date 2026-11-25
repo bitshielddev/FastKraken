@@ -563,8 +563,8 @@ impl Replay<'_> {
         let rows = self.menu_rows(&Target::Commit(tip))?;
         let disabled: Vec<_> = rows.iter().filter(|row| row.2.is_some()).map(|row| row.0).collect();
         if disabled != ["commit.branch", "commit.tag", "branch.switch", "commit.checkout", "commit.merge", "commit.revert", "commit.reset"]
-            || rows.iter().rev().take(2).map(|row| row.0).collect::<Vec<_>>()
-                != ["commit.copy-message", "commit.copy-sha"]
+            || rows.iter().rev().take(3).map(|row| row.0).collect::<Vec<_>>()
+                != ["commit.save-patch", "commit.copy-message", "commit.copy-sha"]
             || rows.iter().any(|row| row.2.is_some() && row.2 != reason)
         {
             return Err(format!("During the merge the commit menu lists {rows:?}").into());
@@ -691,6 +691,7 @@ impl Replay<'_> {
                 "commit.browse-files",
                 "commit.copy-sha",
                 "commit.copy-message",
+                "commit.save-patch",
             ]
         {
             return Err(format!("The commit's menu lists {ids:?}").into());
@@ -917,6 +918,7 @@ impl Replay<'_> {
                 "file.reveal",
                 "file.copy-path",
                 "file.copy-full-path",
+                "file.save-patch",
             ]
             || rows.iter().any(|row| row.2.is_some())
         {
@@ -953,7 +955,7 @@ impl Replay<'_> {
         let staged = Target::File { path: "trail.txt".into(), side: commands::Side::Staged };
         let rows = self.menu_rows(&staged)?;
         if ids(rows.clone())
-            != ["file.unstage", "file.stash", "file.history", "file.blame", "file.edit", "file.open", "file.reveal", "file.copy-path", "file.copy-full-path"]
+            != ["file.unstage", "file.stash", "file.history", "file.blame", "file.edit", "file.open", "file.reveal", "file.copy-path", "file.copy-full-path", "file.save-patch"]
         {
             return Err(format!("The menu of the staged trail.txt lists {rows:?}").into());
         }

@@ -1164,6 +1164,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         A::Select(_) | A::Compare(_) | A::Inspect(_) | A::Search(_) | A::Reveal(_) | A::Containing(_) | A::GraphView(_) | A::Pin(_) | A::Highlight(_) | A::Changes(_) | A::Columns(_) | A::Sidebar(_) | A::More | A::OpenDiff | A::CloseDiff | A::DiffMode(_) => true,
         A::Text(_) | A::Syntax(_) | A::DiffOptions(_) | A::DiffText(_) | A::Find(_) | A::Images(_) | A::FileView(_) | A::FileHistory(_) | A::Blame(_) | A::Browse(_) => true,
         A::FileList(_) => true,
+        A::Patch(action) => action.reads(),
         A::Dismiss
         | A::Notice(_)
         | A::CopyText { .. }

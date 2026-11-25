@@ -682,13 +682,26 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         })
         .when(comparing.is_none() && state.count() > 1, |d| {
             let oids = picked_commits(ui);
+            let merges = oids.iter().any(|oid| ui.history.iter().any(|row| &row.oid == oid && row.parents.len() > 1));
             d.child(
-                div().pt(px(2.)).flex().gap(px(6.)).child(
-                    kit::btn("copy-picked-shas", format!("Copy {} SHAs", oids.len()))
-                        .small()
-                        .icon("copy")
-                        .on(copy_shas(&oids), cx),
-                ),
+                div()
+                    .pt(px(2.))
+                    .flex()
+                    .gap(px(6.))
+                    .child(
+                        kit::btn("copy-picked-shas", format!("Copy {} SHAs", oids.len()))
+                            .small()
+                            .icon("copy")
+                            .on(copy_shas(&oids), cx),
+                    )
+                    .when(!merges, |d| {
+                        d.child(
+                            kit::btn("save-picked-patch", "Save as patch…")
+                                .small()
+                                .icon("file")
+                                .on(crate::patch::save_commits(&oids), cx),
+                        )
+                    }),
             )
         });
     let body = div().flex_1().min_h_0().flex().flex_col().child(summary);

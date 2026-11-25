@@ -56,6 +56,7 @@ mod notice;
 mod operation;
 mod paging;
 mod palette;
+mod patch;
 mod perf;
 mod pick;
 mod picked;
@@ -1650,6 +1651,7 @@ impl Tab {
             Action::FileHistory(action) => file_history::dispatch(self, action, window, cx),
             Action::Blame(action) => blame::dispatch(self, action, window, cx),
             Action::Browse(action) => browse::dispatch(self, action, window, cx),
+            Action::Patch(action) => patch::dispatch(self, action, window, cx),
             Action::Recover(action) => recover::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
