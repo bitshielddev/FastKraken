@@ -15,17 +15,29 @@ use crate::{hooks::Committed, line_patch::Direction, notice::Failure};
 type Result<T> = std::result::Result<T, String>;
 const MAX_DIFF_BYTES: usize = 1024 * 1024;
 const SSH_TIMEOUTS: &str = "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2";
-pub(crate) fn patch_options(renames: bool) -> [&'static str; 8] {
-    [
+const WHOLE_FILE: &str = "--unified=1000000";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DiffOptions {
+    pub(crate) whole_file: bool,
+    pub(crate) ignore_whitespace: bool,
+}
+
+pub(crate) fn patch_options(renames: bool, options: DiffOptions) -> Vec<&'static str> {
+    let mut args = vec![
         "--no-color",
         "--no-ext-diff",
         "--no-textconv",
         if renames { "--find-renames" } else { "--no-renames" },
         "--full-index",
-        "--unified=3",
+        if options.whole_file { WHOLE_FILE } else { "--unified=3" },
         "--src-prefix=a/",
         "--dst-prefix=b/",
-    ]
+    ];
+    if options.ignore_whitespace {
+        args.push("--ignore-all-space");
+    }
+    args
 }
 
 #[derive(Clone, Debug)]
@@ -182,11 +194,17 @@ pub struct Diff {
     staged: bool,
     bytes: Vec<u8>,
     prefix: Range<usize>,
+    pub(crate) options: DiffOptions,
 }
 
 impl Diff {
     pub fn stageable(&self) -> bool {
-        self.source.is_some()
+        self.source.is_some() && !self.options.ignore_whitespace
+    }
+
+    pub(crate) fn shown_with(mut self, options: DiffOptions) -> Self {
+        self.options = options;
+        self
     }
 
     pub(crate) fn hunks_stageable(&self) -> bool {
@@ -657,19 +675,29 @@ impl Repository {
         Ok(result)
     }
 
+    #[cfg(test)]
     pub fn commit_diff(&self, oid: &str) -> Result<Diff> {
-        self.commit_patch(oid, None, None)
+        self.commit_diff_with(oid, DiffOptions::default())
     }
 
+    pub(crate) fn commit_diff_with(&self, oid: &str, options: DiffOptions) -> Result<Diff> {
+        self.commit_patch(oid, None, None, options)
+    }
+
+    #[cfg(test)]
     pub fn commit_path_diff(&self, oid: &str, path: &Path, from: Option<&Path>) -> Result<Diff> {
+        self.commit_path_diff_with(oid, path, from, DiffOptions::default())
+    }
+
+    pub(crate) fn commit_path_diff_with(&self, oid: &str, path: &Path, from: Option<&Path>, options: DiffOptions) -> Result<Diff> {
         validate_path(path)?;
         if let Some(from) = from {
             validate_path(from)?;
         }
-        self.commit_patch(oid, Some(path), from)
+        self.commit_patch(oid, Some(path), from, options)
     }
 
-    fn commit_patch(&self, oid: &str, path: Option<&Path>, from: Option<&Path>) -> Result<Diff> {
+    fn commit_patch(&self, oid: &str, path: Option<&Path>, from: Option<&Path>, options: DiffOptions) -> Result<Diff> {
         validate_oid(oid)?;
         let mut cmd = self.read_command();
         cmd.args([
@@ -680,24 +708,29 @@ impl Repository {
             "--root",
             "--patch",
         ])
-        .args(patch_options(true))
+        .args(patch_options(true, options))
         .arg(oid)
         .arg("--")
         .args(from)
         .args(path);
-        read_diff(cmd, None, false)
+        Ok(read_diff(cmd, None, false)?.shown_with(options))
     }
 
+    #[cfg(test)]
     pub fn file_diff(&self, path: &Path, staged: bool) -> Result<Diff> {
+        self.file_diff_with(path, staged, DiffOptions::default())
+    }
+
+    pub(crate) fn file_diff_with(&self, path: &Path, staged: bool, options: DiffOptions) -> Result<Diff> {
         validate_path(path)?;
         let mut cmd = self.read_command();
-        cmd.arg("diff").args(patch_options(false));
+        cmd.arg("diff").args(patch_options(false, options));
         if staged {
             cmd.arg("--cached");
         }
         cmd.arg("--").arg(path);
         let source = Some((self.root.clone(), path.to_owned()));
-        let mut diff = read_diff(cmd, source.clone(), false)?;
+        let mut diff = read_diff(cmd, source.clone(), false)?.shown_with(options);
         diff.staged = staged;
         if staged || !diff.bytes.is_empty() || !diff.text.is_empty() {
             return Ok(diff);
@@ -721,22 +754,27 @@ impl Repository {
         }
         let mut cmd = self.read_command();
         cmd.args(["diff", "--no-index"])
-            .args(patch_options(false))
+            .args(patch_options(false, options))
             .args(["--", "/dev/null"])
             .arg(path);
-        read_diff(cmd, source, true)
+        Ok(read_diff(cmd, source, true)?.shown_with(options))
     }
 
+    #[cfg(test)]
     pub fn staged_rename_diff(&self, from: &Path, path: &Path) -> Result<Diff> {
+        self.staged_rename_diff_with(from, path, DiffOptions::default())
+    }
+
+    pub(crate) fn staged_rename_diff_with(&self, from: &Path, path: &Path, options: DiffOptions) -> Result<Diff> {
         validate_path(from)?;
         validate_path(path)?;
         let mut cmd = self.read_command();
         cmd.args(["diff", "--cached"])
-            .args(patch_options(true))
+            .args(patch_options(true, options))
             .arg("--")
             .arg(from)
             .arg(path);
-        let mut diff = read_diff(cmd, None, false)?;
+        let mut diff = read_diff(cmd, None, false)?.shown_with(options);
         diff.staged = true;
         Ok(diff)
     }
@@ -847,6 +885,13 @@ impl Repository {
         build: impl FnOnce(&Diff) -> Result<Vec<u8>>,
     ) -> Result<()> {
         self.ensure_index_writable()?;
+        if diff.options.ignore_whitespace {
+            return Err(format!(
+                "Whitespace changes are hidden in this diff, so its {} cannot be applied. Show whitespace and select the {} again.",
+                part.name(),
+                part.name()
+            ));
+        }
         let (root, path) = diff
             .source
             .as_ref()
@@ -856,7 +901,7 @@ impl Repository {
             return Err(format!("The selected {} to a different repository.", part.belongs()));
         }
         let patch = build(diff)?;
-        let latest = self.file_diff(path, staged)?;
+        let latest = self.file_diff_with(path, staged, diff.options)?;
         if latest.bytes != diff.bytes {
             return Err(format!(
                 "This file changed since its diff was opened. Refresh and select the {} again.",
@@ -1556,6 +1601,7 @@ pub(crate) fn read_diff(
             staged: false,
             bytes: vec![],
             prefix: 0..0,
+            options: DiffOptions::default(),
         });
     }
     if !(status.success() || no_index && status.code() == Some(1)) {
@@ -1605,6 +1651,7 @@ fn parse_diff(bytes: Vec<u8>, source: Option<(PathBuf, PathBuf)>) -> Diff {
         staged: false,
         bytes,
         prefix: 0..prefix_end.unwrap_or(0),
+        options: DiffOptions::default(),
     }
 }
 
@@ -2906,6 +2953,86 @@ pub(crate) mod tests {
         let committed_diff = f.repo.commit_diff(head.trim()).unwrap();
         assert!(f.repo.stage_lines(&committed_diff, &[(0, 0)]).is_err());
         assert_eq!(f.git(&["ls-files", "--stage", "--", "note.txt"]), index);
+    }
+
+    const WHOLE: DiffOptions = DiffOptions { whole_file: true, ignore_whitespace: false };
+    const SPACES: DiffOptions = DiffOptions { whole_file: false, ignore_whitespace: true };
+
+    #[test]
+    fn a_whole_file_diff_is_one_hunk_holding_every_line_and_its_lines_still_stage() {
+        let f = Fixture::new();
+        let base: String = (1..=40).map(|n| format!("line {n}\n")).collect();
+        committed(&f, "log.txt", base.as_bytes());
+        let edited = base.replace("line 5\n", "line five\n").replace("line 35\n", "line 35\nline 35b\n");
+        fs::write(f.dir.join("log.txt"), &edited).unwrap();
+        let path = Path::new("log.txt");
+        assert_eq!(f.repo.file_diff(path, false).unwrap().hunks.len(), 2);
+        let whole = f.repo.file_diff_with(path, false, WHOLE).unwrap();
+        assert_eq!(whole.hunks.len(), 1);
+        assert_eq!(whole.options, WHOLE);
+        assert!(whole.stageable());
+        for n in 1..=40 {
+            let shown = whole.text.lines().any(|line| line.get(1..) == Some(&format!("line {n}")) || (n == 5 && line == "+line five"));
+            assert!(shown, "line {n} is missing from {}", whole.text);
+        }
+        f.repo.stage_lines(&whole, &picks(&whole, &["+line 35b"])).unwrap();
+        let expected = base.replace("line 35\n", "line 35\nline 35b\n");
+        assert_eq!(f.git(&["show", ":log.txt"]), expected.as_bytes());
+        assert_eq!(fs::read_to_string(f.dir.join("log.txt")).unwrap(), edited);
+        let staged = f.repo.file_diff_with(path, true, WHOLE).unwrap();
+        assert_eq!(staged.hunks.len(), 1);
+        f.repo.unstage_lines(&staged, &picks(&staged, &["+line 35b"])).unwrap();
+        assert_eq!(f.git(&["show", ":log.txt"]), base.as_bytes());
+        let whole = f.repo.file_diff_with(path, false, WHOLE).unwrap();
+        f.repo.stage_hunk(&whole, 0).unwrap();
+        assert_eq!(f.git(&["show", ":log.txt"]), edited.as_bytes());
+        assert_eq!(f.git(&["rev-list", "--count", "HEAD"]), b"1\n");
+    }
+
+    #[test]
+    fn a_whole_file_pick_is_refused_once_the_file_changes() {
+        let f = Fixture::new();
+        committed(&f, "note.txt", b"first\nsecond\nthird\n");
+        fs::write(f.dir.join("note.txt"), "first\nadded\nsecond\nthird\n").unwrap();
+        let path = Path::new("note.txt");
+        let whole = f.repo.file_diff_with(path, false, WHOLE).unwrap();
+        let lines = picks(&whole, &["+added"]);
+        let index = f.git(&["ls-files", "--stage", "--", "note.txt"]);
+        fs::write(f.dir.join("note.txt"), "first\nadded\nsecond\nthird changed\n").unwrap();
+        let err = f.repo.stage_lines(&whole, &lines).unwrap_err();
+        assert!(err.contains("changed since its diff was opened"), "{err}");
+        assert_eq!(f.git(&["ls-files", "--stage", "--", "note.txt"]), index);
+        assert_eq!(fs::read_to_string(f.dir.join("note.txt")).unwrap(), "first\nadded\nsecond\nthird changed\n");
+    }
+
+    #[test]
+    fn ignoring_whitespace_leaves_reindented_lines_unmarked_and_refuses_to_stage() {
+        let f = Fixture::new();
+        committed(&f, "code.rs", b"fn main() {\n  let a = 1;\n  let b = 2;\n}\n");
+        let edited = "fn main() {\n    let a = 1;\n    let b = 3;\n}\n";
+        fs::write(f.dir.join("code.rs"), edited).unwrap();
+        let path = Path::new("code.rs");
+        let plain = f.repo.file_diff(path, false).unwrap();
+        assert_eq!(changed_lines(&plain), ["-  let a = 1;", "-  let b = 2;", "+    let a = 1;", "+    let b = 3;"]);
+        let quiet = f.repo.file_diff_with(path, false, SPACES).unwrap();
+        assert_eq!(changed_lines(&quiet), ["-  let b = 2;", "+    let b = 3;"]);
+        assert!(!quiet.stageable() && !quiet.hunks_stageable());
+        let index = f.git(&["ls-files", "--stage", "--", "code.rs"]);
+        let err = f.repo.stage_hunk(&quiet, 0).unwrap_err();
+        assert!(err.contains("Whitespace changes are hidden"), "{err}");
+        let err = f.repo.stage_lines(&quiet, &picks(&quiet, &["+    let b = 3;"])).unwrap_err();
+        assert!(err.contains("Whitespace changes are hidden"), "{err}");
+        let err = f.repo.discard_hunk(&quiet, 0).unwrap_err();
+        assert!(err.contains("Whitespace changes are hidden"), "{err}");
+        assert_eq!(f.git(&["ls-files", "--stage", "--", "code.rs"]), index);
+        assert_eq!(fs::read_to_string(f.dir.join("code.rs")).unwrap(), edited);
+        fs::write(f.dir.join("code.rs"), "fn main() {\n    let a = 1;\n    let b = 2;\n}\n").unwrap();
+        let only_spaces = f.repo.file_diff_with(path, false, SPACES).unwrap();
+        assert!(only_spaces.hunks.is_empty() && only_spaces.text.is_empty(), "{}", only_spaces.text);
+        assert!(!f.repo.file_diff(path, false).unwrap().hunks.is_empty());
+        let head = String::from_utf8(f.git(&["rev-parse", "HEAD"])).unwrap();
+        let commit = f.repo.commit_diff_with(head.trim(), SPACES).unwrap();
+        assert_eq!(commit.options, SPACES);
     }
 
     #[test]

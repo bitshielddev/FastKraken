@@ -15,6 +15,7 @@ mod conflict;
 mod connect;
 mod credentials;
 mod diff_doc;
+mod diff_options;
 mod diff_select;
 mod discard;
 mod environment;
@@ -604,22 +605,23 @@ impl Tab {
         let from = self.ui.renamed_from(&selection, commit_path.as_deref());
         let colour = settings::settings(cx).colour_code;
         self.ui.syntax.on = colour;
+        let options = self.ui.diff_options.request();
         let working = syntax::working_root(&repo, &selection);
         Self::work(
             cx,
             move || {
                 let diff = match &selection {
                     Selection::Commit(oid) => match commit_path {
-                        Some(path) => repo.commit_path_diff(oid, &path, from.as_deref()),
-                        None => repo.commit_diff(oid),
+                        Some(path) => repo.commit_path_diff_with(oid, &path, from.as_deref(), options),
+                        None => repo.commit_diff_with(oid, options),
                     },
                     Selection::File { path, staged } => match (&from, staged) {
-                        (Some(from), true) => repo.staged_rename_diff(from, path),
-                        _ => repo.file_diff(path, *staged),
+                        (Some(from), true) => repo.staged_rename_diff_with(from, path, options),
+                        _ => repo.file_diff_with(path, *staged, options),
                     },
                     Selection::Stash(oid) => match commit_path {
-                        Some(path) => repo.stash_file_diff(oid, &path, from.as_deref()),
-                        None => repo.stash_diff(oid),
+                        Some(path) => repo.stash_file_diff(oid, &path, from.as_deref(), options),
+                        None => repo.stash_diff(oid, options),
                     },
                     Selection::Changes => return Err("Select a file to see its changes.".into()),
                 }?;
@@ -642,6 +644,7 @@ impl Tab {
                     truncated: diff.truncated,
                     sizes: &sizes,
                     working_size,
+                    options,
                 });
                 let layout = DiffLayout::new(&doc);
                 let rest = if colour {
@@ -1518,6 +1521,7 @@ impl Tab {
             Action::Lines(action) => lines::dispatch(self, action, window, cx),
             Action::Text(action) => diff_select::dispatch(self, action, window, cx),
             Action::Syntax(action) => syntax::dispatch(self, action, window, cx),
+            Action::DiffOptions(action) => diff_options::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
@@ -1560,6 +1564,7 @@ impl Tab {
             }
             Action::DiffMode(mode) => {
                 self.ui.diff_mode = mode;
+                self.ui.rewrap();
                 settings::Settings::update(cx, |s| s.diff_mode = mode);
                 cx.notify();
             }

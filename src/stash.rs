@@ -5,7 +5,7 @@ use crate::{
     prompt::{self, Answer, Spec},
     repository::{
         ChangedFile, Commit, Diff, Repository, checked, nul_separated, parse_changed_files,
-        patch_options, raw_path, read_diff, with_origins, validate_oid, validate_path,
+        DiffOptions, patch_options, raw_path, read_diff, with_origins, validate_oid, validate_path,
     },
     theme::*,
     view::{self, CommitInput, Desk, Selection, Ui},
@@ -552,16 +552,16 @@ impl Repository {
         parse_changed_files(&output)
     }
 
-    pub(crate) fn stash_diff(&self, oid: &str) -> Result<Diff, String> {
+    pub(crate) fn stash_diff(&self, oid: &str, options: DiffOptions) -> Result<Diff, String> {
         validate_oid(oid)?;
         let mut cmd = self.read_command();
         cmd.args(["stash", "show", "--include-untracked", "--patch"])
-            .args(patch_options(true))
+            .args(patch_options(true, options))
             .arg(oid);
-        read_diff(cmd, None, false)
+        Ok(read_diff(cmd, None, false)?.shown_with(options))
     }
 
-    pub(crate) fn stash_file_diff(&self, oid: &str, path: &Path, from: Option<&Path>) -> Result<Diff, String> {
+    pub(crate) fn stash_file_diff(&self, oid: &str, path: &Path, from: Option<&Path>, options: DiffOptions) -> Result<Diff, String> {
         validate_oid(oid)?;
         validate_path(path)?;
         if let Some(from) = from {
@@ -579,12 +579,12 @@ impl Repository {
         let mut cmd = self.read_command();
         cmd.env("GIT_INDEX_FILE", &index)
             .args(["diff", "--cached"])
-            .args(patch_options(true))
+            .args(patch_options(true, options))
             .arg(format!("{oid}^1"))
             .arg("--")
             .args(from)
             .arg(path);
-        read_diff(cmd, None, false)
+        Ok(read_diff(cmd, None, false)?.shown_with(options))
     }
 
     fn stash_has_untracked(&self, oid: &str) -> Result<bool, String> {
@@ -2595,7 +2595,7 @@ mod tests {
         assert_eq!(fs::read(f.dir.join("old.txt")).unwrap(), b"one\ntwo\nthree\nfour\n");
         assert!(!f.dir.join("new.txt").exists());
         assert_eq!(f.git(&["status", "--porcelain", "--", "old.txt", "new.txt"]), b"");
-        let diff = f.repo.stash_diff(&stash).unwrap();
+        let diff = f.repo.stash_diff(&stash, DiffOptions::default()).unwrap();
         assert!(diff.text.contains("rename from old.txt") && diff.text.contains("+FOUR"));
         assert!(!diff.text.contains("+one"));
 
@@ -2752,18 +2752,18 @@ mod tests {
     #[test]
     fn each_stashed_file_opens_as_its_own_diff() {
         let (f, stash) = surveyed();
-        let diff = f.repo.stash_file_diff(&stash, Path::new("map.txt"), None).unwrap();
+        let diff = f.repo.stash_file_diff(&stash, Path::new("map.txt"), None, DiffOptions::default()).unwrap();
         assert!(diff.text.contains("-map.txt base") && diff.text.contains("+map.txt stashed"));
         assert!(!diff.text.contains("log.txt"));
-        let diff = f.repo.stash_file_diff(&stash, Path::new("staged.txt"), None).unwrap();
+        let diff = f.repo.stash_file_diff(&stash, Path::new("staged.txt"), None, DiffOptions::default()).unwrap();
         assert!(diff.text.contains("+staged.txt stashed"));
-        let diff = f.repo.stash_file_diff(&stash, Path::new("new é.txt"), None).unwrap();
+        let diff = f.repo.stash_file_diff(&stash, Path::new("new é.txt"), None, DiffOptions::default()).unwrap();
         assert!(diff.text.contains("new file mode") && diff.text.contains("+untracked"));
-        let diff = f.repo.stash_file_diff(&stash, Path::new("gone.txt"), None).unwrap();
+        let diff = f.repo.stash_file_diff(&stash, Path::new("gone.txt"), None, DiffOptions::default()).unwrap();
         assert!(diff.text.contains("deleted file mode") && diff.text.contains("-gone.txt base"));
         let moved = f.repo.stash_files(&stash).unwrap().into_iter().find(|file| file.path == Path::new("moved.txt")).unwrap();
         assert_eq!(moved.from.as_deref(), Some(Path::new("old.txt")));
-        let diff = f.repo.stash_file_diff(&stash, Path::new("moved.txt"), Some(Path::new("old.txt"))).unwrap();
+        let diff = f.repo.stash_file_diff(&stash, Path::new("moved.txt"), Some(Path::new("old.txt")), DiffOptions::default()).unwrap();
         assert!(diff.text.contains("rename from old.txt") && diff.text.contains("rename to moved.txt"));
         assert!(!diff.text.contains("+one"));
         assert_eq!(f.git(&["status", "--porcelain"]), b"");

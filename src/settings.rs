@@ -51,6 +51,9 @@ pub(crate) struct Settings {
     pub(crate) push_after_commit: bool,
     pub(crate) fill_from_template: bool,
     pub(crate) colour_code: bool,
+    pub(crate) whole_file: bool,
+    pub(crate) ignore_whitespace: bool,
+    pub(crate) wrap_lines: bool,
 }
 
 impl Settings {
@@ -91,6 +94,9 @@ impl Default for Settings {
             push_after_commit: false,
             fill_from_template: true,
             colour_code: true,
+            whole_file: false,
+            ignore_whitespace: false,
+            wrap_lines: false,
         }
     }
 }
@@ -590,6 +596,9 @@ mod tests {
             push_after_commit: true,
             fill_from_template: false,
             colour_code: false,
+            whole_file: true,
+            ignore_whitespace: true,
+            wrap_lines: true,
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

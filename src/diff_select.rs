@@ -462,7 +462,8 @@ fn step(tab: &mut Tab, cx: &mut Context<Tab>) -> bool {
     let rows = view::diff_rows(ui);
     let Some(visual) = scrolled(&ui.diff_scroll, edge, rows) else { return true };
     let Some(row) = view::diff_doc_row(ui, visual, column) else { return true };
-    let at = if edge == Edge::Above { 0 } else { ui.diff.lines.get(row).map_or(0, |line| ui.diff.code(line).len()) };
+    let piece = view::diff_piece(ui, row, view::diff_part(ui, visual));
+    let at = if edge == Edge::Above { piece.start } else { piece.end };
     let (anchor, head) = dragged(&ui.diff, drag, Spot { row, at });
     choose(&mut tab.ui, column, anchor, head);
     cx.notify();
@@ -514,24 +515,26 @@ pub(crate) fn origin(ui: &Ui, column: Column) -> Pixels {
     ui.text.origins.get()[column.index()]
 }
 
-pub(crate) fn hit(ui: &Ui, window: &Window, row: usize, column: Column, x: Pixels, unit: Unit) -> usize {
+pub(crate) fn hit(ui: &Ui, window: &Window, row: usize, part: usize, column: Column, x: Pixels, unit: Unit) -> usize {
     let Some(line) = ui.diff.lines.get(row) else { return 0 };
     let code = ui.diff.code(line);
-    if code.is_empty() {
-        return 0;
+    let piece = view::diff_piece(ui, row, part);
+    let shown = code.get(piece.clone()).unwrap_or_default();
+    if shown.is_empty() {
+        return boundary(code, piece.start);
     }
     let x = x - origin(ui, column);
-    let mut run = window.text_style().to_run(code.len());
+    let mut run = window.text_style().to_run(shown.len());
     run.font.family = MONO.into();
-    let shaped = window.text_system().shape_line(code.to_owned().into(), px(TEXT_SMALL), &[run], None);
+    let shaped = window.text_system().shape_line(shown.to_owned().into(), px(TEXT_SMALL), &[run], None);
     let at = match unit {
         Unit::Character => shaped.closest_index_for_x(x),
-        Unit::Word | Unit::Line => shaped.index_for_x(x).unwrap_or(code.len()),
+        Unit::Word | Unit::Line => shaped.index_for_x(x).unwrap_or(shown.len()),
     };
-    boundary(code, at)
+    boundary(code, piece.start + at)
 }
 
-pub(crate) fn cell<T: Desk>(ui: &Ui, row: usize, column: Column, code: Div, cx: &Context<T>) -> Div {
+pub(crate) fn cell<T: Desk>(ui: &Ui, row: usize, part: usize, column: Column, code: Div, cx: &Context<T>) -> Div {
     let origins = ui.text.origins.clone();
     code.cursor(CursorStyle::IBeam)
         .on_children_prepainted(move |bounds, _, _| {
@@ -545,7 +548,7 @@ pub(crate) fn cell<T: Desk>(ui: &Ui, row: usize, column: Column, code: Div, cx: 
             MouseButton::Left,
             cx.listener(move |app, event: &MouseDownEvent, window, cx| {
                 let unit = Unit::of(event.click_count);
-                let at = hit(app.ui(), window, row, column, event.position.x, unit);
+                let at = hit(app.ui(), window, row, part, column, event.position.x, unit);
                 view::focus(app.ui(), window);
                 let press = Action::Press {
                     column,
@@ -570,7 +573,7 @@ pub(crate) fn moved<T: Desk>(app: &mut T, event: &MouseMoveEvent, window: &mut W
     let Some(column) = ui.text.chosen.as_ref().map(|chosen| chosen.column) else { return };
     let Some((visual, edge)) = pointed(&ui.diff_scroll, event.position.y, view::diff_rows(ui)) else { return };
     let Some(row) = view::diff_doc_row(ui, visual, column) else { return };
-    let at = hit(ui, window, row, column, event.position.x, Unit::Character);
+    let at = hit(ui, window, row, view::diff_part(ui, visual), column, event.position.x, Unit::Character);
     app.dispatch(view::Action::Text(Action::DragTo { spot: Spot { row, at }, edge }), window, cx);
 }
 

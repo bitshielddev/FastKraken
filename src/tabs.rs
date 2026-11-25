@@ -308,12 +308,16 @@ pub(crate) fn mirror(tab: &mut Tab, cx: &mut Context<Tab>) {
     let ui = &mut tab.ui;
     ui.sidebar_hidden = chosen.sidebar_hidden;
     ui.panel_hidden = chosen.panel_hidden;
+    let mode_changed = ui.diff_mode != chosen.diff_mode;
     ui.diff_mode = chosen.diff_mode;
+    if mode_changed {
+        ui.rewrap();
+    }
     ui.refs.show_labels = chosen.show_ref_labels;
     ui.sync.prune = chosen.prune_on_fetch;
     ui.autostash.always = chosen.stash_in_the_way;
-    ui.tools.editor = chosen.editor;
-    ui.tools.terminal = chosen.terminal;
+    ui.tools.editor = chosen.editor.clone();
+    ui.tools.terminal = chosen.terminal.clone();
     if ui.tools.custom != chosen.editor_command {
         ui.tools.custom = chosen.editor_command.clone();
         let field = ui.tools.command.clone();
@@ -322,6 +326,7 @@ pub(crate) fn mirror(tab: &mut Tab, cx: &mut Context<Tab>) {
     if tab.ui.syntax.on != chosen.colour_code {
         crate::syntax::follow(tab, chosen.colour_code, cx);
     }
+    crate::diff_options::follow(tab, &chosen, cx);
 }
 
 

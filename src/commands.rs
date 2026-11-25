@@ -267,6 +267,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::handoff::COMMANDS,
         crate::diff_select::SELECT_COMMANDS,
         crate::syntax::COMMANDS,
+        crate::diff_options::COMMANDS,
         crate::palette::COMMANDS,
         crate::help::COMMANDS,
         crate::preferences::COMMANDS,

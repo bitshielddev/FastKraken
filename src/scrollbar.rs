@@ -235,7 +235,6 @@ impl Scrollbar {
         self
     }
 
-    #[allow(dead_code)]
     pub fn marks(mut self, marks: impl IntoIterator<Item = Mark>) -> Self {
         self.marks.extend(marks);
         self

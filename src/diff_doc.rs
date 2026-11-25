@@ -1,3 +1,4 @@
+use crate::repository::DiffOptions;
 use std::{collections::HashMap, ops::Range, path::PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -5,6 +6,7 @@ pub(crate) const LINE_LIMIT: usize = 4096;
 const SHORTENED: &str = "… [line preview limited]";
 pub(crate) const EMPTY_FILE: &str = "This file is empty.";
 pub(crate) const EMPTY_DELETED: &str = "The deleted file was empty.";
+pub(crate) const WHITESPACE_ONLY: &str = "No changes to show while whitespace changes are hidden.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -83,6 +85,7 @@ pub(crate) struct DiffDoc {
     pub(crate) files: Vec<File>,
     pub(crate) stageable: bool,
     pub(crate) shortened: bool,
+    pub(crate) options: DiffOptions,
     text: String,
 }
 
@@ -92,6 +95,7 @@ pub(crate) struct Source<'a> {
     pub(crate) truncated: bool,
     pub(crate) sizes: &'a HashMap<String, u64>,
     pub(crate) working_size: Option<u64>,
+    pub(crate) options: DiffOptions,
 }
 
 #[derive(Default)]
@@ -414,7 +418,8 @@ impl DiffDoc {
         }
         let mut doc = builder.doc;
         doc.state = state;
-        doc.stageable = source.stageable && !source.truncated && !doc.shortened;
+        doc.stageable = source.stageable && !source.truncated && !doc.shortened && !source.options.ignore_whitespace;
+        doc.options = source.options;
         doc.mark_words();
         doc
     }
@@ -598,6 +603,7 @@ pub(crate) mod tests {
             truncated: false,
             sizes: &sizes,
             working_size: None,
+            options: DiffOptions::default(),
         };
         change(&mut source);
         DiffDoc::build(&source)
@@ -611,6 +617,7 @@ pub(crate) mod tests {
             truncated: false,
             sizes: &sizes,
             working_size,
+            options: DiffOptions::default(),
         })
     }
 
@@ -654,6 +661,18 @@ pub(crate) mod tests {
         assert_eq!(doc.code(&doc.lines[3]), "stepping stones");
         assert!(doc.has("+stepping stones"));
         assert_eq!(doc.stageable_hunks(), 2);
+    }
+
+    #[test]
+    fn a_diff_with_whitespace_hidden_cannot_be_staged_and_a_whole_file_diff_can() {
+        let patch = format!("diff --git a/b.rs b/b.rs\nindex {OLD}..{NEW} 100644\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-x\n+y\n");
+        let ignoring = DiffOptions { whole_file: false, ignore_whitespace: true };
+        let quiet = with(&patch, |source| source.options = ignoring);
+        assert!(!quiet.stageable && quiet.options.ignore_whitespace);
+        assert_eq!(quiet.state, PatchState::Text);
+        let whole = with(&patch, |source| source.options = DiffOptions { whole_file: true, ignore_whitespace: false });
+        assert!(whole.stageable && whole.options.whole_file);
+        assert!(with(&patch, |_| {}).stageable);
     }
 
     #[test]
@@ -713,6 +732,7 @@ pub(crate) mod tests {
             truncated: diff.truncated,
             sizes: &sizes,
             working_size,
+            options: diff.options,
         })
     }
 

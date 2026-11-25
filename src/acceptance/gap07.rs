@@ -5,6 +5,8 @@ use crate::{
     diff_select::{self, Column, Spot},
     lines::{self, How},
     prompt,
+    diff_options::{Action as Show, Choice},
+    theme::DIFF_LINE,
     view::{DiffMode, diff_placeholder},
 };
 use gpui::{Bounds, ClipboardItem, Entity, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, point};
@@ -135,7 +137,314 @@ impl Replay<'_> {
         self.cx.update(|cx| cx.write_to_clipboard(saved.unwrap_or_else(|| ClipboardItem::new_string(String::new()))))?;
         copied?;
         self.comment_coloured_from_the_file(dir).await?;
-        self.large_file_plain(dir).await
+        self.large_file_plain(dir).await?;
+        let shown = self.whole_file(dir).await;
+        let shown = match shown {
+            Ok(()) => self.ignore_whitespace(dir).await,
+            failed => failed,
+        };
+        self.reset_diff_options()?;
+        shown
+    }
+
+    fn reset_diff_options(&mut self) -> Result<()> {
+        for choice in [Choice::WholeFile, Choice::IgnoreWhitespace, Choice::Wrap] {
+            self.action(Action::DiffOptions(Show::Set(choice, false)))?;
+        }
+        Ok(())
+    }
+
+    fn scroll_top(&mut self) -> Result<f32> {
+        Ok(self.tab.read_with(self.cx, |tab, _| -f32::from(tab.ui.diff_scroll.0.borrow().base_handle.offset().y) / DIFF_LINE)?)
+    }
+
+    async fn jump_to(&mut self, key: &str, patch_line: &str) -> Result<()> {
+        self.key(key)?;
+        let target = self.tab.read_with(self.cx, |tab, _| row(tab, patch_line).and_then(|row| crate::view::diff_visual_of(&tab.ui, row)))?;
+        let target = target.ok_or_else(|| format!("The diff has no row {patch_line:?}"))?;
+        self.until(&format!("{key} landing on {patch_line:?}"), |tab| {
+            tab.ui.diff_options.jumped == Some(target) && tab.ui.diff_scroll.0.borrow().deferred_scroll_to_item.is_none()
+        })
+        .await?;
+        let top = self.scroll_top()?;
+        let expected = target.saturating_sub(3) as f32;
+        if (top - expected).abs() > 0.5 {
+            return Err(format!("{key} scrolled the top of the diff to row {top}, not {expected}, for {patch_line:?} at row {target}").into());
+        }
+        Ok(())
+    }
+
+    async fn whole_file(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0711");
+        let root = init(dir, "Whole-harbour")?;
+        let long = "anchor chain ".repeat(40).trim_end().to_owned();
+        let base: String = (1..=400)
+            .map(|n| if n == 250 { format!("{long}\n") } else { format!("line {n}\n") })
+            .collect();
+        record(&root, "harbour.txt", &base, "Chart the harbour")?;
+        let head = oid(&root, "HEAD")?;
+        let edited = base
+            .replace("line 5\n", "line five\n")
+            .replace("line 100\n", "line 100\nline 100b\n")
+            .replace("line 180\n", "")
+            .replace("line 280\n", "line two-eighty\n");
+        fs::write(root.join("harbour.txt"), &edited)?;
+        self.open(&root)?;
+        self.until("Whole-harbour with the harbour edited", |tab| tab.ui.repo == "Whole-harbour" && files(tab, &[], &["harbour.txt"]))
+            .await?;
+        self.action(Action::DiffMode(DiffMode::Unified))?;
+        self.open_patch("harbour.txt", false, "+line 100b").await?;
+        let hunks = self.tab.read_with(self.cx, |tab, _| (tab.ui.diff.hunks.len(), tab.ui.diff.has(" line 50")))?;
+        if hunks != (4, false) {
+            return Err(format!("With three lines of context the diff has (hunks, line 50 shown) {hunks:?}").into());
+        }
+        let title = self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, &Target::Repo, cx).into_iter().find(|entry| entry.id == "view.whole-file").map(|entry| entry.title)
+        })?;
+        if title.as_deref() != Some("Show the whole file in diffs") {
+            return Err(format!("The whole-file command reads {title:?}").into());
+        }
+
+        self.action(Action::DiffOptions(Show::Set(Choice::WholeFile, true)))?;
+        self.until("the whole harbour in one hunk", |tab| {
+            tab.ui.diff.options.whole_file && patch(tab, " line 50") && tab.ui.diff.hunks.len() == 1
+        })
+        .await?;
+        let (old, new, stageable, saved) = self.tab.read_with(self.cx, |tab, cx| {
+            let doc = &tab.ui.diff;
+            let side = |kind: crate::diff_doc::Kind| -> Vec<String> {
+                doc.lines
+                    .iter()
+                    .filter(|line| line.kind == crate::diff_doc::Kind::Context || line.kind == kind)
+                    .map(|line| doc.code(line).to_owned())
+                    .collect()
+            };
+            (side(crate::diff_doc::Kind::Deleted), side(crate::diff_doc::Kind::Added), doc.stageable, settings::settings(cx).whole_file)
+        })?;
+        let committed: Vec<String> = git(&root, &["show", "HEAD:harbour.txt"])?.lines().map(str::to_owned).collect();
+        let disk: Vec<String> = fs::read_to_string(root.join("harbour.txt"))?.lines().map(str::to_owned).collect();
+        if old != committed || new != disk {
+            return Err(format!("The whole-file diff holds {} old and {} new lines, not the {} committed and {} on disk", old.len(), new.len(), committed.len(), disk.len()).into());
+        }
+        if !stageable || !saved {
+            return Err(format!("The whole-file diff is stageable {stageable}, remembered {saved}").into());
+        }
+
+        let marks = self.tab.read_with(self.cx, |tab, _| crate::diff_options::marks(&tab.ui))?;
+        let colours: Vec<u32> = marks.iter().map(|mark| mark.color).collect();
+        use crate::theme::{ADDED, DELETED};
+        if colours != [DELETED, ADDED, ADDED, DELETED, DELETED, ADDED] {
+            return Err(format!("The scrollbar marks the changes with {marks:?}").into());
+        }
+        let expected = self.tab.read_with(self.cx, |tab, _| {
+            ["-line 5", "+line five", "+line 100b", "-line 180", "-line 280", "+line two-eighty"]
+                .map(|line| row(tab, line).map(|row| row as f32 / tab.ui.diff.lines.len() as f32))
+        })?;
+        if marks.iter().zip(expected).any(|(mark, at)| at.is_none_or(|at| (mark.at - at).abs() > 0.0001)) {
+            return Err(format!("The scrollbar marks sit at {marks:?}, not {expected:?}").into());
+        }
+
+        self.focus_desk()?;
+        self.jump_to("alt-down", "-line 5").await?;
+        self.jump_to("alt-down", "+line 100b").await?;
+        self.jump_to("alt-down", "-line 180").await?;
+        self.jump_to("alt-up", "+line 100b").await?;
+        let title = self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, &Target::Repo, cx).into_iter().find(|entry| entry.id == "view.next-change").map(|entry| (entry.title, entry.disabled))
+        })?;
+        if title != Some(("Next change".to_owned(), None)) {
+            return Err(format!("The next-change command reads {title:?}").into());
+        }
+
+        self.pick("+line 100b", How::One, &["+line 100b"]).await?;
+        self.key("s")?;
+        self.until("harbour.txt on both sides", |tab| files(tab, &["harbour.txt"], &["harbour.txt"])).await?;
+        index_is(&root, "harbour.txt", base.replace("line 100\n", "line 100\nline 100b\n").as_bytes())?;
+        if added(&root, &["diff", "--", "harbour.txt"])? != ["-line 5", "+line five", "-line 180", "-line 280", "+line two-eighty"] {
+            return Err(format!("The unstaged edits after staging one line are {:?}", added(&root, &["diff", "--", "harbour.txt"])?).into());
+        }
+        if fs::read_to_string(root.join("harbour.txt"))? != edited {
+            return Err("Staging a line changed harbour.txt on disk".into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        self.until("the whole unstaged harbour without the staged line", |tab| {
+            tab.ui.diff.options.whole_file && patch(tab, "+line five") && !tab.ui.diff.has("+line 100b") && tab.ui.diff.has(" line 100b")
+        })
+        .await?;
+
+        self.action(Action::DiffOptions(Show::Set(Choice::Wrap, true)))?;
+        let long_line = format!(" {long}");
+        self.until("the long line wrapped", |tab| {
+            tab.ui.diff_options.wrapped.is_some() && crate::view::diff_rows(&tab.ui) > tab.ui.diff.lines.len()
+        })
+        .await?;
+        let wrapped = self.tab.update(self.cx, |tab, window, cx| {
+            let ui = &tab.ui;
+            let at = row(tab, &long_line)?;
+            let visual = crate::view::diff_visual_of(ui, at)?;
+            let width = ui.diff_options.columns.unified;
+            let mut pieces = Vec::new();
+            let mut part = 0;
+            while crate::view::diff_doc_row(ui, visual + part, Column::Unified) == Some(at) {
+                if crate::view::diff_part(ui, visual + part) != part {
+                    return None;
+                }
+                pieces.push(crate::view::diff_piece(ui, at, part));
+                part += 1;
+            }
+            let code = ui.diff.code(&ui.diff.lines[at]);
+            let left = diff_select::origin(ui, Column::Unified);
+            let second = pieces.get(1)?.clone();
+            let hits = (
+                diff_select::hit(ui, window, at, 1, Column::Unified, left - px(20.), diff_select::Unit::Character),
+                diff_select::hit(ui, window, at, 1, Column::Unified, left + px(4000.), diff_select::Unit::Character),
+            );
+            let joined: String = pieces.iter().map(|piece| &code[piece.clone()]).collect();
+            let fits = pieces.iter().all(|piece| code[piece.clone()].chars().count() <= width);
+            Some((pieces.len(), joined == code, fits, hits == (second.start, second.end), settings::settings(cx).wrap_lines, width))
+        })?;
+        match wrapped {
+            Some((parts, true, true, true, true, width)) if parts >= 2 && width > 20 => {}
+            other => return Err(format!("The wrapped long line reads (parts, whole, fits, hits, remembered, width) {other:?}").into()),
+        }
+        self.jump_to("alt-down", "-line 5").await?;
+        self.jump_to("alt-down", "-line 180").await?;
+        self.jump_to("alt-down", "-line 280").await?;
+        let shifted = self.tab.read_with(self.cx, |tab, _| {
+            row(tab, "-line 280").and_then(|at| Some((at, crate::view::diff_visual_of(&tab.ui, at)?)))
+        })?;
+        if !shifted.is_some_and(|(at, visual)| visual > at) {
+            return Err(format!("Below the wrapped line, -line 280 sits at (row, visual row) {shifted:?}").into());
+        }
+        self.action(Action::DiffOptions(Show::Set(Choice::Wrap, false)))?;
+        self.until("one row per line again", |tab| {
+            tab.ui.diff_options.wrapped.is_none() && crate::view::diff_rows(&tab.ui) == tab.ui.diff.lines.len()
+        })
+        .await?;
+
+        self.action(Action::DiffOptions(Show::Set(Choice::WholeFile, false)))?;
+        self.until("the harbour back in hunks", |tab| {
+            !tab.ui.diff.options.whole_file && patch(tab, "+line five") && !tab.ui.diff.has(" line 50") && tab.ui.diff.hunks.len() == 3
+        })
+        .await?;
+        let saved = self.tab.read_with(self.cx, |_, cx| (settings::settings(cx).whole_file, settings::settings(cx).wrap_lines))?;
+        if saved != (false, false) {
+            return Err(format!("After switching back the settings read (whole file, wrap) {saved:?}").into());
+        }
+        self.key("escape")?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn ignore_whitespace(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP0712");
+        let root = init(dir, "Quiet-tide")?;
+        let before = "fn tide() {\n  let high = 1;\n  let low = 2;\n  let slack = 3;\n}\n";
+        let after = "fn tide() {\n    let high = 1;\n    let low = 5;\n    let slack = 3;\n}\n";
+        record(&root, "tide.rs", before, "Measure the tide")?;
+        git(&root, &["add", "--", "tide.rs"])?;
+        fs::write(root.join("swell.rs"), before)?;
+        git(&root, &["add", "--", "swell.rs"])?;
+        git(&root, &["commit", "-qm", "Measure the swell"])?;
+        fs::write(root.join("tide.rs"), after)?;
+        fs::write(root.join("swell.rs"), before.replace("  let", "\tlet"))?;
+        let index = git(&root, &["ls-files", "--stage"])?;
+        let head = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Quiet-tide with both files edited", |tab| tab.ui.repo == "Quiet-tide" && files(tab, &[], &["swell.rs", "tide.rs"]))
+            .await?;
+        self.action(Action::DiffMode(DiffMode::Unified))?;
+        self.open_patch("tide.rs", false, "+    let low = 5;").await?;
+        let marked = self.tab.read_with(self.cx, |tab, _| ["-  let high = 1;", "+    let high = 1;", "+    let slack = 3;"].map(|line| tab.ui.diff.has(line)))?;
+        if marked != [true, true, true] {
+            return Err(format!("Before ignoring whitespace the re-indented rows are marked {marked:?}").into());
+        }
+        let quiet = added(&root, &["diff", "--ignore-all-space", "--", "tide.rs"])?;
+        if quiet != ["-  let low = 2;", "+    let low = 5;"] {
+            return Err(format!("Git's own diff ignoring whitespace reads {quiet:?}").into());
+        }
+
+        self.focus_desk()?;
+        self.run_command("view.ignore-whitespace")?;
+        self.until("the tide's diff with whitespace ignored", |tab| {
+            tab.ui.diff.options.ignore_whitespace && patch(tab, "+    let low = 5;") && !tab.ui.diff.has("+    let high = 1;")
+        })
+        .await?;
+        let shown = self.tab.read_with(self.cx, |tab, cx| {
+            let doc = &tab.ui.diff;
+            let changed: Vec<String> = doc
+                .lines
+                .iter()
+                .filter(|line| matches!(line.kind, crate::diff_doc::Kind::Added | crate::diff_doc::Kind::Deleted))
+                .map(|line| doc.text(line).to_owned())
+                .collect();
+            let context: Vec<String> = doc
+                .lines
+                .iter()
+                .filter(|line| line.kind == crate::diff_doc::Kind::Context)
+                .map(|line| doc.code(line).trim().to_owned())
+                .collect();
+            (
+                changed,
+                context,
+                doc.stageable,
+                lines::side(&tab.ui),
+                crate::view::diff_bar_texts(&tab.ui),
+                settings::settings(cx).ignore_whitespace,
+            )
+        })?;
+        let (changed, context, stageable, side, bars, saved) = shown;
+        if changed != quiet || !context.iter().any(|line| line == "let high = 1;") || !context.iter().any(|line| line == "let slack = 3;") {
+            return Err(format!("With whitespace ignored the diff marks {changed:?} and keeps {context:?} as context").into());
+        }
+        if stageable || side.is_some() || bars != [crate::view::WHITESPACE_HIDDEN] || !saved {
+            return Err(format!("With whitespace ignored: stageable {stageable}, line side {side:?}, bars {bars:?}, remembered {saved}").into());
+        }
+        let low = self.tab.read_with(self.cx, |tab, _| row(tab, "+    let low = 5;"))?.ok_or("The diff has no +    let low = 5; row")?;
+        self.action(Action::Lines(lines::Action::Press { row: low, how: How::One }))?;
+        self.until("no line picked while whitespace is hidden", |tab| picked(tab).is_empty() && lines::target(&tab.ui).is_none()).await?;
+        self.action(Action::StageHunk(0))?;
+        self.until("the hunk refused", |tab| tab.ui.notice_text().contains("Whitespace changes are hidden")).await?;
+        git_is(&root, &["ls-files", "--stage"], &index)?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "")?;
+
+        self.open_patch_unstageable("swell.rs").await?;
+        let message = self.tab.read_with(self.cx, |tab, _| (tab.ui.diff.lines.is_empty(), diff_placeholder(&tab.ui, false)))?;
+        if message != (true, Some(crate::diff_doc::WHITESPACE_ONLY.to_owned())) {
+            return Err(format!("The re-indented swell.rs shows {message:?}").into());
+        }
+        if git(&root, &["diff", "--ignore-all-space", "--", "swell.rs"])? != "" || git(&root, &["diff", "--", "swell.rs"])?.is_empty() {
+            return Err("Git does not see swell.rs as changed only in whitespace".into());
+        }
+
+        let title = self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, &Target::Repo, cx).into_iter().find(|entry| entry.id == "view.ignore-whitespace").map(|entry| entry.title)
+        })?;
+        if title.as_deref() != Some("Show whitespace changes") {
+            return Err(format!("The whitespace command reads {title:?}").into());
+        }
+        self.run_command("view.ignore-whitespace")?;
+        self.until("swell.rs re-indented again", |tab| !tab.ui.diff.options.ignore_whitespace && patch(tab, "+\tlet high = 1;")).await?;
+        self.open_patch("tide.rs", false, "+    let high = 1;").await?;
+        self.action(Action::StageHunk(0))?;
+        self.until("tide.rs staged whole", |tab| files(tab, &["tide.rs"], &["swell.rs"])).await?;
+        index_is(&root, "tide.rs", after.as_bytes())?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        if fs::read_to_string(root.join("tide.rs"))? != after {
+            return Err("Staging changed tide.rs on disk".into());
+        }
+        self.key("escape")?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn open_patch_unstageable(&mut self, path: &str) -> Result<()> {
+        self.action(Action::Select(file(path, false)))?;
+        self.action(Action::OpenDiff)?;
+        self.until(&format!("the unstaged diff of {path}"), |tab| {
+            tab.ui.selection == Some(file(path, false)) && tab.ui.diff_open && !tab.ui.loading_diff() && tab.diff.is_some()
+        })
+        .await
     }
 
     fn clipboard(&mut self) -> Result<Option<String>> {
@@ -176,7 +485,7 @@ impl Replay<'_> {
         };
         let reach = self.tab.update(self.cx, |tab, window, _| {
             let left = diff_select::origin(&tab.ui, Column::Unified);
-            let hit = |x: Pixels, unit| diff_select::hit(&tab.ui, window, tide, Column::Unified, x, unit);
+            let hit = |x: Pixels, unit| diff_select::hit(&tab.ui, window, tide, 0, Column::Unified, x, unit);
             (hit(left - px(30.), diff_select::Unit::Character), hit(left + px(4000.), diff_select::Unit::Character))
         })?;
         if reach != (0, "tide rope".len()) {

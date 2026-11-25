@@ -32,9 +32,18 @@ enum SplitRow {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Change {
+    pub(crate) start: usize,
+    pub(crate) deleted: Option<usize>,
+    pub(crate) added: Option<usize>,
+}
+
 #[derive(Default)]
 pub(crate) struct Layout {
     split: Vec<SplitRow>,
+    split_of: Vec<usize>,
+    changes: Vec<Change>,
     widest_unified: Option<usize>,
     widest_code: Option<usize>,
 }
@@ -55,10 +64,15 @@ impl Layout {
             .max_by_key(|(_, row)| doc.code(row).chars().count())
             .map(|(index, _)| index);
         let mut split = Vec::with_capacity(doc.lines.len());
+        let mut changes = Vec::new();
         runs(&doc.lines, |run| match run {
             Run::Shared(row) => split.push(SplitRow::Shared(row)),
             Run::Both(row) => split.push(SplitRow::Sides { old: Some(row), new: Some(row) }),
             Run::Change { deleted, added, old_note, new_note } => {
+                let (deleted_first, added_first) = (deleted.first().copied(), added.first().copied());
+                if let Some(start) = deleted_first.into_iter().chain(added_first).min() {
+                    changes.push(Change { start, deleted: deleted_first, added: added_first });
+                }
                 for offset in 0..deleted.len().max(added.len()) {
                     split.push(SplitRow::Sides {
                         old: deleted.get(offset).copied(),
@@ -70,25 +84,232 @@ impl Layout {
                 }
             }
         });
+        let mut split_of = vec![0; doc.lines.len()];
+        for (index, item) in split.iter().enumerate() {
+            match item {
+                SplitRow::Shared(row) => split_of[*row] = index,
+                SplitRow::Sides { old, new } => {
+                    for row in [*old, *new].into_iter().flatten() {
+                        split_of[row] = index;
+                    }
+                }
+            }
+        }
         Self {
             split,
+            split_of,
+            changes,
             widest_unified,
             widest_code,
         }
     }
 }
 
-pub(crate) fn rows(ui: &Ui) -> usize {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Columns {
+    pub(crate) unified: usize,
+    pub(crate) split: usize,
+    pub(crate) tab: usize,
+}
+
+const UNIFIED_GUTTER: f32 = 96.;
+const SPLIT_GUTTER: f32 = 50.;
+const WRAP_MARGIN: f32 = 14.;
+const NARROWEST: usize = 8;
+
+impl Columns {
+    pub(crate) fn fitting(width: Pixels, cell: Pixels, tab: Pixels) -> Self {
+        let cell = f32::from(cell).max(1.);
+        let width = f32::from(width);
+        let fit = |room: f32| ((room / cell).floor().max(0.) as usize).max(NARROWEST);
+        Self {
+            unified: fit(width - UNIFIED_GUTTER - WRAP_MARGIN),
+            split: fit((width - 1.) / 2. - SPLIT_GUTTER - WRAP_MARGIN),
+            tab: ((f32::from(tab) / cell).ceil() as usize).max(1),
+        }
+    }
+}
+
+pub(crate) fn measure(window: &Window, width: Pixels) -> Columns {
+    let shaped = |text: &'static str| {
+        let mut run = window.text_style().to_run(text.len());
+        run.font.family = MONO.into();
+        window.text_system().shape_line(text.into(), px(TEXT_SMALL), &[run], None).width
+    };
+    Columns::fitting(width, shaped("0"), shaped("\t"))
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Wrapped {
+    breaks: Vec<Vec<usize>>,
+    rows: Vec<(usize, usize)>,
+    first: Vec<usize>,
+}
+
+fn wide(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1100..=0x115f
+            | 0x2e80..=0x303e
+            | 0x3041..=0x33ff
+            | 0x3400..=0x4dbf
+            | 0x4e00..=0x9fff
+            | 0xa000..=0xa4cf
+            | 0xac00..=0xd7a3
+            | 0xf900..=0xfaff
+            | 0xfe30..=0xfe4f
+            | 0xff00..=0xff60
+            | 0xffe0..=0xffe6
+            | 0x1f300..=0x1f64f
+            | 0x1f900..=0x1f9ff
+            | 0x20000..=0x3fffd
+    )
+}
+
+fn cells(grapheme: &str, tab: usize) -> usize {
+    if grapheme == "\t" {
+        return tab;
+    }
+    match grapheme.chars().next() {
+        Some(c) if c.is_ascii() => 1,
+        Some(c) if wide(c) => 2,
+        _ => 1,
+    }
+}
+
+pub(crate) fn breaks(code: &str, width: usize, tab: usize) -> Vec<usize> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let width = width.max(1);
+    if code.len() <= width && !code.contains('\t') {
+        return Vec::new();
+    }
+    let mut cuts = Vec::new();
+    let (mut used, mut start, mut inked) = (0, 0, false);
+    let mut soft: Option<(usize, usize)> = None;
+    for (at, grapheme) in code.grapheme_indices(true) {
+        let size = cells(grapheme, tab);
+        if used + size > width && used > 0 {
+            match soft.filter(|&(offset, before)| offset > start && before * 2 >= width) {
+                Some((offset, before)) => {
+                    cuts.push(offset);
+                    used -= before;
+                    start = offset;
+                    inked = used > 0;
+                }
+                None => {
+                    cuts.push(at);
+                    used = 0;
+                    start = at;
+                    inked = false;
+                }
+            }
+            soft = None;
+            if used + size > width && used > 0 {
+                cuts.push(at);
+                used = 0;
+                start = at;
+                inked = false;
+            }
+        }
+        used += size;
+        if !grapheme.chars().all(char::is_whitespace) {
+            inked = true;
+        } else if inked {
+            soft = Some((at + grapheme.len(), used));
+        }
+    }
+    cuts
+}
+
+pub(crate) fn wrap(doc: &DiffDoc, layout: &Layout, mode: Mode, columns: Columns) -> Wrapped {
+    let width = match mode {
+        Mode::Unified => columns.unified,
+        Mode::Split => columns.split,
+    };
+    let breaks: Vec<Vec<usize>> = doc
+        .lines
+        .iter()
+        .map(|line| if line.kind.is_code() { self::breaks(doc.code(line), width, columns.tab) } else { Vec::new() })
+        .collect();
+    let parts = |row: Option<usize>| row.and_then(|row| breaks.get(row)).map_or(1, |cuts| cuts.len() + 1);
+    let items: Vec<usize> = match mode {
+        Mode::Unified => (0..doc.lines.len()).map(|row| parts(Some(row))).collect(),
+        Mode::Split => layout
+            .split
+            .iter()
+            .map(|item| match item {
+                SplitRow::Shared(_) => 1,
+                SplitRow::Sides { old, new } => parts(*old).max(parts(*new)),
+            })
+            .collect(),
+    };
+    let mut rows = Vec::with_capacity(items.len());
+    let mut first = Vec::with_capacity(items.len());
+    for (item, count) in items.into_iter().enumerate() {
+        first.push(rows.len());
+        rows.extend((0..count).map(|part| (item, part)));
+    }
+    Wrapped { breaks, rows, first }
+}
+
+fn base_rows(ui: &Ui) -> usize {
     match ui.diff_mode {
         Mode::Unified => ui.diff.lines.len(),
         Mode::Split => ui.diff_layout.split.len(),
     }
 }
 
+pub(crate) fn item(ui: &Ui, visual: usize) -> Option<(usize, usize)> {
+    match &ui.diff_options.wrapped {
+        Some(wrapped) => wrapped.rows.get(visual).copied(),
+        None => (visual < base_rows(ui)).then_some((visual, 0)),
+    }
+}
+
+pub(crate) fn piece(ui: &Ui, row: usize, part: usize) -> Range<usize> {
+    let length = ui.diff.lines.get(row).map_or(0, |line| ui.diff.code(line).len());
+    let Some(cuts) = ui.diff_options.wrapped.as_ref().and_then(|wrapped| wrapped.breaks.get(row)) else {
+        return if part == 0 { 0..length } else { length..length };
+    };
+    let start = match part {
+        0 => 0,
+        _ => cuts.get(part - 1).copied().unwrap_or(length),
+    };
+    let end = cuts.get(part).copied().unwrap_or(length);
+    start.min(end)..end
+}
+
+pub(crate) fn visual_of(ui: &Ui, row: usize) -> Option<usize> {
+    let item = match ui.diff_mode {
+        Mode::Unified => (row < ui.diff.lines.len()).then_some(row)?,
+        Mode::Split => *ui.diff_layout.split_of.get(row)?,
+    };
+    match &ui.diff_options.wrapped {
+        Some(wrapped) => wrapped.first.get(item).copied(),
+        None => Some(item),
+    }
+}
+
+pub(crate) fn part(ui: &Ui, visual: usize) -> usize {
+    item(ui, visual).map_or(0, |(_, part)| part)
+}
+
+pub(crate) fn changes(ui: &Ui) -> &[Change] {
+    &ui.diff_layout.changes
+}
+
+pub(crate) fn rows(ui: &Ui) -> usize {
+    match &ui.diff_options.wrapped {
+        Some(wrapped) => wrapped.rows.len(),
+        None => base_rows(ui),
+    }
+}
+
 pub(crate) fn doc_row(ui: &Ui, visual: usize, column: Column) -> Option<usize> {
+    let (item, _) = self::item(ui, visual)?;
     match (ui.diff_mode, column) {
-        (Mode::Unified, _) => (visual < ui.diff.lines.len()).then_some(visual),
-        (Mode::Split, column) => match ui.diff_layout.split.get(visual)? {
+        (Mode::Unified, _) => (item < ui.diff.lines.len()).then_some(item),
+        (Mode::Split, column) => match ui.diff_layout.split.get(item)? {
             SplitRow::Shared(row) => Some(*row),
             SplitRow::Sides { old, new } if column == Column::Old => old.or(*new),
             SplitRow::Sides { old, new } => new.or(*old),
@@ -262,6 +483,8 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         .when(!listing_history && !doc.lines.is_empty(), |d| {
             d.child(mode_control(mode, cx))
         })
+        .when(!listing_history, |d| d.child(options_control(ui, cx)))
+        .when(!listing_history && !doc.lines.is_empty(), |d| d.child(change_buttons(cx)))
         .child(kit::icon_btn(
             "close-diff",
             "x",
@@ -278,7 +501,8 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         _ => "patch".to_owned(),
     };
     let split = mode == Mode::Split;
-    let code_width = if split {
+    let wrapping = ui.diff_options.wrapped.is_some();
+    let code_width = if split && !wrapping {
         layout.widest_code.and_then(|row| doc.lines.get(row)).map(|row| {
             let text = doc.code(row);
             let mut run = window.text_style().to_run(text.len());
@@ -293,13 +517,10 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     } else {
         None
     };
-    let count = if split {
-        layout.split.len()
-    } else {
-        doc.lines.len()
-    };
+    let count = rows(ui);
+    let whole_file = doc.options.whole_file;
     let lines = uniform_list(
-        SharedString::from(format!("{list_id}-{mode:?}")),
+        SharedString::from(format!("{list_id}-{mode:?}-{wrapping}")),
         count,
         cx.processor(move |app, rows: Range<usize>, _, cx| {
             let ui = app.ui();
@@ -308,16 +529,17 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             let doc = &ui.diff;
             rows
                 .filter_map(|index| {
+                    let (item, part) = self::item(ui, index)?;
                     let row = if split {
-                        match layout.split.get(index)? {
+                        match layout.split.get(item)? {
                             SplitRow::Shared(row) => doc.lines.get(*row)?,
                             SplitRow::Sides { old, new } => {
                                 let at = new.or(*old).and_then(|row| doc.lines.get(row)).map_or(0, |row| row.at);
                                 return Some(line_menu(
                                     base_row()
-                                        .child(split_cell(ui, index, *old, true, code_width, cx))
+                                        .child(split_cell(ui, index, *old, true, code_width, part, cx))
                                         .child(split_divider())
-                                        .child(split_cell(ui, index, *new, false, code_width, cx)),
+                                        .child(split_cell(ui, index, *new, false, code_width, part, cx)),
                                     at,
                                     [*old, *new],
                                     cx,
@@ -325,11 +547,19 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                             }
                         }
                     } else {
-                        doc.lines.get(index)?
+                        doc.lines.get(item)?
                     };
                     let text = doc.text(row);
+                    let first = part == 0;
                     Some(match row.kind {
-                        Kind::Hunk => hunk_row(text, row.hunk.filter(|_| doc.stageable), side, editable, split, cx),
+                        Kind::Hunk => hunk_row(
+                            text,
+                            row.hunk.filter(|_| doc.stageable && !whole_file),
+                            side,
+                            editable,
+                            split,
+                            cx,
+                        ),
                         Kind::File => {
                             let path = text.rsplit_once(" b/").map_or(text, |(_, path)| path);
                             base_row()
@@ -347,16 +577,23 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                                 .when_some(line_background(row.kind), |d, bg| d.bg(rgb(bg)))
                                 .child(crate::lines::gutter(
                                     ui,
-                                    index,
+                                    item,
                                     gutter_cells()
-                                        .child(number(row.old, 40.))
-                                        .child(number(row.new, 40.))
-                                        .child(marker(row.kind)),
+                                        .child(number(row.old.filter(|_| first), 40.))
+                                        .child(number(row.new.filter(|_| first), 40.))
+                                        .child(marker(if first { row.kind } else { Kind::Context })),
                                     cx,
                                 ))
-                                .child(diff_select::cell(ui, index, Column::Unified, code(ui, index, row, Column::Unified), cx)),
+                                .child(diff_select::cell(
+                                    ui,
+                                    item,
+                                    part,
+                                    Column::Unified,
+                                    code(ui, item, row, Column::Unified, part),
+                                    cx,
+                                )),
                             row.at,
-                            [Some(index), None],
+                            [Some(item), None],
                             cx,
                         ),
                     })
@@ -367,7 +604,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     .track_scroll(ui.diff_scroll.clone())
     .flex_1()
     .min_h_0();
-    let mut lines = if split {
+    let mut lines = if split || wrapping {
         lines.with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::FitList)
     } else {
         lines
@@ -377,6 +614,9 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     if split {
         lines.style().restrict_scroll_to_axis = Some(true);
     }
+    let marks = showing_marks(ui, listing_history);
+    let measured = ui.diff_options.measured;
+    let desk = cx.entity().downgrade();
     let bars = (!listing_history).then(|| bars(ui)).unwrap_or_default();
     let placeholder = (!listing_history && doc.lines.is_empty() && doc.state != PatchState::Truncated)
         .then(|| placeholder(ui, from.is_some()));
@@ -401,10 +641,28 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             } else {
                 kit::scrollbar("diff-pan", &ui.diff_scroll)
             };
+            let list = div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(lines)
+                .on_children_prepainted(move |bounds, window, cx| {
+                    let Some(width) = bounds.first().map(|bounds| bounds.size.width) else { return };
+                    if width == measured || width <= px(0.) {
+                        return;
+                    }
+                    let columns = measure(window, width);
+                    let _ = desk.update(cx, |app, cx| {
+                        if crate::diff_options::resized(app.ui_mut(), width, columns) {
+                            cx.notify();
+                        }
+                    });
+                });
             d.when(split, |d| d.child(split_headings()))
-                .child(crate::lines::released(div().flex_1().min_h_0().flex().flex_col().child(lines), cx))
-                .child(kit::scrollbar("diff-scrollbar", &ui.diff_scroll))
-                .child(sideways.horizontal())
+                .child(crate::lines::released(list, cx))
+                .child(kit::scrollbar("diff-scrollbar", &ui.diff_scroll).marks(marks))
+                .when(!wrapping, |d| d.child(sideways.horizontal()))
         })
 }
 
@@ -423,6 +681,7 @@ pub(crate) fn placeholder_text(ui: &Ui, renamed: bool) -> Option<String> {
         PatchState::Empty(Blank::EmptyFile) => diff_doc::EMPTY_FILE.to_owned(),
         PatchState::Empty(Blank::EmptyDeleted) => diff_doc::EMPTY_DELETED.to_owned(),
         PatchState::Empty(Blank::Renamed) => RENAMED_ONLY.to_owned(),
+        PatchState::Empty(Blank::Nothing) if ui.diff.options.ignore_whitespace => diff_doc::WHITESPACE_ONLY.to_owned(),
         PatchState::Empty(Blank::Nothing) => match whole {
             Some(what) => format!("This {what} changes no files."),
             None if renamed => RENAMED_ONLY.to_owned(),
@@ -454,7 +713,7 @@ fn placeholder(ui: &Ui, renamed: bool) -> Div {
         )
 }
 
-fn bar_texts(ui: &Ui) -> Vec<&'static str> {
+pub(crate) fn bar_texts(ui: &Ui) -> Vec<&'static str> {
     let stageable_view = matches!(ui.selection, Some(Selection::File { .. }));
     let doc = &ui.diff;
     let mut texts = Vec::new();
@@ -464,8 +723,14 @@ fn bar_texts(ui: &Ui) -> Vec<&'static str> {
     if doc.shortened {
         texts.push(diff_doc::shortened_text(stageable_view));
     }
+    if stageable_view && doc.options.ignore_whitespace && doc.state == PatchState::Text {
+        texts.push(WHITESPACE_HIDDEN);
+    }
     texts
 }
+
+pub(crate) const WHITESPACE_HIDDEN: &str =
+    "Whitespace changes are hidden, so this diff cannot be staged from here. Show them to stage hunks or lines.";
 
 fn bars(ui: &Ui) -> Vec<Div> {
     bar_texts(ui)
@@ -503,6 +768,75 @@ fn edit_button<T: Desk>(ui: &Ui, cx: &Context<T>) -> Option<impl IntoElement + u
     let entry = crate::commands::entry(crate::commands::find("file.edit")?, ui, &target, cx)?;
     let action = entry.action?;
     Some(kit::btn("edit-file", entry.title).small().ghost().icon("external").on(action, cx))
+}
+
+fn options_control<T: Desk>(ui: &Ui, cx: &Context<T>) -> Div {
+    use crate::diff_options::{Action as Show, Choice};
+    let options = &ui.diff_options;
+    let context = |id, label, whole: bool| {
+        kit::btn(id, label)
+            .small()
+            .ghost()
+            .selected(options.whole_file == whole)
+            .on(Action::DiffOptions(Show::Set(Choice::WholeFile, whole)), cx)
+    };
+    let toggle = |id, label, tip, choice: Choice| {
+        let on = options.on(choice);
+        kit::btn(id, label)
+            .small()
+            .ghost()
+            .selected(on)
+            .tip(tip)
+            .on(Action::DiffOptions(Show::Set(choice, !on)), cx)
+    };
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .p(px(1.))
+                .rounded(px(RADIUS))
+                .bg(rgb(CANVAS))
+                .border_1()
+                .border_color(rgb(LINE))
+                .child(context("diff-hunks", "3 lines", false))
+                .child(context("diff-whole-file", "Whole file", true)),
+        )
+        .child(toggle(
+            "diff-whitespace",
+            "Ignore whitespace",
+            "Hide changes that only add, remove or move whitespace",
+            Choice::IgnoreWhitespace,
+        ))
+        .child(toggle("diff-wrap", "Wrap", "Wrap long lines to the width of the diff", Choice::Wrap))
+}
+
+fn change_buttons<T: Desk>(cx: &Context<T>) -> Div {
+    use crate::diff_options::Action as Show;
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .child(kit::icon_btn(
+            "previous-change",
+            "chevron-up",
+            "Previous change (⌥↑)",
+            Action::DiffOptions(Show::Previous),
+            cx,
+        ))
+        .child(kit::icon_btn("next-change", "chevron-down", "Next change (⌥↓)", Action::DiffOptions(Show::Next), cx))
+}
+
+fn showing_marks(ui: &Ui, listing_history: bool) -> Vec<crate::scrollbar::Mark> {
+    if listing_history || ui.diff.lines.is_empty() {
+        Vec::new()
+    } else {
+        crate::diff_options::marks(ui)
+    }
 }
 
 fn mode_control<T: Desk>(mode: Mode, cx: &Context<T>) -> Div {
@@ -569,7 +903,15 @@ fn gutter_cells() -> Div {
     div().h_full().flex().flex_shrink_0().items_center()
 }
 
-fn split_cell<T: Desk>(ui: &Ui, index: usize, side: Option<usize>, old: bool, width: Option<Pixels>, cx: &Context<T>) -> Div {
+fn split_cell<T: Desk>(
+    ui: &Ui,
+    index: usize,
+    side: Option<usize>,
+    old: bool,
+    width: Option<Pixels>,
+    part: usize,
+    cx: &Context<T>,
+) -> Div {
     let cell = div()
         .flex_1()
         .min_w_0()
@@ -582,9 +924,10 @@ fn split_cell<T: Desk>(ui: &Ui, index: usize, side: Option<usize>, old: bool, wi
         return cell.bg(rgb(PANEL));
     };
     if row.kind == Kind::NoNewline {
-        return cell.pl_3().child(note(doc.text(row)));
+        return if part == 0 { cell.pl_3().child(note(doc.text(row))) } else { cell };
     }
     let column = Column::split(old);
+    let first = part == 0;
     let mut text = div()
         .id((if old { "split-old" } else { "split-new" }, index))
         .flex_1()
@@ -592,13 +935,16 @@ fn split_cell<T: Desk>(ui: &Ui, index: usize, side: Option<usize>, old: bool, wi
         .h_full()
         .overflow_x_scroll()
         .track_scroll(&ui.split_pan)
-        .child(diff_select::cell(ui, at, column, code(ui, at, row, column).when_some(width, |d, width| d.min_w(width)), cx));
+        .child(diff_select::cell(ui, at, part, column, code(ui, at, row, column, part).when_some(width, |d, width| d.min_w(width)), cx));
     text.style().restrict_scroll_to_axis = Some(true);
+    let shown = if old { row.old } else { row.new };
     cell.when_some(line_background(row.kind), |d, bg| d.bg(rgb(bg)))
         .child(crate::lines::gutter(
             ui,
             at,
-            gutter_cells().child(number(if old { row.old } else { row.new }, 34.)).child(marker(row.kind)),
+            gutter_cells()
+                .child(number(shown.filter(|_| first), 34.))
+                .child(marker(if first { row.kind } else { Kind::Context })),
             cx,
         ))
         .child(text)
@@ -676,9 +1022,25 @@ pub(crate) fn highlights(ui: &Ui, index: usize, row: &Line, column: Column) -> V
     layered(&layers)
 }
 
-fn code(ui: &Ui, index: usize, row: &Line, column: Column) -> Div {
-    let text = ui.diff.code(row).to_owned();
-    let highlights = highlights(ui, index, row, column);
+fn clipped(runs: Vec<(Range<usize>, HighlightStyle)>, piece: &Range<usize>) -> Vec<(Range<usize>, HighlightStyle)> {
+    runs.into_iter()
+        .filter_map(|(range, style)| {
+            let start = range.start.max(piece.start);
+            let end = range.end.min(piece.end);
+            (start < end).then(|| (start - piece.start..end - piece.start, style))
+        })
+        .collect()
+}
+
+fn code(ui: &Ui, index: usize, row: &Line, column: Column, part: usize) -> Div {
+    let code = ui.diff.code(row);
+    let (text, highlights) = if ui.diff_options.wrapped.is_some() {
+        let piece = piece(ui, index, part);
+        let text = code.get(piece.clone()).unwrap_or_default().to_owned();
+        (text, clipped(highlights(ui, index, row, column), &piece))
+    } else {
+        (code.to_owned(), highlights(ui, index, row, column))
+    };
     div()
         .flex_shrink_0()
         .flex_grow()
@@ -780,6 +1142,61 @@ mod tests {
         let runs = layered(&[(&[0..4], top), (&[2..8], ink)]);
         assert_eq!(runs, [(0..2, top), (2..4, ink.highlight(top)), (4..8, ink)]);
         assert!(layered(&[]).is_empty());
+    }
+
+    fn pieces<'a>(code: &'a str, width: usize) -> Vec<&'a str> {
+        let cuts = breaks(code, width, 4);
+        let mut starts = vec![0];
+        starts.extend(cuts.iter().copied());
+        let mut ends = cuts.clone();
+        ends.push(code.len());
+        starts.into_iter().zip(ends).map(|(start, end)| &code[start..end]).collect()
+    }
+
+    #[test]
+    fn long_lines_break_at_the_last_space_that_fits_or_mid_word_when_none_does() {
+        assert!(breaks("short line", 20, 4).is_empty());
+        assert_eq!(pieces("alpha beta gamma delta", 12), ["alpha beta ", "gamma delta"]);
+        assert_eq!(pieces("abcdefghijklmnop", 6), ["abcdef", "ghijkl", "mnop"]);
+        assert_eq!(pieces("a bcdefghijklmnop", 6), ["a bcde", "fghijk", "lmnop"]);
+        assert_eq!(pieces("\tx\ty", 5), ["\tx", "\ty"]);
+        assert_eq!(pieces("名前名前名前", 4), ["名前", "名前", "名前"]);
+        assert_eq!(pieces("café crème brûlée", 8), ["café ", "crème ", "brûlée"]);
+        for (code, width) in [("one two three four five six seven", 7), ("x".repeat(50).as_str(), 9), ("é".repeat(30).as_str(), 4)] {
+            let joined: String = pieces(code, width).concat();
+            assert_eq!(joined, code);
+            assert!(pieces(code, width).iter().all(|piece| piece.chars().count() <= width));
+        }
+    }
+
+    #[test]
+    fn wrapped_rows_map_back_to_their_line_and_the_part_of_its_text() {
+        let text = concat!(
+            "diff --git a/trail b/trail\nindex 012..345 100644\n--- a/trail\n+++ b/trail\n",
+            "@@ -1,3 +1,3 @@\n short\n-the old line is rather long\n+the new line is longer than the old one\n end\n",
+        );
+        let doc = doc(text);
+        let layout = Layout::new(&doc);
+        let columns = Columns { unified: 12, split: 12, tab: 4 };
+        let unified = wrap(&doc, &layout, Mode::Unified, columns);
+        assert_eq!(unified.rows, [(0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 2), (3, 3), (4, 0)]);
+        assert_eq!(unified.first, [0, 1, 2, 5, 9]);
+        let code = doc.code(&doc.lines[3]);
+        let cuts = &unified.breaks[3];
+        assert_eq!(&code[..cuts[0]], "the new ");
+        assert_eq!(cuts.len(), 3);
+        let split = wrap(&doc, &layout, Mode::Split, columns);
+        assert_eq!(layout.split.len(), 4);
+        assert_eq!(split.rows, [(0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (2, 3), (3, 0)]);
+        assert_eq!(layout.split_of, [0, 1, 2, 2, 3]);
+        assert_eq!(layout.changes, [Change { start: 2, deleted: Some(2), added: Some(3) }]);
+    }
+
+    #[test]
+    fn columns_fit_the_code_area_beside_the_gutter() {
+        let columns = Columns::fitting(px(1096.), px(10.), px(28.));
+        assert_eq!(columns, Columns { unified: 98, split: 48, tab: 3 });
+        assert_eq!(Columns::fitting(px(50.), px(10.), px(10.)).unified, NARROWEST);
     }
 
     #[test]
