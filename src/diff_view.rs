@@ -84,6 +84,9 @@ impl Layout {
                 }
             }
         });
+        if let Some(file) = &doc.file {
+            changes = crate::file_view::changes(&file.marks);
+        }
         let mut split_of = vec![0; doc.lines.len()];
         for (index, item) in split.iter().enumerate() {
             match item {
@@ -261,7 +264,7 @@ pub(crate) fn wrap(doc: &DiffDoc, layout: &Layout, mode: Mode, columns: Columns)
 }
 
 fn base_rows(ui: &Ui) -> usize {
-    match ui.diff_mode {
+    match ui.shown_mode() {
         Mode::Unified => ui.diff.lines.len(),
         Mode::Split => ui.diff_layout.split.len(),
     }
@@ -296,7 +299,7 @@ pub(crate) fn part_at(ui: &Ui, row: usize, offset: usize) -> usize {
 }
 
 pub(crate) fn visual_of(ui: &Ui, row: usize) -> Option<usize> {
-    let item = match ui.diff_mode {
+    let item = match ui.shown_mode() {
         Mode::Unified => (row < ui.diff.lines.len()).then_some(row)?,
         Mode::Split => *ui.diff_layout.split_of.get(row)?,
     };
@@ -323,7 +326,7 @@ pub(crate) fn rows(ui: &Ui) -> usize {
 
 pub(crate) fn doc_row(ui: &Ui, visual: usize, column: Column) -> Option<usize> {
     let (item, _) = self::item(ui, visual)?;
-    match (ui.diff_mode, column) {
+    match (ui.shown_mode(), column) {
         (Mode::Unified, _) => (item < ui.diff.lines.len()).then_some(item),
         (Mode::Split, column) => match ui.diff_layout.split.get(item)? {
             SplitRow::Shared(row) => Some(*row),
@@ -398,7 +401,8 @@ fn mini<T: Desk>(
 
 pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> Div {
     let ui = app.ui();
-    let mode = ui.diff_mode;
+    let mode = ui.shown_mode();
+    let file_view = ui.diff.file.is_some();
     let layout = &ui.diff_layout;
     let doc = &ui.diff;
     let listing_history = crate::inspection::showing_history(ui);
@@ -498,12 +502,13 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         .when(committed_file.is_some(), |d| {
             d.child(crate::inspection::history_button(app, cx))
         })
+        .when(crate::file_view::offered(ui), |d| d.child(crate::file_view::toggle(ui, cx)))
         .when(crate::image_diff::offers_toggle(ui), |d| d.child(crate::image_diff::toggle(ui, cx)))
-        .when(texts && !doc.lines.is_empty(), |d| {
+        .when(texts && !file_view && !doc.lines.is_empty(), |d| {
             d.child(mode_control(mode, cx))
         })
-        .when(texts, |d| d.child(options_control(ui, cx)))
-        .when(texts && !doc.lines.is_empty(), |d| d.child(change_buttons(cx)))
+        .when(texts, |d| d.child(options_control(ui, file_view, cx)))
+        .when(texts && !doc.lines.is_empty() && !(file_view && layout.changes.is_empty()), |d| d.child(change_buttons(cx)))
         .child(kit::icon_btn(
             "close-diff",
             "x",
@@ -539,7 +544,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     let count = rows(ui);
     let whole_file = doc.options.whole_file;
     let lines = uniform_list(
-        SharedString::from(format!("{list_id}-{mode:?}-{wrapping}")),
+        SharedString::from(format!("{list_id}-{mode:?}-{wrapping}-{file_view}")),
         count,
         cx.processor(move |app, rows: Range<usize>, _, cx| {
             let ui = app.ui();
@@ -597,10 +602,15 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                                 .child(crate::lines::gutter(
                                     ui,
                                     item,
-                                    gutter_cells()
-                                        .child(number(row.old.filter(|_| first), 40.))
-                                        .child(number(row.new.filter(|_| first), 40.))
-                                        .child(marker(if first { row.kind } else { Kind::Context })),
+                                    match doc.file.as_deref() {
+                                        Some(shown) => gutter_cells()
+                                            .child(number(row.new.filter(|_| first), 80.))
+                                            .child(crate::file_view::gutter_mark(shown.mark(item), first)),
+                                        None => gutter_cells()
+                                            .child(number(row.old.filter(|_| first), 40.))
+                                            .child(number(row.new.filter(|_| first), 40.))
+                                            .child(marker(if first { row.kind } else { Kind::Context })),
+                                    },
                                     cx,
                                 ))
                                 .child(diff_select::cell(
@@ -693,6 +703,9 @@ pub(crate) fn placeholder_text(ui: &Ui, renamed: bool) -> Option<String> {
         Some(Selection::Stash(_)) if ui.stash.open_path().is_none() => Some("stash"),
         _ => None,
     };
+    if let Some(text) = crate::file_view::placeholder(ui) {
+        return Some(text);
+    }
     Some(match &ui.diff.state {
         PatchState::Loading => "Loading diff…".to_owned(),
         PatchState::Text | PatchState::Truncated => return None,
@@ -735,6 +748,9 @@ fn placeholder(ui: &Ui, renamed: bool) -> Div {
 }
 
 pub(crate) fn bar_texts(ui: &Ui) -> Vec<&'static str> {
+    if let Some(shown) = ui.diff.file.as_deref() {
+        return crate::file_view::bar_texts(ui, shown);
+    }
     let stageable_view = matches!(ui.selection, Some(Selection::File { .. }));
     let doc = &ui.diff;
     let mut texts = Vec::new();
@@ -791,7 +807,7 @@ fn edit_button<T: Desk>(ui: &Ui, cx: &Context<T>) -> Option<impl IntoElement + u
     Some(kit::btn("edit-file", entry.title).small().ghost().icon("external").on(action, cx))
 }
 
-fn options_control<T: Desk>(ui: &Ui, cx: &Context<T>) -> Div {
+fn options_control<T: Desk>(ui: &Ui, file_view: bool, cx: &Context<T>) -> Div {
     use crate::diff_options::{Action as Show, Choice};
     let options = &ui.diff_options;
     let context = |id, label, whole: bool| {
@@ -815,24 +831,26 @@ fn options_control<T: Desk>(ui: &Ui, cx: &Context<T>) -> Div {
         .items_center()
         .flex_shrink_0()
         .gap_1()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .p(px(1.))
-                .rounded(px(RADIUS))
-                .bg(rgb(CANVAS))
-                .border_1()
-                .border_color(rgb(LINE))
-                .child(context("diff-hunks", "3 lines", false))
-                .child(context("diff-whole-file", "Whole file", true)),
-        )
-        .child(toggle(
-            "diff-whitespace",
-            "Ignore whitespace",
-            "Hide changes that only add, remove or move whitespace",
-            Choice::IgnoreWhitespace,
-        ))
+        .when(!file_view, |d| {
+            d.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .p(px(1.))
+                    .rounded(px(RADIUS))
+                    .bg(rgb(CANVAS))
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .child(context("diff-hunks", "3 lines", false))
+                    .child(context("diff-whole-file", "Whole file", true)),
+            )
+            .child(toggle(
+                "diff-whitespace",
+                "Ignore whitespace",
+                "Hide changes that only add, remove or move whitespace",
+                Choice::IgnoreWhitespace,
+            ))
+        })
         .child(toggle("diff-wrap", "Wrap", "Wrap long lines to the width of the diff", Choice::Wrap))
 }
 

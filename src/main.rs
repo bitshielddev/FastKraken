@@ -20,6 +20,7 @@ mod diff_select;
 mod discard;
 mod environment;
 mod explain;
+mod file_view;
 mod find;
 mod github;
 mod guard;
@@ -607,9 +608,10 @@ impl Tab {
         let from = self.ui.renamed_from(&selection, commit_path.as_deref());
         let colour = settings::settings(cx).colour_code;
         self.ui.syntax.on = colour;
-        let options = self.ui.diff_options.request();
-        let working = syntax::working_root(&repo, &selection);
         let owner = image_diff::owner(&selection, commit_path.clone());
+        let whole = file_view::wanted(&self.ui, &selection, commit_path.as_deref());
+        let options = if whole { Default::default() } else { self.ui.diff_options.request() };
+        let open = commit_path.clone();
         Self::work(
             cx,
             move || {
@@ -641,7 +643,7 @@ impl Tab {
                     };
                     (repo.object_sizes(&blobs).unwrap_or_default(), working_size)
                 };
-                let mut doc = diff_doc::DiffDoc::build(&diff_doc::Source {
+                let doc = diff_doc::DiffDoc::build(&diff_doc::Source {
                     text: &diff.text,
                     stageable: diff.hunks_stageable() && matches!(selection, Selection::File { .. }),
                     truncated: diff.truncated,
@@ -649,8 +651,15 @@ impl Tab {
                     working_size,
                     options,
                 });
+                let (mut doc, image, working) = if whole {
+                    let (doc, image) = file_view::open(&repo, &doc, &selection, open.as_deref());
+                    let working = file_view::working_root(&doc, &repo.root);
+                    (doc, image, working)
+                } else {
+                    let image = image_diff::wanted(&doc, &selection, &repo.root);
+                    (doc, image, syntax::working_root(&repo, &selection))
+                };
                 let layout = DiffLayout::new(&doc);
-                let image = image_diff::wanted(&doc, &selection, &repo.root);
                 let rest = if colour {
                     let wanted = syntax::requests(&doc, working.as_deref());
                     syntax::from_cache(&mut doc, wanted)
@@ -665,7 +674,7 @@ impl Tab {
                 }
                 match result {
                     Ok((diff, doc, layout, rest, image)) => {
-                        tab.diff = Some(diff);
+                        tab.diff = doc.file.is_none().then_some(diff);
                         tab.ui.replace_diff(doc, layout);
                         image_diff::follow(tab, image, owner);
                         lines::reloaded(&mut tab.ui);
@@ -1534,6 +1543,7 @@ impl Tab {
             Action::DiffOptions(action) => diff_options::dispatch(self, action, window, cx),
             Action::Find(action) => find::dispatch(self, action, window, cx),
             Action::Images(action) => image_diff::dispatch(self, action, window, cx),
+            Action::FileView(action) => file_view::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),

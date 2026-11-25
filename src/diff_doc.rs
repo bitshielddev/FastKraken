@@ -86,6 +86,7 @@ pub(crate) struct DiffDoc {
     pub(crate) stageable: bool,
     pub(crate) shortened: bool,
     pub(crate) options: DiffOptions,
+    pub(crate) file: Option<Box<crate::file_view::Shown>>,
     text: String,
 }
 
@@ -421,6 +422,35 @@ impl DiffDoc {
         doc.stageable = source.stageable && !source.truncated && !doc.shortened && !source.options.ignore_whitespace;
         doc.options = source.options;
         doc.mark_words();
+        doc
+    }
+
+    pub(crate) fn plain(path: PathBuf, blob: Option<String>, content: &str) -> Self {
+        let mut doc = DiffDoc { text: String::with_capacity(content.len() + content.len() / 32), ..Self::default() };
+        for (index, text) in content.lines().enumerate() {
+            let number = u32::try_from(index + 1).unwrap_or(u32::MAX);
+            let start = doc.text.len();
+            doc.text.push(' ');
+            if text.len() > LINE_LIMIT {
+                doc.text.push_str(&text[..text.floor_char_boundary(LINE_LIMIT)]);
+                doc.text.push_str(SHORTENED);
+                doc.shortened = true;
+            } else {
+                doc.text.push_str(text);
+            }
+            doc.lines.push(Line {
+                kind: Kind::Context,
+                old: None,
+                new: Some(number),
+                at: number,
+                text: start..doc.text.len(),
+                hunk: None,
+                words: Vec::new(),
+                syntax: Vec::new(),
+            });
+        }
+        doc.state = if doc.lines.is_empty() { PatchState::Empty(Blank::EmptyFile) } else { PatchState::Text };
+        doc.files.push(File { path: Some(path), old_blob: None, new_blob: blob, rows: 0..doc.lines.len() });
         doc
     }
 

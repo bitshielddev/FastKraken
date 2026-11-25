@@ -557,7 +557,11 @@ pub(crate) fn run(tab: &mut Tab, requests: Vec<Request>, cx: &mut Context<Tab>) 
 
 pub(crate) fn start(tab: &mut Tab, cx: &mut Context<Tab>) {
     let (Some(repo), Some(selection)) = (tab.repo.clone(), tab.ui.selection.clone()) else { return };
-    let working = working_root(&repo, &selection);
+    let working = if tab.ui.diff.file.is_some() {
+        crate::file_view::working_root(&tab.ui.diff, &repo.root)
+    } else {
+        working_root(&repo, &selection)
+    };
     let wanted = requests(&tab.ui.diff, working.as_deref());
     let rest = from_cache(&mut tab.ui.diff, wanted);
     run(tab, rest, cx);

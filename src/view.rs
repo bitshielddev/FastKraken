@@ -8,7 +8,7 @@ mod graph;
 use crate::{kit, navigate::Action as Move, stash::HistoryItem, theme::*};
 pub use commit_input::CommitInput;
 pub(crate) use diff_view::{
-    Columns as DiffColumns, Layout as DiffLayout, Mode as DiffMode, SPLIT_GUTTER as DIFF_SPLIT_GUTTER,
+    Change as DiffChange, Columns as DiffColumns, Layout as DiffLayout, Mode as DiffMode, SPLIT_GUTTER as DIFF_SPLIT_GUTTER,
     UNIFIED_GUTTER as DIFF_UNIFIED_GUTTER, WHITESPACE_HIDDEN, Wrapped as DiffWrapped, bar_texts as diff_bar_texts,
     changes as diff_changes, doc_row as diff_doc_row, highlights as diff_highlights, layered as diff_layered,
     part as diff_part, part_at as diff_part_at, piece as diff_piece, placeholder_text as diff_placeholder,
@@ -560,6 +560,7 @@ pub enum Action {
     DiffOptions(crate::diff_options::Action),
     Find(crate::find::Action),
     Images(crate::image_diff::Action),
+    FileView(crate::file_view::Action),
     Discard(crate::discard::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
@@ -704,6 +705,7 @@ pub struct Ui {
     pub(crate) diff_options: crate::diff_options::State,
     pub(crate) find: crate::find::State,
     pub(crate) images: crate::image_diff::State,
+    pub(crate) file_view: crate::file_view::State,
     pub has_more: bool,
     pub input: Entity<CommitInput>,
     pub description: Entity<CommitInput>,
@@ -794,6 +796,7 @@ impl Ui {
             diff_options: crate::diff_options::State::new(&settings),
             find: crate::find::State::new(cx),
             images: Default::default(),
+            file_view: Default::default(),
             has_more: false,
             input,
             description,
@@ -867,15 +870,20 @@ impl Ui {
         crate::find::reloaded(self);
     }
 
+    pub(crate) fn shown_mode(&self) -> DiffMode {
+        if self.diff.file.is_some() { DiffMode::Unified } else { self.diff_mode }
+    }
+
     pub(crate) fn split_pan(&self) -> &ScrollHandle {
         &self.split_pan
     }
 
     pub(crate) fn rewrap(&mut self) {
+        let mode = self.shown_mode();
         let options = &mut self.diff_options;
         options.jumped = None;
         options.wrapped = (options.wrap && options.columns.unified > 0)
-            .then(|| diff_view::wrap(&self.diff, &self.diff_layout, self.diff_mode, options.columns));
+            .then(|| diff_view::wrap(&self.diff, &self.diff_layout, mode, options.columns));
     }
 
     pub fn draft(&self, cx: &App) -> CommitDraft {

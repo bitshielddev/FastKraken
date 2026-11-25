@@ -88,6 +88,7 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
         }
         "findnext" => Some(Action::Find(crate::find::Action::Step(1))),
         "image" => Some(Action::Images(crate::image_diff::Action::Show(crate::image_diff::Mode::Image))),
+        "fileview" => Some(Action::FileView(crate::file_view::Action::Show(crate::file_view::View::File))),
         "split" => Some(Action::DiffMode(crate::view::DiffMode::Split)),
         "unified" => Some(Action::DiffMode(crate::view::DiffMode::Unified)),
         "branches" => Some(Action::Refs(refs::Action::ToggleList)),

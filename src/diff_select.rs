@@ -141,7 +141,7 @@ fn showing(ui: &Ui) -> bool {
 
 fn held(ui: &Ui) -> Option<&Chosen> {
     let chosen = ui.text.chosen.as_ref()?;
-    (chosen.column.shown(ui.diff_mode) && ui.selection.as_ref() == Some(&chosen.selection) && showing(ui)).then_some(chosen)
+    (chosen.column.shown(ui.shown_mode()) && ui.selection.as_ref() == Some(&chosen.selection) && showing(ui)).then_some(chosen)
 }
 
 pub(crate) fn current(ui: &Ui) -> Option<&Chosen> {
@@ -406,7 +406,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _window: &mut Window, cx: 
             if !showing(&tab.ui) {
                 return;
             }
-            let column = match tab.ui.diff_mode {
+            let column = match tab.ui.shown_mode() {
                 DiffMode::Unified => Column::Unified,
                 DiffMode::Split => current(&tab.ui).map_or(Column::New, |chosen| chosen.column),
             };

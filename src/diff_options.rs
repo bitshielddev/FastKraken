@@ -98,7 +98,7 @@ pub(crate) fn resized(ui: &mut Ui, width: Pixels, columns: DiffColumns) -> bool 
 
 pub(crate) fn targets(ui: &Ui) -> Vec<usize> {
     let doc = &ui.diff;
-    let rows: Vec<usize> = if doc.options.whole_file {
+    let rows: Vec<usize> = if doc.options.whole_file || doc.file.is_some() {
         view::diff_changes(ui).iter().map(|change| change.start).collect()
     } else {
         doc.hunks.iter().map(|hunk| hunk.start).collect()
@@ -113,7 +113,7 @@ pub(crate) fn marks(ui: &Ui) -> Vec<Mark> {
     if total == 0 {
         return Vec::new();
     }
-    let split = ui.diff_mode == DiffMode::Split;
+    let split = ui.shown_mode() == DiffMode::Split;
     let mut marks: Vec<Mark> = Vec::new();
     for change in view::diff_changes(ui) {
         let sides = [(change.deleted, DELETED), (change.added, ADDED)];
@@ -171,14 +171,14 @@ fn jump(tab: &mut Tab, forward: bool) -> bool {
     let targets = targets(ui);
     let from = anchor(ui.diff_options.jumped, viewport(ui), pending(ui));
     let Some(target) = next(&targets, from, forward) else { return false };
-    let lead = if ui.diff.options.whole_file { RUN_LEAD } else { 0 };
+    let lead = if ui.diff.options.whole_file || ui.diff.file.is_some() { RUN_LEAD } else { 0 };
     let lead = lead.min(target);
     tab.ui.diff_scroll.scroll_to_item_strict_with_offset(target, ScrollStrategy::Top, lead);
     tab.ui.diff_options.jumped = Some(target);
     true
 }
 
-fn reload(tab: &mut Tab, cx: &mut Context<Tab>) {
+pub(crate) fn reload(tab: &mut Tab, cx: &mut Context<Tab>) {
     let Some(selection) = tab.ui.selection.clone().filter(|selection| *selection != Selection::Changes) else { return };
     let path = match &selection {
         Selection::Commit(_) => tab.ui.inspection.path.clone(),

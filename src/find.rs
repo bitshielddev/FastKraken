@@ -325,7 +325,7 @@ fn reveal_across(ui: &Ui, hit: &Hit, cx: &App) {
     if width <= 0. {
         return;
     }
-    let (pan, room, gutter) = match ui.diff_mode {
+    let (pan, room, gutter) = match ui.shown_mode() {
         DiffMode::Unified => (base, width, view::DIFF_UNIFIED_GUTTER),
         DiffMode::Split => (ui.split_pan().clone(), (width - 1.) / 2. - view::DIFF_SPLIT_GUTTER, 0.),
     };
@@ -500,6 +500,7 @@ pub(crate) fn bindings() -> Vec<KeyBinding> {
 
 pub(crate) fn title(ui: &Ui) -> &'static str {
     match here(ui).filter(|_| !filters(ui)) {
+        Some(Surface::Diff) if ui.diff.file.is_some() => "Find in file…",
         Some(Surface::Diff) => "Find in diff…",
         Some(Surface::Resolver) => "Find in conflict…",
         None => "Find commits…",

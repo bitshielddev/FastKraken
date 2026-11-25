@@ -64,6 +64,7 @@ pub(crate) struct Request {
     pub(crate) format: ImageFormat,
     pub(crate) binary: bool,
     pub(crate) sides: [Option<Side>; 2],
+    pub(crate) heading: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,7 +183,7 @@ fn absent(id: &str) -> bool {
     id.bytes().all(|b| b == b'0')
 }
 
-fn stamp(path: &Path) -> Option<(u64, SystemTime)> {
+pub(crate) fn stamp(path: &Path) -> Option<(u64, SystemTime)> {
     let metadata = std::fs::symlink_metadata(path).ok().filter(|metadata| metadata.is_file())?;
     Some((metadata.len(), metadata.modified().ok()?))
 }
@@ -207,7 +208,7 @@ pub(crate) fn wanted(doc: &DiffDoc, selection: &Selection, root: &Path) -> Optio
     if old.is_none() && new.is_none() {
         return None;
     }
-    Some(Request { path, format, binary, sides: [old, new] })
+    Some(Request { path, format, binary, sides: [old, new], heading: None })
 }
 
 pub(crate) fn conflict_request(conflict: &Conflict) -> Option<Request> {
@@ -219,7 +220,7 @@ pub(crate) fn conflict_request(conflict: &Conflict) -> Option<Request> {
     if sides.iter().all(Option::is_none) {
         return None;
     }
-    Some(Request { path: conflict.path.clone(), format, binary: true, sides })
+    Some(Request { path: conflict.path.clone(), format, binary: true, sides, heading: None })
 }
 
 pub(crate) fn sniff(bytes: &[u8]) -> Option<ImageFormat> {
@@ -507,7 +508,7 @@ pub(crate) fn read(repo: &Repository, request: &Request, decode: Decode) -> [Opt
     })
 }
 
-fn selection_open(ui: &Ui) -> Option<PathBuf> {
+pub(crate) fn selection_open(ui: &Ui) -> Option<PathBuf> {
     match &ui.selection {
         Some(Selection::Commit(_)) => ui.inspection.path.clone(),
         Some(Selection::Stash(_)) => ui.stash.open_path().map(Path::to_path_buf),
@@ -720,6 +721,9 @@ pub(crate) fn notice(picture: &Picture) -> Option<&'static str> {
 }
 
 pub(crate) fn labels(request: &Request) -> [&'static str; 2] {
+    if let Some(heading) = request.heading {
+        return [heading, heading];
+    }
     match &request.sides {
         [Some(_), Some(_)] => ["Before", "After"],
         [Some(_), None] => ["Deleted", ""],
@@ -1068,6 +1072,7 @@ mod tests {
             format: ImageFormat::Png,
             binary: true,
             sides: [Some(blob(&f, "HEAD:chart.png")), Some(Side::Working { path: f.dir.join("chart.png"), stamp: None })],
+            heading: None,
         };
         let [old, new] = read(&f.repo, &request, &refused);
         let (old, new) = (old.unwrap(), new.unwrap());
@@ -1088,6 +1093,7 @@ mod tests {
             format: ImageFormat::Png,
             binary: true,
             sides: [Some(Side::Stored(stored)), Some(Side::Working { path: f.dir.join("poster.png"), stamp: None })],
+            heading: None,
         };
         for picture in read(&f.repo, &request, &watched).into_iter().flatten() {
             assert_eq!((picture.bytes, picture.size), (Some(BYTE_LIMIT + 1), None));
@@ -1100,6 +1106,7 @@ mod tests {
             format: ImageFormat::Png,
             binary: true,
             sides: [Some(Side::Stored("0123456789abcdef0123456789abcdef01234567".into())), None],
+            heading: None,
         };
         let [gone, none] = read(&f.repo, &missing, &refused);
         assert!(none.is_none());
