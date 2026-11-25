@@ -186,7 +186,6 @@ impl Surface {
                 | (Menu::Remotes { .. }, Menu::Remotes { .. })
                 | (Menu::Changes { .. }, Menu::Changes { .. }) => true,
                 (Menu::Labels { oid: open, .. }, Menu::Labels { oid, .. }) => open == oid,
-                (Menu::Pair { branch: open, .. }, Menu::Pair { branch, .. }) => open == branch,
                 _ => false,
             },
             (Self::Branches, Action::Refs(crate::refs::Action::ToggleList))
@@ -3453,6 +3452,17 @@ mod tests {
         assert!(text.ends_with(&format!("{} {:02}:{:02}:{:02}", tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec).replacen(' ', ", ", 1)));
         assert!(text.contains(&format!(" {} ", tm.tm_mday)));
         assert!(["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].iter().any(|day| text.starts_with(day)));
+    }
+
+    #[test]
+    fn a_press_on_a_paired_label_reopens_its_menu_like_any_other_label() {
+        let at = Point::default();
+        let paired = Surface::Menu(Menu::Pair { branch: "main".into(), remote: "origin/main".into(), at });
+        assert!(!paired.reopened_by(&pair_menu("main".into(), "origin/main".into(), at)));
+        let single = Surface::Menu(Menu::Object { target: Target::Branch("main".into()), at });
+        assert!(!single.reopened_by(&label_menu(Target::Branch("main".into()), at)));
+        let hidden = Surface::Menu(Menu::Labels { oid: "a".repeat(40), at });
+        assert!(hidden.reopened_by(&Action::Menu(Some(Menu::Labels { oid: "a".repeat(40), at }))));
     }
 
     #[test]
