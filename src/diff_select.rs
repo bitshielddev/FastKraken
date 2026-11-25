@@ -133,7 +133,10 @@ impl State {
 }
 
 fn showing(ui: &Ui) -> bool {
-    view::centre(ui) == view::Centre::Diff && !ui.diff.lines.is_empty() && !crate::inspection::showing_history(ui)
+    view::centre(ui) == view::Centre::Diff
+        && !ui.diff.lines.is_empty()
+        && !crate::inspection::showing_history(ui)
+        && crate::image_diff::showing(ui).is_none()
 }
 
 fn held(ui: &Ui) -> Option<&Chosen> {

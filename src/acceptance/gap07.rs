@@ -1866,6 +1866,8 @@ impl Replay<'_> {
                 && crate::find::here(&tab.ui).is_some()
         })
         .await?;
+        self.action(Action::Text(diff_select::Action::SelectAll))?;
+        self.until("the logo's text selected", |tab| diff_select::focused(&tab.ui)).await?;
         let title = self.find_command("view.image-or-text")?;
         if title != Some(("Show the image".to_owned(), None)) {
             return Err(format!("For an SVG diff the image command reads {title:?}").into());
@@ -1875,6 +1877,7 @@ impl Replay<'_> {
         self.until("the logo drawn before and after", |tab| {
             tab.ui.images.mode == image_diff::Mode::Image
                 && pictured(tab, "logo.svg", [Seen::Drawn(24, 16, old_logo), Seen::Drawn(32, 16, new_logo)], ["Before", "After"])
+                && !diff_select::focused(&tab.ui)
         })
         .await?;
         let title = self.find_command("view.image-or-text")?;
@@ -1914,6 +1917,19 @@ impl Replay<'_> {
         self.open_file("chart.png").await?;
         self.until("the committed chart drawn before and after", |tab| {
             pictured(tab, "chart.png", chart, ["Before", "After"])
+        })
+        .await?;
+        self.action(Action::Inspect(crate::inspection::Action::History))?;
+        self.until("the chart's file history listed in place of its pictures", |tab| {
+            crate::inspection::showing_history(&tab.ui)
+                && tab.ui.inspection.history.as_ref().is_some_and(|history| history.len() == 2)
+                && image_diff::showing(&tab.ui).is_none()
+                && tab.ui.images.holding() == 0
+        })
+        .await?;
+        self.action(Action::Inspect(crate::inspection::Action::CloseHistory))?;
+        self.until("the committed chart drawn again after its history", |tab| {
+            !crate::inspection::showing_history(&tab.ui) && pictured(tab, "chart.png", chart, ["Before", "After"])
         })
         .await?;
         self.action(Action::CloseDiff)?;

@@ -336,6 +336,90 @@ pub(crate) fn gif_frames(bytes: &[u8]) -> u64 {
     frames.max(1)
 }
 
+fn svg_root(text: &str) -> Option<&str> {
+    let mut rest = text;
+    loop {
+        rest = &rest[rest.find('<')?..];
+        if let Some(after) = rest.strip_prefix("<!--") {
+            rest = &after[after.find("-->")? + 3..];
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix("<svg")
+            && after.starts_with(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        {
+            let mut quote = None;
+            for (at, c) in after.char_indices() {
+                match (quote, c) {
+                    (None, '"' | '\'') => quote = Some(c),
+                    (Some(open), _) if c == open => quote = None,
+                    (None, '>') => return Some(&after[..at]),
+                    _ => {}
+                }
+            }
+            return None;
+        }
+        rest = &rest[1..];
+    }
+}
+
+fn svg_attribute<'a>(tag: &'a str, wanted: &str) -> Option<&'a str> {
+    let mut rest = tag;
+    while let Some(equals) = rest.find('=') {
+        let name = rest[..equals].trim_end().rsplit(char::is_whitespace).next().unwrap_or_default();
+        let after = rest[equals + 1..].trim_start();
+        let quote = after.chars().next().filter(|&c| c == '"' || c == '\'')?;
+        let end = after[1..].find(quote)? + 1;
+        if name == wanted {
+            return Some(&after[1..end]);
+        }
+        rest = &after[end + 1..];
+    }
+    None
+}
+
+fn svg_length(value: &str) -> Option<(f32, f32)> {
+    let value = value.trim();
+    for (unit, scale) in [
+        ("px", 1.),
+        ("in", 96.),
+        ("cm", 96. / 2.54),
+        ("mm", 96. / 25.4),
+        ("pt", 96. / 72.),
+        ("pc", 16.),
+        ("em", 12.),
+        ("ex", 6.),
+        ("%", f32::NAN),
+        ("", 1.),
+    ] {
+        if let Some(number) = value.strip_suffix(unit)
+            && let Ok(number) = number.parse::<f32>()
+            && number.is_finite()
+        {
+            return Some((number, scale));
+        }
+    }
+    None
+}
+
+pub(crate) fn svg_size(bytes: &[u8]) -> Option<(f32, f32)> {
+    let text = String::from_utf8_lossy(bytes);
+    let tag = svg_root(&text)?;
+    let view_box = svg_attribute(tag, "viewBox").and_then(|value| {
+        let parts = value.split(|c: char| c.is_whitespace() || c == ',').filter(|part| !part.is_empty());
+        let numbers: Vec<f32> = parts.map(str::parse).collect::<Result<_, _>>().ok()?;
+        match numbers.as_slice() {
+            [_, _, width, height] if *width > 0. && *height > 0. => Some((*width, *height)),
+            _ => None,
+        }
+    });
+    let side = |name: &str, boxed: Option<f32>| {
+        let (number, scale) = svg_attribute(tag, name).and_then(svg_length).unwrap_or((100., f32::NAN));
+        if scale.is_nan() { boxed.unwrap_or(100.) * number / 100. } else { number * scale }
+    };
+    let size = (side("width", view_box.map(|size| size.0)), side("height", view_box.map(|size| size.1)));
+    (size.0 > 0. && size.1 > 0.).then_some(size)
+}
+
 fn too_large(size: (u32, u32), frames: u64) -> bool {
     size.0 > SIDE_LIMIT || size.1 > SIDE_LIMIT || size.0 as u64 * size.1 as u64 * frames > PIXEL_LIMIT
 }
@@ -343,6 +427,12 @@ fn too_large(size: (u32, u32), frames: u64) -> bool {
 pub(crate) fn picture(format: ImageFormat, bytes: Vec<u8>, decode: Decode) -> Picture {
     let length = Some(bytes.len() as u64);
     if format == ImageFormat::Svg {
+        if let Some(declared) = svg_size(&bytes) {
+            let scaled = ((declared.0 * VECTOR_SCALE) as u32, (declared.1 * VECTOR_SCALE) as u32);
+            if too_large(scaled, 1) {
+                return Picture { bytes: length, size: Some((declared.0 as u32, declared.1 as u32)), look: Look::TooLarge };
+            }
+        }
         let image = Image::from_bytes(ImageFormat::Svg, bytes);
         let Ok(decoded) = decode(&image) else { return Picture::unreadable(length) };
         let pixels = decoded.size(0);
@@ -445,6 +535,9 @@ fn diff_held(ui: &Ui) -> Option<&Held> {
 }
 
 pub(crate) fn showing(ui: &Ui) -> Option<&Held> {
+    if crate::inspection::showing_history(ui) {
+        return None;
+    }
     diff_held(ui).filter(|held| held.request.binary || ui.images.mode == Mode::Image)
 }
 
@@ -490,7 +583,8 @@ fn settle_diff(tab: &mut Tab, cx: &mut Context<Tab>) {
         ui.images.retire(previous);
         return;
     }
-    let visible = view::centre(ui) == view::Centre::Diff && wants(&ui.images, held);
+    let visible =
+        view::centre(ui) == view::Centre::Diff && !crate::inspection::showing_history(ui) && wants(&ui.images, held);
     match (visible, held.started) {
         (true, false) => start(tab, Slot::Diff, cx),
         (false, true) => {
@@ -874,6 +968,31 @@ mod tests {
         let unread = picture(ImageFormat::Svg, b"<svg".to_vec(), &counting);
         assert_eq!((unread.size, unread.bytes), (None, Some(4)));
         assert_eq!(caption(&unread, true), "4 bytes");
+    }
+
+    #[test]
+    fn an_svg_declaring_a_huge_canvas_is_refused_before_it_is_rendered() {
+        let decoded = Cell::new(0);
+        let counting = |image: &Image| {
+            decoded.set(decoded.get() + 1);
+            refused(image)
+        };
+        let svg = |text: &str| picture(ImageFormat::Svg, text.as_bytes().to_vec(), &counting);
+        let wide = svg("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"30000\" height=\"30000\"/>");
+        assert_eq!((wide.size, notice(&wide)), (Some((30000, 30000)), Some("Too large to preview")));
+        let boxed = svg("<?xml version=\"1.0\"?>\n<!-- <svg width=\"1\" height=\"1\"> -->\n<svg\n  viewBox=\"0,0 9000 9000\">");
+        assert_eq!((boxed.size, notice(&boxed)), (Some((9000, 9000)), Some("Too large to preview")));
+        let measured = svg("<svg height=\"1e4px\" width='10in' viewBox=\"0 0 5 5\"></svg>");
+        assert_eq!((measured.size, notice(&measured)), (Some((960, 10000)), Some("Too large to preview")));
+        let halved = svg("<svg width=\"50%\" height=\"200%\" viewBox=\"0 0 30000 100\"/>");
+        assert_eq!((halved.size, notice(&halved)), (Some((15000, 200)), Some("Too large to preview")));
+        assert_eq!(decoded.get(), 0);
+
+        let small = svg("<svg width=\"24\" height=\"16\"/>");
+        assert_eq!(notice(&small), Some("This image could not be read"));
+        let automatic = svg("<svg width=\"auto\"/>");
+        assert_eq!(notice(&automatic), Some("This image could not be read"));
+        assert_eq!(decoded.get(), 2);
     }
 
     fn commit(f: &Fixture, files: &[(&str, &[u8])]) {
