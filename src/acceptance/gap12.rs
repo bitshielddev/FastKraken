@@ -1434,6 +1434,29 @@ impl Replay<'_> {
         self.action(Action::Prompt(prompt::Action::Cancel))?;
         drop(agent);
         fs::remove_file(&wrapper)?;
+
+        use crate::profiles::{self, Action as P, Profile};
+        self.action(Action::Preferences(preferences::Action::Show(preferences::Section::Git)))?;
+        let crew = Profile { name: "Trail crew".into(), user_name: "Cairn Crew".into(), email: "crew@trail.invalid".into(), ..Profile::default() };
+        let added = crew.clone();
+        self.cx.update(|cx| crate::settings::Settings::update(cx, move |s| s.profiles.push(added)))?;
+        let index = self.cx.update(|cx| profiles::listed(cx).len())? - 1;
+        let kept = |cx: &mut gpui::App, crew: &Profile| profiles::listed(cx).contains(crew);
+        self.action(Action::Profiles(P::Remove(index)))?;
+        let asked = self.tab.read_with(self.cx, |tab, _| prompt::shown(&tab.ui).map(|spec| (spec.title.clone(), spec.danger, prompt::first(&spec))))?;
+        if asked != Some(("Remove profile Trail crew?".to_owned(), true, prompt::Stop::Cancel)) || !self.cx.update(|cx| kept(cx, &crew))? {
+            return Err(format!("Remove on a profile asks {asked:?}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::Cancel))?;
+        if !self.cx.update(|cx| kept(cx, &crew))? {
+            return Err("Cancelling the removal removed the profile".into());
+        }
+        self.action(Action::Profiles(P::Remove(index)))?;
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let removed = self.notice_titled("Profile removed")?.map(|(_, detail, _, _)| detail);
+        if self.cx.update(|cx| kept(cx, &crew))? || removed.as_deref() != Some("Trail crew is gone. Repositories that used it keep their settings.") {
+            return Err(format!("Confirming the removal says {removed:?}").into());
+        }
         self.action(Action::Preferences(preferences::Action::Close))?;
         if snapshot(root)? != before {
             return Err("Choosing an SSH key changed Signpost's refs or files".into());

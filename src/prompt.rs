@@ -150,6 +150,7 @@ pub(crate) enum Kind {
     Submodule(crate::submodule::Ask),
     Lfs(crate::lfs::Ask),
     Keys(crate::keys::Ask),
+    Profiles(crate::profiles::Ask),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -183,6 +184,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Submodule(ask) => crate::submodule::describe_ask(ask, ui),
         Kind::Lfs(ask) => crate::lfs::describe(ask, ui),
         Kind::Keys(ask) => crate::keys::describe(ask, ui),
+        Kind::Profiles(ask) => crate::profiles::describe(ask),
     }
 }
 
@@ -217,6 +219,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Submodule(ask) => crate::submodule::confirm(tab, ask, answer, cx),
         Kind::Lfs(ask) => crate::lfs::confirm(tab, ask, answer, cx),
         Kind::Keys(ask) => crate::keys::confirm(tab, ask, answer, cx),
+        Kind::Profiles(ask) => crate::profiles::confirm(tab, ask, cx),
     }
 }
 

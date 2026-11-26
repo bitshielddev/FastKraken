@@ -2,6 +2,7 @@ use crate::{
     Tab, kit,
     notice::Notice,
     preferences::{Section, group, setting},
+    prompt,
     repository::{self, Repository},
     settings::{self, Settings},
     theme::*,
@@ -153,6 +154,12 @@ pub(crate) enum Action {
     Apply(usize),
 }
 
+#[derive(Debug)]
+pub(crate) struct Ask {
+    index: usize,
+    profile: Profile,
+}
+
 pub(crate) struct State {
     editing: Option<Editing>,
     pub(crate) title: Entity<CommitInput>,
@@ -298,20 +305,42 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         }
         Action::Remove(index) => {
             let Some(profile) = listed(cx).get(index).cloned() else { return };
-            Settings::update(cx, move |s| {
-                if index < s.profiles.len() {
-                    s.profiles.remove(index);
-                }
-            });
-            match tab.ui.profiles.editing {
-                Some(Editing::At(at)) if at == index => tab.ui.profiles.editing = None,
-                Some(Editing::At(at)) if at > index => tab.ui.profiles.editing = Some(Editing::At(at - 1)),
-                _ => {}
-            }
-            tab.ui.notices.show(Notice::new(Tone::Info, "Profile removed", format!("{} is gone. Repositories that used it keep their settings.", profile.name)));
+            prompt::ask(&mut tab.ui, prompt::Kind::Profiles(Ask { index, profile }), cx);
         }
         Action::Apply(index) => use_profile(tab, index, cx),
     }
+    cx.notify();
+}
+
+pub(crate) fn describe(ask: &Ask) -> prompt::Spec {
+    prompt::Spec::new(format!("Remove profile {}?", ask.profile.name), "Remove profile")
+        .line("Repositories that used it keep their settings.")
+        .danger()
+}
+
+fn take_out(profiles: &mut Vec<Profile>, index: usize, profile: &Profile) -> bool {
+    let found = profiles.get(index) == Some(profile);
+    if found {
+        profiles.remove(index);
+    }
+    found
+}
+
+pub(crate) fn confirm(tab: &mut Tab, ask: Ask, cx: &mut Context<Tab>) {
+    let Ask { index, profile } = ask;
+    let mut removed = false;
+    Settings::update(cx, |s| removed = take_out(&mut s.profiles, index, &profile));
+    if !removed {
+        tab.ui.notices.show(Notice::new(Tone::Info, "Profile not removed", format!("{} changed meanwhile. Look at it again.", profile.name)));
+        cx.notify();
+        return;
+    }
+    match tab.ui.profiles.editing {
+        Some(Editing::At(at)) if at == index => tab.ui.profiles.editing = None,
+        Some(Editing::At(at)) if at > index => tab.ui.profiles.editing = Some(Editing::At(at - 1)),
+        _ => {}
+    }
+    tab.ui.notices.show(Notice::new(Tone::Info, "Profile removed", format!("{} is gone. Repositories that used it keep their settings.", profile.name)));
     cx.notify();
 }
 
@@ -588,6 +617,23 @@ mod tests {
         assert_eq!(locals.get("core.sshcommand"), Some("ssh -i /k"));
         assert_eq!(locals.get("user.email"), None);
         assert_eq!(locals.get("core.bare"), None);
+    }
+
+    #[test]
+    fn removing_a_profile_asks_first_by_name_and_takes_out_only_that_profile() {
+        let spec = describe(&Ask { index: 0, profile: work() });
+        assert_eq!(spec.title, "Remove profile Work?");
+        assert_eq!(spec.confirm.to_string(), "Remove profile");
+        assert_eq!(spec.lines, ["Repositories that used it keep their settings."]);
+        assert!(spec.danger && spec.field.is_none());
+        assert_eq!(prompt::first(&spec), prompt::Stop::Cancel);
+        let home = Profile { name: "Home".into(), ..work() };
+        let mut profiles = vec![work(), home.clone()];
+        assert!(!take_out(&mut profiles, 0, &home));
+        assert!(!take_out(&mut profiles, 2, &home));
+        assert_eq!(profiles, [work(), home.clone()]);
+        assert!(take_out(&mut profiles, 1, &home));
+        assert_eq!(profiles, [work()]);
     }
 
     #[test]
