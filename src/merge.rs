@@ -650,7 +650,7 @@ pub(crate) fn start_on(
                     return Err(failure);
                 }
             };
-            let mut said = outcome(&merged, &current, &label);
+            let mut said = outcome(&merged, &current, &label).undone_as(format!("Merge {label} into {current}"));
             if matches!(merged, Merged::Squashed(_)) {
                 *staged_job.lock().unwrap_or_else(|e| e.into_inner()) = Some(message(&repo));
             }

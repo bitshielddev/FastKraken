@@ -3,6 +3,7 @@ use crate::{
     Tab,
     commands::{self, Target},
     kit,
+    journal::{Change, Discarded},
     notice::{Failure, Notice, Outcome},
     prompt::{self, Spec},
     repository::{Repository, Status, checked, nul_separated, raw_path, validate_oid},
@@ -17,6 +18,7 @@ use std::{
 };
 
 pub(crate) const DISCARDED: &str = "FastKraken: discarded changes";
+const UNRECORDED: &str = "Changes discarded before the first commit cannot be brought back";
 
 const KEEPER: [(&str, &str); 4] = [
     ("GIT_AUTHOR_NAME", "FastKraken"),
@@ -50,8 +52,6 @@ pub(crate) const COMMANDS: &[commands::Command] = {
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
     AskAll,
-    RestoreAll(String),
-    RestoreFiles { oid: String, paths: Vec<PathBuf> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,7 +120,7 @@ pub(crate) fn describe(seen: &Seen) -> Spec {
         ),
     };
     let after = if seen.head.is_some() {
-        "Ignored files are not touched. Restore, in the notice that follows, brings everything back."
+        "Ignored files are not touched. Undo, in the notice that follows, brings everything back."
     } else {
         "Ignored files are not touched. There is no commit yet to keep the changes in, so this cannot be undone."
     };
@@ -146,10 +146,27 @@ fn said(count: usize, branch: Option<&str>) -> String {
 pub(crate) fn discarded(kept: String, paths: Vec<PathBuf>) -> Outcome {
     Outcome::titled(
         format!("Discarded changes to {}", files(paths.len())),
-        "Restore brings back their unstaged edits and untracked files.",
+        "Undo brings back their unstaged edits and untracked files.",
     )
-    .offer("Restore", view::Action::Discard(Action::RestoreFiles { oid: kept, paths }))
+    .undone_as(discard_title(&paths))
+    .changed(Change::discarded_files(kept, &paths))
+    .offering_undo()
     .sticky()
+}
+
+fn discard_title(paths: &[PathBuf]) -> String {
+    match paths {
+        [one] => format!("Discard changes to {}", one.display()),
+        _ => format!("Discard changes to {}", files(paths.len())),
+    }
+}
+
+pub(crate) fn discard_file(repo: &Repository, path: PathBuf, untracked: bool) -> Result<Outcome, Failure> {
+    let untracked_set: BTreeSet<PathBuf> = if untracked { BTreeSet::from([path.clone()]) } else { BTreeSet::new() };
+    let kept = repo.keep_files(std::slice::from_ref(&path), &untracked_set)?;
+    repo.discard_file(&path, untracked)?;
+    let paths = vec![path];
+    Ok(Outcome::default().undone_as(discard_title(&paths)).changed(Change::discarded_files(kept, &paths)).offering_undo())
 }
 
 pub(crate) fn discard_picked(
@@ -159,16 +176,17 @@ pub(crate) fn discard_picked(
 ) -> Result<Outcome, Failure> {
     let kept = repo.keep_files(&paths, untracked)?;
     if let Err(err) = repo.remove_file_changes(&paths, untracked) {
-        let failure = Failure {
+        let mut failure = Failure {
             plain: Some((
                 "Some changes could not be discarded".to_owned(),
-                "Restore brings back the changes that were discarded.".to_owned(),
+                "Undo brings back the changes that were discarded.".to_owned(),
             )),
             ..Failure::from(err.clone())
         };
-        return Err(failure
-            .output(err)
-            .offer("Restore", view::Action::Discard(Action::RestoreFiles { oid: kept, paths })));
+        failure.journal.title = Some(discard_title(&paths));
+        failure.journal.changes.push(Change::discarded_files(kept, &paths));
+        failure.journal.offered = true;
+        return Err(failure.output(err));
     }
     Ok(discarded(kept, paths))
 }
@@ -331,8 +349,19 @@ impl Repository {
             return Ok(Outcome::titled(
                 "Discarded all changes",
                 "There was no commit to keep them in, so they cannot be restored.",
-            ));
+            )
+            .not_undoable(UNRECORDED));
         }
+        let kept = self.stash_away()?;
+        Ok(Outcome::titled("Discarded all changes", "Undo brings back every change, staged ones included.")
+            .undone_as("Discard all changes")
+            .changed(Change::Discard { saved: kept, discarded: Discarded::All })
+            .offering_undo()
+            .sticky())
+    }
+
+    pub(crate) fn stash_away(&self) -> Result<String, String> {
+        self.ensure_index_writable()?;
         let before = self.resolve(OsStr::new("refs/stash")).ok();
         let mut push = self.stash_push();
         push.args(["--include-untracked", &format!("--message={DISCARDED}")]);
@@ -346,9 +375,34 @@ impl Repository {
             .map_err(|err| format!("The changes were discarded and kept as a stash, which stays in the list: {err}"))?;
         self.drop_at(&kept, position, entries.len())
             .map_err(|err| format!("The changes were discarded and kept as a stash, which stays in the list: {err}"))?;
-        Ok(Outcome::titled("Discarded all changes", "Restore brings back every change, staged ones included.")
-            .offer("Restore", view::Action::Discard(Action::RestoreAll(kept)))
-            .sticky())
+        Ok(kept)
+    }
+
+    pub(crate) fn save_tracked(&self) -> Result<Option<String>, String> {
+        let saved = checked(self.command().envs(KEEPER).args(["stash", "create", DISCARDED]))?;
+        let saved = String::from_utf8_lossy(&saved).trim().to_owned();
+        if saved.is_empty() {
+            return Ok(None);
+        }
+        validate_oid(&saved)?;
+        Ok(Some(saved))
+    }
+
+    pub(crate) fn discard_again(&self, paths: &[PathBuf]) -> Result<String, String> {
+        let status = self.status()?;
+        let untracked: BTreeSet<PathBuf> = status
+            .unstaged
+            .iter()
+            .filter(|file| file.status == "Untracked" && paths.contains(&file.path))
+            .map(|file| file.path.clone())
+            .collect();
+        let changed: BTreeSet<&Path> = status.unstaged.iter().map(|file| file.path.as_path()).collect();
+        if paths.iter().any(|path| !changed.contains(path.as_path())) {
+            return Err("Something else changed the files since. Redo cannot be applied safely.".into());
+        }
+        let kept = self.keep_files(paths, &untracked)?;
+        self.remove_file_changes(paths, &untracked)?;
+        Ok(kept)
     }
 
     pub(crate) fn restore_all(&self, oid: &str) -> Result<Outcome, Failure> {
@@ -396,22 +450,6 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
             let seen = Seen::of(&tab.ui);
             prompt::ask(&mut tab.ui, prompt::Kind::Discard(DiscardAsk::All(seen)), cx);
         }
-        Action::RestoreAll(oid) => tab.apply_operation(
-            cx,
-            "Restoring the discarded changes…",
-            Some("Changes restored"),
-            false,
-            move |repo| repo.restore_all(&oid),
-            |_, _| {},
-        ),
-        Action::RestoreFiles { oid, paths } => tab.apply_operation(
-            cx,
-            "Restoring the discarded changes…",
-            Some("Changes restored"),
-            false,
-            move |repo| repo.restore_files(&oid, &paths),
-            |_, _| {},
-        ),
     }
 }
 
@@ -503,7 +541,9 @@ mod tests {
 
         let outcome = discarded(kept.clone(), paths.clone());
         assert_eq!(outcome.title, "Discarded changes to 4 files");
-        assert_eq!(outcome.actions.iter().map(|(label, _)| label.as_ref()).collect::<Vec<_>>(), ["Restore"]);
+        assert!(outcome.actions.is_empty());
+        assert_eq!(outcome.journal.changes, [Change::discarded_files(kept.clone(), &paths)]);
+        assert_eq!(outcome.journal.title.as_deref(), Some("Discard changes to 4 files"));
         let restored = f.repo.restore_files(&kept, &paths).unwrap();
         assert_eq!(restored.title, "Restored changes to 4 files");
         assert_eq!(read(&f, "a.txt").unwrap(), b"staged and more\n");
@@ -518,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn a_discard_that_stops_part_way_still_offers_restore_and_restore_brings_everything_back() {
+    fn a_discard_that_stops_part_way_is_still_recorded_and_restoring_brings_everything_back() {
         use std::os::unix::fs::PermissionsExt;
         let f = grove();
         fs::create_dir_all(f.dir.join("locked")).unwrap();
@@ -529,10 +569,11 @@ mod tests {
         let failed = discard_picked(&f.repo, paths.clone(), &untracked);
         fs::set_permissions(f.dir.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
         let Err(failure) = failed else { panic!("the discard did not stop") };
-        let Some((label, view::Action::Discard(Action::RestoreFiles { oid, paths: offered }))) = failure.actions.first() else {
-            panic!("no Restore offered: {:?}", failure.actions);
+        let Some(Change::Discard { saved: oid, discarded: Discarded::Files(offered) }) = failure.journal.changes.first() else {
+            panic!("the discard was not recorded: {:?}", failure.journal);
         };
-        assert_eq!((label.as_ref(), offered), ("Restore", &paths));
+        let offered: Vec<PathBuf> = offered.iter().map(|path| raw_path(path)).collect();
+        assert_eq!(offered, paths);
         assert_eq!(read(&f, "b c.txt").unwrap(), b"base\n");
         assert_eq!(read(&f, "locked/held.txt").unwrap(), b"held\n");
 
@@ -576,10 +617,10 @@ mod tests {
         assert_eq!((seen.tracked(), seen.untracked()), (4, 2));
         let outcome = f.repo.discard_all(&seen).unwrap();
         assert_eq!(outcome.title, "Discarded all changes");
-        let Some((label, view::Action::Discard(Action::RestoreAll(kept)))) = outcome.actions.first() else {
-            panic!("no Restore offered: {:?}", outcome.actions);
+        let Some(Change::Discard { saved: kept, discarded: Discarded::All }) = outcome.journal.changes.first() else {
+            panic!("the discard was not recorded: {:?}", outcome.journal);
         };
-        assert_eq!(label.as_ref(), "Restore");
+        assert!(outcome.actions.is_empty());
         assert!(f.git(&["status", "--porcelain=v1", "-uall"]).is_empty());
         assert!(f.git(&["stash", "list"]).is_empty());
         assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
@@ -627,6 +668,7 @@ mod tests {
         assert!(describe(&seen).lines[1].contains("cannot be undone"));
         let outcome = f.repo.discard_all(&seen).unwrap();
         assert!(outcome.actions.is_empty());
+        assert_eq!(outcome.journal.refused.as_deref(), Some(UNRECORDED));
         assert!(f.git(&["ls-files"]).is_empty());
         assert!(read(&f, "first.txt").is_none());
         assert!(read(&f, "loose.txt").is_none());
@@ -667,7 +709,7 @@ mod tests {
         let spec = describe(&seen);
         assert_eq!((spec.title.as_str(), spec.confirm.as_ref()), ("Discard all changes?", "Discard all"));
         assert_eq!(spec.lines[0], "Changes to 2 files will be removed, staged ones included, and 1 untracked file will be deleted.");
-        assert!(spec.lines[1].contains("Restore"));
+        assert!(spec.lines[1].contains("Undo, in the notice that follows"));
         assert_eq!(said(3, Some("main")), "3 changes on main");
         assert_eq!(said(1, Some("main")), "1 change on main");
         assert_eq!(said(0, None), "No changes on a detached HEAD");

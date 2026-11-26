@@ -311,7 +311,7 @@ pub(crate) fn describe_discard(paths: &[PathBuf], untracked: &BTreeSet<PathBuf>)
             "Unstaged edits to these files are removed, and the {n} untracked files are deleted. Staged changes are kept."
         ),
     };
-    spec.line(consequence).line("Restore, in the notice that follows, brings them back.")
+    spec.line(consequence).line("Undo, in the notice that follows, brings them back.")
 }
 
 fn shown(path: &Path) -> String {
@@ -414,7 +414,7 @@ mod tests {
                 "notes/1.txt",
                 "notes/2.txt",
                 "Unstaged edits to these files are removed. Staged changes are kept.",
-                "Restore, in the notice that follows, brings them back."
+                "Undo, in the notice that follows, brings them back."
             ]
         );
         let spec = describe_discard(&paths[..1], &BTreeSet::from([paths[0].clone()]));

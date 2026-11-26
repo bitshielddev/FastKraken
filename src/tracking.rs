@@ -575,9 +575,7 @@ fn delete_remote(repo: &Repository, doomed: &Doomed, with_local: bool) -> Result
                 format!("{name} was {}, {shown} was {short}.", notice::short(&local.tip))
             };
             let mut outcome = Outcome::titled(format!("Deleted {name} and {shown}"), detail).sticky();
-            for (_, action) in gone.actions {
-                outcome = outcome.offer(format!("Restore {name}"), action);
-            }
+            outcome.journal = gone.journal;
             Ok(outcome.offer(format!("Restore {shown}"), restore))
         }
         Err(error) => Err(Failure::from(format!("Delete Failed — Deleted {shown}, but not {name}: {error}"))
@@ -848,10 +846,12 @@ mod tests {
         assert!(!exists(&f, "refs/heads/topic") && !exists(&f, "refs/remotes/origin/topic"));
         assert_eq!(remote_heads(&f, &url), format!("refs/heads/main {main}\n"));
         let labels: Vec<_> = outcome.actions.iter().map(|(label, _)| label.as_ref()).collect();
-        assert_eq!(labels, ["Restore topic", "Restore origin/topic"]);
-        let view::Action::Branch(crate::branch::Action::Restore { .. }) = &outcome.actions[0].1 else {
-            panic!("{:?}", outcome.actions[0]);
+        assert_eq!(labels, ["Restore origin/topic"]);
+        assert!(outcome.journal.offered);
+        let [crate::journal::Change::DeleteRef { reference, oid, .. }] = outcome.journal.changes.as_slice() else {
+            panic!("{:?}", outcome.journal);
         };
+        assert_eq!((reference.as_str(), oid.as_str()), ("refs/heads/topic", topic.as_str()));
         let (f, _, topic, _) = published(&place(dir.path(), "again"));
         delete_remote(&f.repo, &doomed(&f, Some("topic")), false).unwrap();
         assert_eq!(rev(&f, "refs/heads/topic"), topic);

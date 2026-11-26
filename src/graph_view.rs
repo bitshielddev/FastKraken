@@ -129,6 +129,7 @@ impl GraphView {
         } else {
             args.extend(excludes);
             args.push("--exclude=refs/stash".into());
+            args.push(crate::journal::HIDDEN.into());
             args.push("--all".into());
         }
         if self.filtered() {
@@ -962,9 +963,9 @@ mod tests {
 
     #[test]
     fn an_unfiltered_view_lists_every_ref_but_the_stash() {
-        assert_eq!(args(&GraphView::default()), ["--exclude=refs/stash", "--all"]);
+        assert_eq!(args(&GraphView::default()), ["--exclude=refs/stash", "--exclude=refs/fastkraken/*", "--all"]);
         let quiet = GraphView { hide_stashes: true, author: Some(Person::default()), ..GraphView::default() };
-        assert_eq!(args(&quiet), ["--exclude=refs/stash", "--all"]);
+        assert_eq!(args(&quiet), ["--exclude=refs/stash", "--exclude=refs/fastkraken/*", "--all"]);
         assert!(!quiet.filtered() && quiet.active());
     }
 
@@ -977,6 +978,7 @@ mod tests {
                 "--exclude=refs/heads/feature/map",
                 "--exclude=refs/remotes/origin/*",
                 "--exclude=refs/stash",
+                "--exclude=refs/fastkraken/*",
                 "--all",
                 "--ignore-missing",
                 "HEAD"

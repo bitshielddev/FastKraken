@@ -47,6 +47,7 @@ mod init;
 mod instance;
 mod inspection;
 mod jobs;
+mod journal;
 mod kit;
 mod line_patch;
 mod lines;
@@ -158,6 +159,7 @@ struct Tab {
     front: bool,
     stale: Option<bool>,
     transient: bool,
+    replaying: bool,
 }
 
 impl Tab {
@@ -186,6 +188,7 @@ impl Tab {
             front: true,
             stale: None,
             transient: false,
+            replaying: false,
         }
     }
 
@@ -298,6 +301,7 @@ impl Tab {
                 start::remember(&repo.root, cx);
                 tab.repo = Some(repo);
                 graph_view::restore(tab, cx);
+                journal::restore(tab, cx);
                 tab.ui.autofetch.fetched = fetched;
                 autofetch::arm(tab, cx);
                 sync::restore(tab, configured, cx);
@@ -850,7 +854,7 @@ impl Tab {
                 "Discarding changes…",
                 Some("Changes discarded"),
                 false,
-                move |repo| repo.discard_file(&path, untracked),
+                move |repo| discard::discard_file(&repo, path, untracked),
                 |_, _| {},
             ),
             DiscardAsk::Files { paths, untracked } => self.apply_operation(
@@ -867,7 +871,7 @@ impl Tab {
                 "Discarding the hunk…",
                 Some("Hunk discarded"),
                 false,
-                move |repo| repo.discard_hunk(&diff, index),
+                move |repo| repo.discard_hunk(&diff, index).map(|_| notice::Outcome::default().not_undoable(journal::PARTLY)),
                 |_, _| {},
             ),
             DiscardAsk::Lines { lines, diff, .. } => self.apply_operation(
@@ -875,7 +879,7 @@ impl Tab {
                 "Discarding lines…",
                 Some("Lines discarded"),
                 false,
-                move |repo| repo.discard_lines(&diff, &lines),
+                move |repo| repo.discard_lines(&diff, &lines).map(|_| notice::Outcome::default().not_undoable(journal::PARTLY)),
                 |_, _| {},
             ),
         }
@@ -941,6 +945,7 @@ impl Tab {
             ("Committing…", "Changes committed")
         };
         let summary = draft.summary.trim().to_owned();
+        let amended = amend.is_some();
         let kept = autostash::Kept::default();
         let left = kept.clone();
         let shown = self.ui.identity.effective().cloned();
@@ -965,7 +970,10 @@ impl Tab {
                     None => repo.commit_with(&message, hooks)?,
                 };
                 *landed.lock().unwrap_or_else(|e| e.into_inner()) = committed.head.clone();
-                let outcome = hooks::told(notice::Outcome::titled(notice, summary), &committed);
+                let undone = if amended { format!("Amend '{summary}'") } else { format!("Commit '{summary}'") };
+                let outcome = hooks::told(notice::Outcome::titled(notice, summary), &committed)
+                    .undone_as(undone)
+                    .moving(journal::Mode::Soft);
                 autostash::settled(&repo, pending, &kept, outcome)
             },
             move |tab, cx| {
@@ -1010,7 +1018,10 @@ impl Tab {
                 let pending = autostash::pending(&repo);
                 let committed = repo.commit_all_with(head.as_deref(), reference.as_deref(), &message, hooks)?;
                 *landed.lock().unwrap_or_else(|e| e.into_inner()) = committed.head.clone();
-                let outcome = hooks::told(notice::Outcome::titled("Changes committed", summary), &committed);
+                let undone = format!("Commit '{summary}'");
+                let outcome = hooks::told(notice::Outcome::titled("Changes committed", summary), &committed)
+                    .undone_as(undone)
+                    .moving(journal::Mode::Soft);
                 autostash::settled(&repo, pending, &kept, outcome)
             },
             move |tab, cx| {
@@ -1107,15 +1118,22 @@ impl Tab {
         }
         let about = explain::About { push: spec.kind == jobs::Kind::Push, ..self.about(spec.remote.clone()) };
         let stop = (spec.kind == jobs::Kind::Push).then_some(&hooks::PUSHING);
+        let pushes = matches!(spec.kind, jobs::Kind::Push | jobs::Kind::Publish);
         let Some((repo, link, id, spinner)) = self.start_network(spec, progress, cx) else { return };
+        let watch = Some(journal::begin(&mut self.ui, false));
         let work = move || {
             link.enter(|| {
-                job(repo.clone()).map_err(|error| about.explain(&repo, hooks::named(error.into(), &link.ran(), stop)))
+                journal::watched(&repo, watch, || {
+                    job(repo.clone())
+                        .map(Into::into)
+                        .map_err(|error| about.explain(&repo, hooks::named(error.into(), &link.ran(), stop)))
+                })
             })
         };
-        Self::work(cx, work, move |tab, result, cx| {
+        Self::work(cx, work, move |tab, (mut result, watched), cx| {
             let Some(job) = tab.ui.jobs.end_network(id) else { return };
-            let result = result.map(Into::into);
+            let recorded = watched.as_ref().is_some_and(journal::Watched::recorded);
+            journal::record(tab, watched, &mut result, cx);
             askpass::poll(tab, cx);
             if result.is_err() && job.link.cancelled() {
                 tab.ui.notices.finish(spinner, jobs::cancelled(&job.spec).logged(tab.trail.entry(true)));
@@ -1124,6 +1142,9 @@ impl Tab {
                 tab.ui.notices.finish(spinner, declined());
                 after_failure(tab, cx);
             } else if tab.conclude(Some(spinner), Some(notice), result) {
+                if pushes && !recorded {
+                    journal::refuse(tab, "Push".to_owned(), journal::PUSHED, cx);
+                }
                 tab.follow = Follow::head_if(select_head);
                 after_success(tab, cx);
             } else {
@@ -1258,11 +1279,19 @@ impl Tab {
         self.ui.jobs.start_write(&title, link.clone(), None);
         jobs::tick(&mut self.ui, Instant::now());
         cx.notify();
-        let work = move || link.enter(|| integrate(repo.clone(), fetched, moved).map_err(|error| about.explain(&repo, error.into())));
-        Self::work(cx, work, move |tab, result, cx| {
+        let watch = Some(journal::begin(&mut self.ui, true));
+        let work = move || {
+            link.enter(|| {
+                journal::watched(&repo, watch, || {
+                    integrate(repo.clone(), fetched, moved).map(Into::into).map_err(|error| about.explain(&repo, error.into()))
+                })
+            })
+        };
+        Self::work(cx, work, move |tab, (mut result, watched), cx| {
             tab.ui.jobs.end_write();
             tab.ui.jobs.end_network(id);
-            if tab.conclude(Some(spinner), Some(notice), result.map(Into::into)) {
+            journal::record(tab, watched, &mut result, cx);
+            if tab.conclude(Some(spinner), Some(notice), result) {
                 tab.follow = Follow::head_if(select_head);
                 after_success(tab, cx);
             } else {
@@ -1390,12 +1419,14 @@ impl Tab {
         R: Into<notice::Outcome> + Send + 'static,
         E: Into<notice::Failure> + Send + 'static,
     {
+        let replaying = std::mem::take(&mut self.replaying);
         if self.ui.busy() {
             return;
         }
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        let watch = (!replaying).then(|| journal::begin(&mut self.ui, refresh_refs));
         let link = jobs::Link::new(false);
         let spinner = notice.is_some().then(|| self.ui.notices.progress(progress));
         let id = self.ui.jobs.start_write(progress, link.clone(), spinner);
@@ -1417,11 +1448,18 @@ impl Tab {
         Self::work(
             cx,
             move || {
-                link.enter(|| job(repo.clone()).map_err(|error| about.explain(&repo, hooks::named(error.into(), &link.ran(), None))))
+                link.enter(|| {
+                    journal::watched(&repo, watch, || {
+                        job(repo.clone())
+                            .map(Into::into)
+                            .map_err(|error| about.explain(&repo, hooks::named(error.into(), &link.ran(), None)))
+                    })
+                })
             },
-            move |tab, result, cx| {
+            move |tab, (mut result, watched), cx| {
                 let spinner = tab.ui.jobs.end_write().and_then(|job| job.notice);
-                if tab.conclude(spinner, notice, result.map(Into::into)) {
+                journal::record(tab, watched, &mut result, cx);
+                if tab.conclude(spinner, notice, result) {
                     after_success(tab, cx);
                 } else {
                     after_failure(tab, cx);
@@ -1656,6 +1694,7 @@ impl Tab {
             Action::Patch(action) => patch::dispatch(self, action, window, cx),
             Action::Recover(action) => recover::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
+            Action::Journal(action) => journal::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
             Action::Autostash(action) => autostash::dispatch(self, action, window, cx),

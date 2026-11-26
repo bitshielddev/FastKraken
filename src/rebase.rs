@@ -425,12 +425,13 @@ pub(crate) fn run(tab: &mut Tab, ask: Ask, stash: bool, cx: &mut Context<Tab>) {
     tab.ui.refs.list_open = false;
     let kept = Kept::default();
     let stopped = kept.clone();
+    let title = format!("Rebase {} onto {}", ask.branch, ask.label);
     tab.run_operation_or(
         cx,
         "Rebasing…",
         "Rebased",
         true,
-        move |repo| ask.rebase(&repo, stash, &kept),
+        move |repo| crate::journal::titled(ask.rebase(&repo, stash, &kept), title),
         |_, _| {},
         move |tab, _| stopped.remember(&mut tab.ui),
     );

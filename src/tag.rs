@@ -132,7 +132,6 @@ pub(crate) enum Action {
     Annotate(OsString),
     Delete(OsString),
     DeleteRemote { name: OsString, remotes: Vec<String> },
-    Restore { name: OsString, object: String, commit: String },
 }
 
 #[derive(Debug)]
@@ -281,14 +280,6 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
             tab.ui.menu = None;
             prompt::ask(&mut tab.ui, prompt::Kind::Tag(Ask::DeleteRemote { name, remotes }), cx);
         }
-        Action::Restore { name, object, commit } => tab.run_operation_then(
-            cx,
-            "Restoring the tag…",
-            "Tag restored",
-            false,
-            move |repo| restore(&repo, &name, &object, &commit),
-            |_, _| {},
-        ),
     }
     cx.notify();
 }
@@ -574,9 +565,8 @@ fn delete(repo: &Repository, name: &OsStr, object: &str, commit: &str, remotes: 
     repo.expect_ref(&tag, object)?;
     checked(repo.command().args(["update-ref", "--no-deref", "-d"]).arg(&tag).arg(object))?;
     let shown = name.to_string_lossy();
-    let restore = Action::Restore { name: name.to_owned(), object: object.to_owned(), commit: commit.to_owned() };
-    let mut outcome = Outcome::titled(format!("Deleted tag {shown}"), format!("was {}", notice::short(commit)))
-        .offer("Restore", view::Action::Tag(restore));
+    let mut outcome =
+        Outcome::titled(format!("Deleted tag {shown}"), format!("was {}", notice::short(commit))).offering_undo();
     if !remotes.is_empty() {
         let label = match remotes {
             [remote] => format!("Delete from {remote} too"),
@@ -619,14 +609,6 @@ fn checked_with_input(command: &mut std::process::Command, input: &[u8]) -> Resu
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
     Ok(output.stdout)
-}
-
-fn restore(repo: &Repository, name: &OsStr, object: &str, commit: &str) -> Result<Outcome, String> {
-    plain(name)?;
-    validate_oid(object)?;
-    checked(repo.command().args(["update-ref", "--no-deref"]).arg(full(name)).arg(object).arg(""))?;
-    let shown = name.to_string_lossy();
-    Ok(Outcome::titled(format!("Restored tag {shown}"), format!("at {}", notice::short(commit))))
 }
 
 #[cfg(test)]
@@ -767,7 +749,7 @@ mod tests {
         assert_eq!(remote_tags(&f, &url), "");
         f.git(&["config", "--unset-all", "remote.origin.fetch", "tags"]);
         f.git(&["config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/remotes/origin/tags/*"]);
-        restore(&f.repo, OsStr::new("v1"), &object, &commit).unwrap();
+        f.git(&["update-ref", "refs/tags/v1", &object]);
         f.git(&["push", "-q", "origin", "refs/tags/v1"]);
         unpublish(&f.repo, OsStr::new("v1"), &["origin".into()]).unwrap();
         assert_eq!((rev(&f, "refs/tags/v1"), remote_tags(&f, &url)), (object, String::new()));
@@ -782,17 +764,20 @@ mod tests {
         let outcome = delete(&f.repo, OsStr::new("v1"), &object, &commit, &["origin".into()]).unwrap();
         assert_eq!((outcome.title.as_str(), outcome.detail.as_str()), ("Deleted tag v1", format!("was {}", &commit[..7]).as_str()));
         let offers: Vec<_> = outcome.actions.iter().map(|(label, _)| label.to_string()).collect();
-        assert_eq!(offers, ["Restore", "Delete from origin too"]);
+        assert_eq!(offers, ["Delete from origin too"]);
+        assert!(outcome.journal.offered);
         assert!(outcome.sticky);
         assert_eq!(f.git(&["for-each-ref", "refs/tags"]), b"");
         assert_eq!(rev(&f, "HEAD"), head);
         assert_eq!(f.git(&["status", "--porcelain=v1"]), b"");
 
-        let outcome = restore(&f.repo, OsStr::new("v1"), &object, &commit).unwrap();
-        assert_eq!(outcome.title, "Restored tag v1");
+        f.git(&["update-ref", "refs/tags/v1", &object]);
+        let entry = crate::journal::tests::entry_of(&f.repo, |repo| delete(repo, OsStr::new("v1"), &object, &commit, &[]).map_err(Into::into));
+        assert_eq!(entry.title, "Delete tag v1");
+        crate::journal::replay(&f.repo, &entry, crate::journal::Way::Undo).unwrap();
         assert_eq!(rev(&f, "refs/tags/v1"), object);
         assert_eq!(f.git(&["tag", "-l", "--format=%(contents:subject)", "v1"]), b"First release\n");
-        assert!(restore(&f.repo, OsStr::new("v1"), &object, &commit).is_err());
+        assert!(crate::journal::replay(&f.repo, &entry, crate::journal::Way::Undo).is_err());
         assert_eq!(rev(&f, "refs/tags/v1"), object);
     }
 

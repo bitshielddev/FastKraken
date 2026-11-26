@@ -181,7 +181,6 @@ fn current(ui: &Ui, name: &OsStr) -> Option<String> {
 pub(crate) enum Action {
     Delete(OsString),
     Rename(OsString),
-    Restore { name: OsString, oid: String, tracking: Option<Tracking> },
     CheckoutRemote(OsString),
     Detach { oid: String, tag: Option<OsString> },
 }
@@ -579,16 +578,6 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
             tab.ui.refs.list_open = false;
             start(tab, Move::Detach { oid, tag, seen }, cx);
         }
-        Action::Restore { name, oid, tracking } => {
-            tab.run_operation_then(
-                cx,
-                "Restoring the branch…",
-                "Branch restored",
-                false,
-                move |repo| restore(&repo, &name, &oid, tracking.as_ref()),
-                |_, _| {},
-            );
-        }
     }
     cx.notify();
 }
@@ -645,27 +634,20 @@ pub(crate) fn remove(repo: &Repository, name: &OsStr, tip: &str) -> Result<Optio
 pub(crate) fn delete(repo: &Repository, name: &OsStr, tip: &str) -> Result<Outcome, String> {
     let tracking = remove(repo, name, tip)?;
     let shown = name.to_string_lossy();
-    let restore = Action::Restore { name: name.to_owned(), oid: tip.to_owned(), tracking };
+    let upstream = tracking.map(|tracking| crate::journal::Upstream {
+        remote: tracking.remote.to_string_lossy().into_owned(),
+        merge: tracking.merge.to_string_lossy().into_owned(),
+    });
+    let gone = crate::journal::Change::DeleteRef {
+        reference: full(name).to_string_lossy().into_owned(),
+        oid: tip.to_owned(),
+        upstream,
+    };
     Ok(Outcome::titled(format!("Deleted branch {shown}"), format!("was {}", notice::short(tip)))
-        .offer("Restore", view::Action::Branch(restore))
+        .undone_as(format!("Delete branch {shown}"))
+        .changed(gone)
+        .offering_undo()
         .sticky())
-}
-
-pub(crate) fn restore(repo: &Repository, name: &OsStr, oid: &str, tracking: Option<&Tracking>) -> Result<Outcome, String> {
-    plain(name)?;
-    validate_oid(oid)?;
-    if let Some(tracking) = tracking {
-        plain(&tracking.remote)?;
-        plain(&tracking.merge)?;
-    }
-    checked(repo.command().args(["branch", "--no-track", "--"]).arg(name).arg(oid))?;
-    if let Some(tracking) = tracking {
-        for (field, value) in [("remote", &tracking.remote), ("merge", &tracking.merge)] {
-            checked(repo.command().args(["config", "--local"]).arg(key(name, field)).arg(value))?;
-        }
-    }
-    let shown = name.to_string_lossy();
-    Ok(Outcome::titled(format!("Restored branch {shown}"), format!("at {}", notice::short(oid))))
 }
 
 fn rename(repo: &Repository, old: &OsStr, tip: &str, new: &str) -> Result<(), String> {
@@ -802,7 +784,7 @@ fn left_behind(repo: &Repository, old: &str) -> usize {
     if validate_oid(old).is_err() {
         return 0;
     }
-    checked(repo.read_command().args(["rev-list", "--count", old, "--not", "--exclude=refs/stash", "--all", "--"]))
+    checked(repo.read_command().args(["rev-list", "--count", old, "--not", "--exclude=refs/stash", crate::journal::HIDDEN, "--all", "--"]))
         .ok()
         .and_then(|count| String::from_utf8_lossy(&count).trim().parse().ok())
         .unwrap_or(0)
@@ -854,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_the_ref_and_its_upstream_and_restore_brings_both_back() {
+    fn delete_removes_the_ref_and_its_upstream_and_undo_brings_both_back() {
         let (f, _, topic) = trail();
         f.git(&["config", "branch.topic.remote", "origin"]);
         f.git(&["config", "branch.topic.merge", "refs/heads/topic"]);
@@ -869,17 +851,19 @@ mod tests {
         assert_eq!(f.git(&["status", "--porcelain"]), b"");
         assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "Start\n");
 
-        let [(label, view::Action::Branch(Action::Restore { name, oid: at, tracking }))] = outcome.actions.as_slice() else {
-            panic!("Delete offered {:?}", outcome.actions);
-        };
-        assert_eq!(label.as_ref(), "Restore");
-        let restored = restore(&f.repo, name, at, tracking.as_ref()).unwrap();
-        assert_eq!(restored.title, "Restored branch topic");
+        assert!(outcome.journal.offered);
+        assert!(outcome.actions.is_empty());
+        f.git(&["branch", "topic", &topic]);
+        f.git(&["config", "branch.topic.remote", "origin"]);
+        f.git(&["config", "branch.topic.merge", "refs/heads/topic"]);
+        let entry = crate::journal::tests::entry_of(&f.repo, |repo| delete(repo, OsStr::new("topic"), &topic).map_err(Into::into));
+        assert_eq!(entry.title, "Delete branch topic");
+        crate::journal::replay(&f.repo, &entry, crate::journal::Way::Undo).unwrap();
         assert_eq!(oid(&f, "refs/heads/topic"), topic);
         assert_eq!(f.git(&["config", "branch.topic.remote"]), b"origin\n");
         assert_eq!(f.git(&["config", "branch.topic.merge"]), b"refs/heads/topic\n");
-        let err = restore(&f.repo, name, at, None).unwrap_err();
-        assert!(err.contains("already exists"), "{err}");
+        let err = crate::journal::replay(&f.repo, &entry, crate::journal::Way::Undo).unwrap_err();
+        assert!(err.text.contains("topic"), "{}", err.text);
     }
 
     #[test]

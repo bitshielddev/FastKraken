@@ -173,6 +173,8 @@ pub(crate) struct RepoView {
     pub(crate) push_after: Option<bool>,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) graph: Option<crate::graph_view::GraphView>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) journal: Option<crate::journal::Stored>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -274,6 +276,7 @@ impl Memory {
             || view.merge.is_some()
             || view.push_after.is_some()
             || view.graph.is_some()
+            || view.journal.is_some()
         {
             self.repositories.push(view);
         }

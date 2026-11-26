@@ -1224,22 +1224,20 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::Activate(_)
         | A::MenuKey(_)
         | A::MenuHover(_)
-        | A::Navigate(_) => true,
+        | A::Navigate(_)
+        | A::Journal(_) => true,
         A::Refs(action) => {
             use crate::refs::Action as R;
             matches!(action, R::Inspect(..) | R::ToggleSection(_) | R::ToggleFolder(_) | R::FoldAll { .. } | R::ToggleList | R::Escape)
         }
-        A::Branch(action) => matches!(action, crate::branch::Action::Restore { .. }),
-        A::Cleanup(action) => matches!(action, crate::cleanup::Action::RestoreAll(_)),
-        A::Drag(action) => matches!(action, crate::drag::Action::Drop { .. } | crate::drag::Action::Restore { .. }),
+        A::Branch(_) | A::Cleanup(_) => false,
+        A::Drag(action) => matches!(action, crate::drag::Action::Drop { .. }),
         A::PushTo(_) => false,
-        A::Tag(action) => matches!(action, crate::tag::Action::Restore { .. }),
+        A::Tag(_) => false,
         A::Tracking(action) => matches!(action, crate::tracking::Action::RestoreRemote { .. }),
         A::Stash(action) => matches!(
             action,
-            crate::stash::Action::Restore { .. }
-                | crate::stash::Action::RestoreAll(_)
-                | crate::stash::Action::Dismiss
+            crate::stash::Action::Dismiss
                 | crate::stash::Action::OpenFile(_)
                 | crate::stash::Action::AllChanges
         ),
@@ -2104,8 +2102,7 @@ pub(crate) mod tests {
             A::CloseDiff,
             A::Dismiss,
             A::Refs(crate::refs::Action::ToggleList),
-            A::Branch(crate::branch::Action::Restore { name: "x".into(), oid: "0".repeat(40), tracking: None }),
-            A::Stash(crate::stash::Action::Restore { oid: "0".repeat(40), message: String::new() }),
+            A::Journal(crate::journal::Action::Undo(None)),
             A::Jobs(crate::jobs::Action::Cancel(1)),
         ] {
             assert_eq!(allows(Some(Kind::Rebase), &action), Ok(()), "{action:?}");

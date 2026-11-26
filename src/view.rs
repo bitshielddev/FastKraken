@@ -246,11 +246,11 @@ pub(crate) fn describe_discard(ask: &DiscardAsk) -> crate::prompt::Spec {
     match ask {
         DiscardAsk::File { path, untracked: true } => {
             Spec::new(format!("Discard changes to {}?", base_name(path)), "Discard file")
-                .line("This file is not tracked, so discarding deletes it. This cannot be undone.")
+                .line("This file is not tracked, so discarding deletes it. Undo, in the notice that follows, brings it back.")
         }
         DiscardAsk::File { path, untracked: false } => {
             Spec::new(format!("Discard changes to {}?", base_name(path)), "Discard changes").line(
-                "Unstaged edits to this file will be lost. Staged changes are kept. This cannot be undone.",
+                "Unstaged edits to this file are removed. Staged changes are kept. Undo, in the notice that follows, brings them back.",
             )
         }
         DiscardAsk::Hunk { path, index, diff } => {
@@ -594,6 +594,7 @@ pub enum Action {
     Patch(crate::patch::Action),
     Recover(crate::recover::Action),
     Discard(crate::discard::Action),
+    Journal(crate::journal::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
     Autostash(crate::autostash::Action),
@@ -777,6 +778,8 @@ pub struct Ui {
     graph: Graph,
     pub(crate) graph_columns: crate::columns::State,
     pub(crate) drag: crate::drag::State,
+    pub(crate) journal: crate::journal::State,
+    pub(crate) chrome_drawn: bool,
 }
 
 impl Ui {
@@ -873,6 +876,8 @@ impl Ui {
             graph: Graph::default(),
             graph_columns: crate::columns::State::new(settings.graph_columns.clone()),
             drag: Default::default(),
+            journal: Default::default(),
+            chrome_drawn: false,
             diff_layout: DiffLayout::default(),
             diff_mode: settings.diff_mode,
             split_pan: ScrollHandle::new(),
@@ -1308,7 +1313,7 @@ pub(crate) const OTHER_KEYS: &[(&str, &str)] = &[
     ("cmd-q", "Quit FastKraken"),
 ];
 
-pub(crate) fn menu_bar(ui: &Ui, recents: &[(String, PathBuf)], cx: &App) -> Vec<gpui::Menu> {
+pub(crate) fn menu_bar(ui: &Ui, recents: &[(String, PathBuf)], field: bool, cx: &App) -> Vec<gpui::Menu> {
     use crate::commands::{Bar, bar_index, bar_items};
     use gpui::{Menu, MenuItem, OsAction, SystemMenuType};
     let mut app = bar_items(ui, Bar::App);
@@ -1322,16 +1327,15 @@ pub(crate) fn menu_bar(ui: &Ui, recents: &[(String, PathBuf)], cx: &App) -> Vec<
         MenuItem::separator(),
         MenuItem::action("Quit FastKraken", QuitApp),
     ]);
-    let mut edit = vec![
-        MenuItem::os_action("Undo", commit_input::UndoText, OsAction::Undo),
-        MenuItem::os_action("Redo", commit_input::RedoText, OsAction::Redo),
+    let mut edit = crate::journal::bar_items(ui, field);
+    edit.extend([
         MenuItem::separator(),
         MenuItem::os_action("Cut", commit_input::CutSummary, OsAction::Cut),
         MenuItem::os_action("Copy", commit_input::CopySummary, OsAction::Copy),
         MenuItem::os_action("Paste", commit_input::PasteSummary, OsAction::Paste),
         MenuItem::os_action("Select All", commit_input::SelectSummary, OsAction::SelectAll),
         MenuItem::separator(),
-    ];
+    ]);
     edit.extend(bar_items(ui, Bar::Edit));
     let mut view = bar_items(ui, Bar::View);
     let at = bar_index(Bar::View, "view.sidebar").map_or(view.len(), |at| (at + 1).min(view.len()));
@@ -1371,12 +1375,15 @@ fn sync_chrome<T: Desk>(app: &mut T, window: &mut Window, cx: &mut Context<T>) {
         app.ui_mut().title_shown = Some(title);
     }
     let recents = crate::start::others(app.ui(), cx, crate::start::IN_BAR);
+    let field = app.ui().chrome_drawn && window.context_stack().iter().any(|context| context.contains("CommitField"));
+    app.ui_mut().chrome_drawn = true;
     let mut titles = crate::commands::bar_titles(app.ui());
+    titles.extend(crate::journal::bar_titles(app.ui(), field));
     titles.extend(crate::sidebar::bar_titles(app.ui()));
     titles.extend(recents.iter().map(|(title, path)| format!("{title}\0{}", path.display())));
     titles.extend(crate::tabs::bar_titles(cx));
     if app.ui().bar_shown != titles {
-        let menus = menu_bar(app.ui(), &recents, cx);
+        let menus = menu_bar(app.ui(), &recents, field, cx);
         cx.set_menus(menus);
         app.ui_mut().bar_shown = titles;
     }

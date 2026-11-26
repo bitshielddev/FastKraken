@@ -498,7 +498,6 @@ pub(crate) enum Action {
     SwitchAndMerge { branch: OsString, tip: String, source: Source },
     ResetHere { operation: Operation, oid: String },
     AskMove { branch: OsString, to: Target },
-    Restore { branch: OsString, from: String, to: String },
 }
 
 #[derive(Debug)]
@@ -542,7 +541,7 @@ pub(crate) fn describe(ask: &Ask, _: &Ui) -> Spec {
             1 => spec = spec.line("and 1 more commit"),
             n => spec = spec.line(format!("and {n} more commits")),
         }
-        spec = spec.line("Restore, in the notice that follows, puts the branch back.").danger();
+        spec = spec.line("Undo, in the notice that follows, puts the branch back.").danger();
     }
     spec
 }
@@ -599,21 +598,6 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             crate::reverse::dispatch(tab, crate::reverse::Action::Start(operation), window, cx);
         }
         Action::AskMove { branch, to } => ask_move(tab, branch, to, cx),
-        Action::Restore { branch, from, to } => {
-            let label = notice::short(&to).to_owned();
-            tab.run_operation_then(
-                cx,
-                "Restoring the branch…",
-                "Branch restored",
-                false,
-                move |repo| {
-                    move_ref(&repo, &branch, &from, &to, &format!("restore: moving back to {label}"))?;
-                    let shown = branch.to_string_lossy();
-                    Ok::<_, String>(Outcome::titled(format!("Restored {shown}"), format!("{shown} is back at {label}.")))
-                },
-                |_, _| {},
-            );
-        }
     }
     cx.notify();
 }
@@ -773,8 +757,9 @@ pub(crate) fn move_branch(repo: &Repository, branch: &OsStr, from: &str, to: &st
         0 => format!("It moved from {} to {}.", notice::short(from), notice::short(to)),
         n => format!("{} left {shown}. It was at {}.", notice::commits(n), notice::short(from)),
     };
-    let restore = Action::Restore { branch: branch.to_owned(), from: to.to_owned(), to: from.to_owned() };
-    let outcome = Outcome::titled(format!("Reset {shown} to {label}"), detail).offer("Restore", view::Action::Drag(restore));
+    let outcome = Outcome::titled(format!("Reset {shown} to {label}"), detail)
+        .undone_as(format!("Reset {shown} to {label}"))
+        .offering_undo();
     Ok(if leaving > 0 { outcome.sticky() } else { outcome })
 }
 

@@ -3,6 +3,7 @@ use crate::{
     Tab,
     commands::Target,
     guard::Seen,
+    journal::{Change, Discarded, Mode},
     notice::{self, Failure, Notice, Outcome},
     operation,
     prompt::{self, Answer, Spec},
@@ -240,15 +241,31 @@ impl Ask {
             return Err("Your uncommitted changes are not the ones the prompt counted. Reopen the action.".into());
         }
         let target = self.target.as_str();
+        let mut saved = None;
         match self.operation {
             Operation::SoftReset => checked(repo.command().args(["reset", "--soft", target, "--"])),
             Operation::MixedReset => checked(repo.command().args(["reset", "--mixed", target, "--"])),
             Operation::HardReset => {
+                saved = repo.save_tracked()?;
                 checked(repo.command().args(["reset", "--hard", "--no-recurse-submodules", target, "--"]))
             }
             Operation::Revert => return self.revert(repo).map(|reverted| reverted.outcome).map_err(|f| f.text),
         }?;
-        Ok(self.outcome())
+        let mode = match self.operation {
+            Operation::SoftReset => Mode::Soft,
+            Operation::MixedReset => Mode::Mixed,
+            _ => Mode::Keep,
+        };
+        let mut outcome = self.outcome();
+        let undone = outcome.title.clone();
+        outcome = outcome.undone_as(undone).moving(mode);
+        if let Some(saved) = saved {
+            outcome = outcome.changed(Change::Discard { saved, discarded: Discarded::Tracked });
+        }
+        if self.operation == Operation::HardReset {
+            outcome = outcome.offering_undo().sticky();
+        }
+        Ok(outcome)
     }
 
     pub(crate) fn revert(&self, repo: &Repository) -> Result<Reverted, Failure> {
@@ -352,7 +369,7 @@ impl Ask {
             |repo| self.revert(repo).map(|reverted| reverted.outcome),
             |outcome| (outcome.title == "Revert committed").then(|| format!("reverted {short}")),
         )?;
-        Ok(Reverted { outcome, staged: None })
+        Ok(Reverted { outcome: outcome.undone_as(format!("Revert {short}")), staged: None })
     }
 
     fn outcome(&self) -> Outcome {
@@ -474,7 +491,7 @@ fn spec(ask: &Ask) -> Spec {
             };
             let mut spec = Spec::new(title, confirm)
                 .line(commit)
-                .line(format!("{}{discarded} This cannot be undone.", ask.leaving_line()));
+                .line(format!("{}{discarded} Undo, in the notice that follows, brings them back.", ask.leaving_line()));
             for (short, subject) in &ask.listed {
                 spec = spec.line(format!("{short}  {subject}"));
             }
@@ -1074,7 +1091,7 @@ mod tests {
             shown.lines,
             [
                 "bbbbbbb  Start notebook",
-                "2 commits leave main. Changes in 3 files will be discarded. This cannot be undone.",
+                "2 commits leave main. Changes in 3 files will be discarded. Undo, in the notice that follows, brings them back.",
                 "ccccccc  Add checklist",
                 "and 1 more commit",
                 "Your 2 untracked files are kept.",
@@ -1086,7 +1103,7 @@ mod tests {
         let shown = spec(&ask);
         assert_eq!(shown.title, "Reset main to origin/main?");
         assert_eq!(shown.confirm.as_ref(), "Reset to origin/main");
-        assert_eq!(shown.lines[..2], ["origin/main is at bbbbbbb  Start notebook", "1 commit leaves main. This cannot be undone."]);
+        assert_eq!(shown.lines[..2], ["origin/main is at bbbbbbb  Start notebook", "1 commit leaves main. Undo, in the notice that follows, brings them back."]);
         ask.operation = Operation::SoftReset;
         ask.upstream = None;
         ask.target = head.clone();

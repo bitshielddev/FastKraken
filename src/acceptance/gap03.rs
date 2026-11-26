@@ -945,7 +945,7 @@ impl Replay<'_> {
         self.until("the stash dropped", |tab| {
             tab.ui.stash.entries.is_empty()
                 && tab.ui.notices.newest().is_some_and(|n| {
-                    n.title == "Dropped stash Bench plans" && n.actions.iter().map(|(label, _)| label.as_ref()).eq(["Restore"])
+                    n.title == "Dropped stash Bench plans" && n.actions.iter().map(|(label, _)| label.as_ref()).eq(["Undo"])
                 })
         })
         .await?;

@@ -589,7 +589,7 @@ impl Repository {
         let matching = |pattern: String| {
             Self::read_log(
                 self.log_command(false)
-                    .args(["--exclude=refs/stash", "--all", "--regexp-ignore-case", "--fixed-strings"])
+                    .args(["--exclude=refs/stash", crate::journal::HIDDEN, "--all", "--regexp-ignore-case", "--fixed-strings"])
                     .arg(pattern)
                     .arg(format!("--max-count={limit}")),
             )
@@ -674,6 +674,7 @@ impl Repository {
             "log",
             "--topo-order",
             "--decorate=short",
+            crate::journal::UNDECORATED,
             "--no-color",
             "--no-show-signature",
             "--no-patch",

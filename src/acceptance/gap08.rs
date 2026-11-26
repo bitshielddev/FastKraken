@@ -1448,7 +1448,7 @@ impl Replay<'_> {
         }
         self.action(Action::Prompt(prompt::Action::Confirm))?;
         let (detail, offers) = self.noticed("Deleted 2 branches").await?;
-        if detail != "feature/ford and stale" || offers != ["Restore all"] {
+        if detail != "feature/ford and stale" || offers != ["Undo"] {
             return Err(format!("The clean-up notice reads {detail:?} and offers {offers:?}").into());
         }
         let left = Self::heads(&root)?;
@@ -1464,7 +1464,7 @@ impl Replay<'_> {
 
         let offered = self.newest_notice()?;
         self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
-        self.noticed("Restored 2 branches").await?;
+        self.noticed("Undid: Delete 2 branches").await?;
         git_is(&root, &["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], &before)?;
         git_is(&root, &["config", "branch.stale.remote"], "origin\n")?;
         git_is(&root, &["config", "branch.stale.merge"], "refs/heads/stale\n")?;
@@ -1493,14 +1493,14 @@ impl Replay<'_> {
             "wip",
             "1 of them has commits found nowhere else. Those commits will no longer appear in the graph.",
             "main is checked out, so it is kept.",
-            "Restore all, in the notice that follows, brings them back.",
+            "Undo, in the notice that follows, brings them back.",
         ];
         if lines != wanted || !danger {
             return Err(format!("The delete prompt reads {lines:?}, danger {danger}").into());
         }
         self.action(Action::Prompt(prompt::Action::Confirm))?;
         let (detail, offers) = self.noticed("Deleted 2 branches").await?;
-        if detail != "feature/bridge and wip" || offers != ["Restore all"] {
+        if detail != "feature/bridge and wip" || offers != ["Undo"] {
             return Err(format!("The picked delete reads {detail:?} and offers {offers:?}").into());
         }
         let left = Self::heads(&root)?;
@@ -1509,7 +1509,7 @@ impl Replay<'_> {
         }
         let offered = self.newest_notice()?;
         self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
-        self.noticed("Restored 2 branches").await?;
+        self.noticed("Undid: Delete 2 branches").await?;
         git_is(&root, &["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], &before)?;
         self.until("wip listed again", |tab| tab.ui.refs.lists(Kind::Branch, "wip")).await?;
 
@@ -1654,13 +1654,13 @@ impl Replay<'_> {
         }
         self.action(Action::Prompt(prompt::Action::Confirm))?;
         let (_, offers) = self.noticed(&format!("Reset lookout to {short}")).await?;
-        if offers != ["Restore"] {
+        if offers != ["Undo"] {
             return Err(format!("The reset notice offers {offers:?}").into());
         }
         git_is(&root, &["rev-parse", "lookout", "main", "feature"], &format!("{base}\n{merged}\n{feature}\n"))?;
         let offered = self.newest_notice()?;
         self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
-        self.noticed("Restored lookout").await?;
+        self.noticed(&format!("Undid: Reset lookout to {short}")).await?;
         git_is(&root, &["rev-parse", "lookout"], &format!("{merged}\n"))?;
         self.until("lookout restored", |tab| tab.ui.refs.oid_of(&lookout()) == Some(merged.as_str())).await?;
 
@@ -1875,18 +1875,18 @@ impl Replay<'_> {
 
         self.choose_in_graph_menu(Target::Section(Section::Stashes), "stash.drop-all", "Drop all stashes…")?;
         let (lines, danger) = self.asked_about("Drop the stash?").await?;
-        if !danger || lines != ["Its changes leave the stash list. Restore, in the notice that follows, puts it back."] {
+        if !danger || lines != ["Its changes leave the stash list. Undo, in the notice that follows, puts it back."] {
             return Err(format!("The drop-all prompt reads {lines:?}, danger {danger}").into());
         }
         self.action(Action::Prompt(prompt::Action::Confirm))?;
         let (_, offers) = self.noticed("Dropped 1 stash").await?;
-        if offers != ["Restore"] {
+        if offers != ["Undo"] {
             return Err(format!("Dropping every stash offers {offers:?}").into());
         }
         git_is(&root, &["stash", "list"], "")?;
         let offered = self.newest_notice()?;
         self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
-        self.noticed("Restored 1 stash").await?;
+        self.noticed("Undid: Drop 1 stash").await?;
         git_is(&root, &["stash", "list", "--format=%H %gs"], &stashes)?;
         git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
         self.pass();

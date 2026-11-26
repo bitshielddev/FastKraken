@@ -218,7 +218,7 @@ impl Replay<'_> {
         let target = Target::Files { paths: picks.iter().map(PathBuf::from).collect(), side: Side::Unstaged };
         self.choose(&target, "file.discard")?;
         let (lines, danger) = self.asked_about("Discard changes to 4 files?").await?;
-        if !danger || lines[..4] != picks[..] || lines.last().map(String::as_str) != Some("Restore, in the notice that follows, brings them back.") {
+        if !danger || lines[..4] != picks[..] || lines.last().map(String::as_str) != Some("Undo, in the notice that follows, brings them back.") {
             return Err(format!("The discard prompt shows {lines:?}, danger {danger}").into());
         }
         if self.prompt_focus()? != Some(Stop::Cancel) {
@@ -226,7 +226,7 @@ impl Replay<'_> {
         }
         self.key(CMD_RETURN)?;
         let (_, offers) = self.noticed("Discarded changes to 4 files").await?;
-        if offers != ["Restore"] {
+        if offers != ["Undo"] {
             return Err(format!("The discard notice offers {offers:?}").into());
         }
         for name in ["gauge.txt", "log book.txt"] {
@@ -250,7 +250,7 @@ impl Replay<'_> {
 
         let offered = self.newest_notice()?;
         self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
-        self.noticed("Restored changes to 4 files").await?;
+        self.noticed("Undid: Discard changes to 4 files").await?;
         git_is(&root, &["status", "--porcelain=v1", "-uall"], &before)?;
         git_is(&root, &["ls-files", "--stage"], &index)?;
         for (name, text) in [
@@ -259,11 +259,11 @@ impl Replay<'_> {
             ("flow é.txt", "flow é.txt rising\n"),
         ] {
             if fs::read_to_string(root.join(name))? != text {
-                return Err(format!("Restore did not bring back {name}").into());
+                return Err(format!("Undo did not bring back {name}").into());
             }
         }
         if root.join("log book.txt").exists() {
-            return Err("Restore did not delete log book.txt again".into());
+            return Err("Undo did not delete log book.txt again".into());
         }
         self.until("the list shows every change again", |tab| {
             files(tab, &["chart.txt"], &["chart.txt", "gauge.txt", "log book.txt", "weir.txt", "flow é.txt"])
@@ -320,7 +320,7 @@ impl Replay<'_> {
         }
         self.key(CMD_RETURN)?;
         let (_, offers) = self.noticed("Discarded all changes").await?;
-        if offers != ["Restore"] {
+        if offers != ["Undo"] {
             return Err(format!("The discard-all notice offers {offers:?}").into());
         }
         git_is(&root, &["status", "--porcelain=v1", "-uall"], "")?;
@@ -337,7 +337,7 @@ impl Replay<'_> {
 
         let offered = self.newest_notice()?;
         self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
-        self.noticed("Restored the discarded changes").await?;
+        self.noticed("Undid: Discard all changes").await?;
         git_is(&root, &["status", "--porcelain=v1", "-uall"], &before)?;
         git_is(&root, &["show", ":dam.txt"], "Dam: raised\n")?;
         self.pass();

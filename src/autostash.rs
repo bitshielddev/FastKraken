@@ -43,6 +43,7 @@ pub(crate) enum Retry {
     Rebase(Box<crate::rebase::Ask>),
     Merge { source: crate::merge::Source, mode: crate::merge::Mode, expected: String, seen: Seen },
     Pull { head: String, strategy: crate::sync::Strategy },
+    Journal { redo: bool, id: u64 },
 }
 
 #[derive(Clone, Debug)]
@@ -88,6 +89,10 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
                 Retry::Rebase(ask) => crate::rebase::run(tab, *ask, true, cx),
                 Retry::Merge { source, mode, expected, seen } => crate::merge::start(tab, source, mode, expected, seen, true, cx),
                 Retry::Pull { head, strategy } => crate::sync::pull_stashing(tab, head, strategy, cx),
+                Retry::Journal { redo, id } => {
+                    let way = if redo { crate::journal::Way::Redo } else { crate::journal::Way::Undo };
+                    crate::journal::run(tab, way, Some(id), true, cx)
+                }
             }
         }
     }
@@ -119,6 +124,7 @@ pub(crate) fn in_the_way(failure: &Failure) -> bool {
             || text.contains("your local changes would be overwritten by")
             || text.contains("cannot rebase: You have unstaged changes")
             || text.contains("cannot rebase: Your index contains uncommitted changes")
+            || text.contains("not uptodate. Cannot merge.")
     };
     said(&failure.text) || failure.output.as_deref().is_some_and(said)
 }

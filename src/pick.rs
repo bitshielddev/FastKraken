@@ -569,7 +569,10 @@ pub(crate) fn run_series(tab: &mut Tab, series: Series, stash: bool, cx: &mut Co
         "Cherry-picking the commits…",
         "Cherry-picked",
         true,
-        move |repo| series.attempt(&repo, stash, &restored),
+        move |repo| {
+            let title = format!("Cherry-pick {}", crate::notice::commits(series.commits.len()));
+            crate::journal::titled(series.attempt(&repo, stash, &restored), title)
+        },
         |_, _| {},
         move |tab, _| left.remember(&mut tab.ui),
     );
@@ -692,10 +695,12 @@ pub(crate) fn run(tab: &mut Tab, ask: Ask, stash: bool, cx: &mut Context<Tab>) {
         "Cherry-picked",
         commit_now,
         move |repo| {
-            ask.attempt(&repo, &stop, stash, &restored).map(|picked| {
+            let title = format!("Cherry-pick {}", crate::notice::short(&ask.target));
+            let picked = ask.attempt(&repo, &stop, stash, &restored).map(|picked| {
                 *kept.lock().unwrap_or_else(|e| e.into_inner()) = picked.staged;
                 picked.outcome
-            })
+            });
+            crate::journal::titled(picked, title)
         },
         move |tab, cx| {
             if commit_now {

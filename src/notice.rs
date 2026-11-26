@@ -129,6 +129,7 @@ pub(crate) struct Outcome {
     pub actions: Vec<Offer>,
     pub sticky: bool,
     pub output: Option<String>,
+    pub(crate) journal: crate::journal::Report,
 }
 
 impl From<()> for Outcome {
@@ -195,11 +196,12 @@ pub(crate) struct Failure {
     pub plain: Option<(String, String)>,
     pub tone: Tone,
     pub expanded: bool,
+    pub(crate) journal: crate::journal::Report,
 }
 
 impl From<String> for Failure {
     fn from(text: String) -> Self {
-        Self { text, actions: Vec::new(), output: None, plain: None, tone: Tone::Error, expanded: false }
+        Self { text, actions: Vec::new(), output: None, plain: None, tone: Tone::Error, expanded: false, journal: Default::default() }
     }
 }
 

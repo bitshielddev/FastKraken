@@ -37,7 +37,6 @@ pub(crate) struct Candidate {
 pub(crate) enum Action {
     AskDelete(Vec<OsString>),
     AskMerged,
-    RestoreAll(Vec<Removed>),
 }
 
 #[derive(Debug)]
@@ -119,7 +118,7 @@ fn delete_spec(branches: &[(OsString, String)], unique: usize, kept: Option<&str
     if let Some(kept) = kept {
         spec = spec.line(format!("{kept} is checked out, so it is kept."));
     }
-    spec.line("Restore all, in the notice that follows, brings them back.").danger()
+    spec.line("Undo, in the notice that follows, brings them back.").danger()
 }
 
 fn merged_spec(base: &str, found: &[Candidate], ticks: &[bool]) -> Spec {
@@ -139,7 +138,7 @@ fn merged_spec(base: &str, found: &[Candidate], ticks: &[bool]) -> Spec {
     if found.iter().zip(ticks).any(|(candidate, ticked)| *ticked && !candidate.merged) {
         spec = spec.danger();
     }
-    spec.line("Restore all, in the notice that follows, brings them back.")
+    spec.line("Undo, in the notice that follows, brings them back.")
 }
 
 pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<Tab>) {
@@ -225,14 +224,6 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
                 },
             );
         }
-        Action::RestoreAll(removed) => tab.run_operation_then(
-            cx,
-            "Restoring branches…",
-            "Branches restored",
-            false,
-            move |repo| restore_all(&repo, &removed),
-            |_, _| {},
-        ),
     }
     cx.notify();
 }
@@ -352,31 +343,11 @@ pub(crate) fn delete_all(repo: &Repository, branches: &[(OsString, String)]) -> 
     if !failed.is_empty() {
         detail = format!("{detail}. Not deleted: {}", failed.join(" "));
     }
-    let offer = if removed.len() == 1 { "Restore" } else { "Restore all" };
-    Ok(Outcome::titled(title, detail).offer(offer, view::Action::Cleanup(Action::RestoreAll(removed))).sticky())
-}
-
-pub(crate) fn restore_all(repo: &Repository, removed: &[Removed]) -> Result<Outcome, String> {
-    let mut restored = Vec::new();
-    let mut failed = Vec::new();
-    for branch in removed {
-        match branch::restore(repo, &branch.name, &branch.oid, branch.tracking.as_ref()) {
-            Ok(_) => restored.push(shown(&branch.name)),
-            Err(error) => failed.push(format!("{}: {error}", shown(&branch.name))),
-        }
-    }
-    if restored.is_empty() {
-        return Err(failed.join(" "));
-    }
-    let title = match restored.as_slice() {
-        [one] => format!("Restored branch {one}"),
-        many => format!("Restored {}", branches_counted(many.len())),
+    let undone = match removed.as_slice() {
+        [one] => format!("Delete branch {}", shown(&one.name)),
+        many => format!("Delete {}", branches_counted(many.len())),
     };
-    let mut detail = listing(&restored);
-    if !failed.is_empty() {
-        detail = format!("{detail}. Not restored: {}", failed.join(" "));
-    }
-    Ok(Outcome::titled(title, detail))
+    Ok(Outcome::titled(title, detail).undone_as(undone).offering_undo().sticky())
 }
 
 fn picked(target: &Target) -> Option<&Vec<OsString>> {
@@ -512,17 +483,21 @@ mod tests {
         assert_eq!(f.git(&["ls-files", "--stage"]), index);
         assert_eq!(f.git(&["status", "--porcelain"]), b"");
 
-        let [(label, view::Action::Cleanup(Action::RestoreAll(removed)))] = outcome.actions.as_slice() else {
-            panic!("Delete offered {:?}", outcome.actions);
-        };
-        assert_eq!(label.as_ref(), "Restore all");
-        let restored = restore_all(&f.repo, removed).unwrap();
-        assert_eq!(restored.title, "Restored 2 branches");
+        assert!(outcome.journal.offered && outcome.actions.is_empty());
+        assert_eq!(outcome.journal.title.as_deref(), Some("Delete 2 branches"));
+        for (name, tip) in &picked {
+            f.git(&["branch", name.to_str().unwrap(), tip]);
+        }
+        f.git(&["config", "branch.stale.remote", "origin"]);
+        f.git(&["config", "branch.stale.merge", "refs/heads/stale"]);
+        assert_eq!(heads(&f), before);
+        let entry = crate::journal::tests::entry_of(&f.repo, |repo| delete_all(repo, &picked).map_err(Into::into));
+        crate::journal::replay(&f.repo, &entry, crate::journal::Way::Undo).unwrap();
         assert_eq!(heads(&f), before);
         assert_eq!(f.git(&["config", "branch.stale.remote"]), b"origin\n");
         assert_eq!(f.git(&["config", "branch.stale.merge"]), b"refs/heads/stale\n");
-        let again = restore_all(&f.repo, removed).unwrap_err();
-        assert!(again.contains("already exists"), "{again}");
+        let again = crate::journal::replay(&f.repo, &entry, crate::journal::Way::Undo).unwrap_err();
+        assert!(again.text.starts_with("Something else changed"), "{}", again.text);
     }
 
     #[test]
@@ -559,8 +534,7 @@ mod tests {
         assert_eq!(outcome.title, "Deleted branch feature/ford");
         assert!(outcome.detail.contains("Not deleted: wip"), "{}", outcome.detail);
         assert_eq!(oid(&f, "refs/heads/wip"), picked[0].1);
-        assert_eq!(outcome.actions.len(), 1);
-        assert_eq!(outcome.actions[0].0.as_ref(), "Restore");
+        assert_eq!(outcome.journal.title.as_deref(), Some("Delete branch feature/ford"));
         f.git(&["worktree", "remove", "--force", other.to_str().unwrap()]);
     }
 
@@ -595,7 +569,7 @@ mod tests {
             [
                 "3 of them have commits found nowhere else. Those commits will no longer appear in the graph.",
                 "main is checked out, so it is kept.",
-                "Restore all, in the notice that follows, brings them back.",
+                "Undo, in the notice that follows, brings them back.",
             ]
         );
         assert_eq!(delete_picked_title((2, 3)), "Delete 2 branches…");

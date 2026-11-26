@@ -129,7 +129,7 @@ impl Replay<'_> {
         })
         .await?;
         let said = self.said()?;
-        let expected = (Tone::Success, "Deleted branch feature/merged".to_owned(), format!("was {short}"), vec!["Restore".to_owned()]);
+        let expected = (Tone::Success, "Deleted branch feature/merged".to_owned(), format!("was {short}"), vec!["Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("Deleting feature/merged said {said:?}").into());
         }
@@ -197,9 +197,9 @@ impl Replay<'_> {
         git_is(&root, &["status", "--porcelain=v1"], "")?;
 
         let offered = self.tab.read_with(self.cx, |tab, _| {
-            tab.ui.notices.newest().filter(|n| n.actions.len() == 1 && n.actions[0].0.as_ref() == "Restore").map(|n| n.id)
+            tab.ui.notices.newest().filter(|n| n.actions.len() == 1 && n.actions[0].0.as_ref() == "Undo").map(|n| n.id)
         })?;
-        let offered = offered.ok_or("The delete notice offers no Restore")?;
+        let offered = offered.ok_or("The delete notice offers no Undo")?;
         self.cx.background_executor().timer(Duration::from_millis(5500)).await;
         self.until("the delete notice still shown", |tab| tab.ui.notices.get(offered).is_some()).await?;
 
@@ -216,18 +216,23 @@ impl Replay<'_> {
         self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
         self.until("the branch restored", |tab| {
             tab.ui.refs.oid_of(&ridge) == Some(tip.as_str())
-                && tab.ui.notices.newest().is_some_and(|n| n.title == "Restored branch feature/ridge")
+                && tab.ui.notices.newest().is_some_and(|n| n.title == "Undid: Delete branch feature/ridge")
         })
         .await?;
         if !self.tab.read_with(self.cx, |tab, _| tab.ui.operation.active())? {
             return Err("Restoring the branch ended the merge".into());
         }
         let said = self.said()?;
-        let expected = (Tone::Success, "Restored branch feature/ridge".to_owned(), format!("at {}", notice::short(&tip)), Vec::new());
+        let expected = (
+            Tone::Success,
+            "Undid: Delete branch feature/ridge".to_owned(),
+            format!("feature/ridge is back at {}.", notice::short(&tip)),
+            vec!["Redo".to_owned()],
+        );
         if said.as_ref() != Some(&expected) {
             return Err(format!("Restoring feature/ridge said {said:?}").into());
         }
-        still("Restore")?;
+        still("Undo")?;
         git_is(&root, &["config", "branch.feature/ridge.remote"], "origin\n")?;
         git_is(&root, &["config", "branch.feature/ridge.merge"], "refs/heads/feature/ridge\n")?;
         git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
@@ -904,7 +909,7 @@ impl Replay<'_> {
         let title = "Reset main and discard all changes?";
         let lines = vec![
             format!("{}  Start the quarry", notice::short(&start)),
-            "2 commits leave main. Changes in 2 files will be discarded. This cannot be undone.".to_owned(),
+            "2 commits leave main. Changes in 2 files will be discarded. Undo, in the notice that follows, brings them back.".to_owned(),
             format!("{}  Cut the second stone", notice::short(&second)),
             format!("{}  Cut the first stone", notice::short(&first)),
             "Your untracked file is kept.".to_owned(),
@@ -934,7 +939,7 @@ impl Replay<'_> {
         .await?;
         let said = self.said()?;
         let detail = format!("2 commits left main. Your files match {short}. Your untracked file was kept.");
-        let expected = (Tone::Success, format!("Reset main to {short}"), detail, Vec::new());
+        let expected = (Tone::Success, format!("Reset main to {short}"), detail, vec!["Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("The hard reset said {said:?}").into());
         }
@@ -960,7 +965,7 @@ impl Replay<'_> {
         let shown = self.reset_asked("Reset main to origin/main?").await?;
         let lines = vec![
             format!("origin/main is at {short}  Start the quarry"),
-            "1 commit leaves main. This cannot be undone.".to_owned(),
+            "1 commit leaves main. Undo, in the notice that follows, brings them back.".to_owned(),
             format!("{}  Cut a wrong stone", notice::short(&wrong)),
             "Your untracked file is kept.".to_owned(),
         ];
@@ -1427,7 +1432,7 @@ impl Replay<'_> {
         })
         .await?;
         let said = self.said()?;
-        let offers = vec!["Restore".to_owned(), "Delete from all remotes too".to_owned()];
+        let offers = vec!["Undo".to_owned(), "Delete from all remotes too".to_owned()];
         let expected = (Tone::Success, "Deleted tag v2.0".to_owned(), format!("was {short}"), offers.clone());
         if said.as_ref() != Some(&expected) {
             return Err(format!("Deleting v2.0 said {said:?}").into());
@@ -1440,7 +1445,7 @@ impl Replay<'_> {
         let offered = self.newest_notice()?;
         self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
         self.until("v2.0 restored", |tab| {
-            tab.ui.refs.oid_of(&tag) == Some(commit.as_str()) && tab.ui.notices.newest().is_some_and(|n| n.title == "Restored tag v2.0")
+            tab.ui.refs.oid_of(&tag) == Some(commit.as_str()) && tab.ui.notices.newest().is_some_and(|n| n.title == "Undid: Delete tag v2.0")
         })
         .await?;
         has(&root, &kept)?;
@@ -1620,7 +1625,7 @@ impl Replay<'_> {
             Tone::Success,
             "Deleted feature/gate and origin/feature/gate".to_owned(),
             format!("feature/gate was {short}, origin/feature/gate was {moved_short}."),
-            vec!["Restore feature/gate".to_owned(), "Restore origin/feature/gate".to_owned()],
+            vec!["Undo".to_owned(), "Restore origin/feature/gate".to_owned()],
         );
         if said.as_ref() != Some(&expected) {
             return Err(format!("Deleting both said {said:?}").into());
@@ -2187,7 +2192,7 @@ impl Replay<'_> {
         let shown = self.asked("Drop stash Second cairn?").await?;
         if shown.1.len() != 2
             || !shown.1[0].starts_with(&format!("stash@{{1}}, {}, saved ", notice::short(&second)))
-            || shown.1[1] != "Its changes leave the stash list. Restore, in the notice that follows, puts it back."
+            || shown.1[1] != "Its changes leave the stash list. Undo, in the notice that follows, puts it back."
             || !shown.2
         {
             return Err(format!("The drop prompt shows {shown:?}").into());
@@ -2211,7 +2216,7 @@ impl Replay<'_> {
             Tone::Success,
             "Dropped stash Second cairn".to_owned(),
             format!("was stash@{{1}}, {}", notice::short(&second)),
-            vec!["Restore".to_owned()],
+            vec!["Undo".to_owned()],
         );
         if said.as_ref() != Some(&expected) {
             return Err(format!("Dropping the stash said {said:?}").into());
@@ -2224,22 +2229,22 @@ impl Replay<'_> {
         let offered = self.newest_notice()?;
         self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
         self.until("the stash restored", |tab| {
-            tab.ui.stash.entries.len() == 3 && tab.ui.notices.newest().is_some_and(|n| n.title == "Restored stash Second cairn")
+            tab.ui.stash.entries.len() == 3 && tab.ui.notices.newest().is_some_and(|n| n.title == "Undid: Drop stash Second cairn")
         })
         .await?;
         let said = self.said()?;
         let expected = (
             Tone::Success,
-            "Restored stash Second cairn".to_owned(),
-            "It is back as the newest stash, stash@{0}.".to_owned(),
-            Vec::new(),
+            "Undid: Drop stash Second cairn".to_owned(),
+            "The stash is back as stash@{0}.".to_owned(),
+            vec!["Redo".to_owned()],
         );
         if said.as_ref() != Some(&expected) {
             return Err(format!("Restoring the stash said {said:?}").into());
         }
         let restored = format!("{second} On main: Second cairn\n{left}");
         if Self::stash_list(&root)? != restored {
-            return Err(format!("After Restore the stash list is {:?}", Self::stash_list(&root)?).into());
+            return Err(format!("After Undo the stash list is {:?}", Self::stash_list(&root)?).into());
         }
         git_is(&root, &["show", &format!("{second}^3:second.txt")], "Second cairn\n")?;
         git_is(&root, &["status", "--porcelain=v1"], "")?;
