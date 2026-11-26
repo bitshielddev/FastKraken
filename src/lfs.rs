@@ -227,8 +227,16 @@ pub(crate) fn declared(repo: &Repository) -> Result<bool, String> {
 }
 
 pub(crate) fn configured(repo: &Repository) -> bool {
+    filters_in(repo, None)
+}
+
+fn configured_here(repo: &Repository) -> bool {
+    filters_in(repo, Some("--local"))
+}
+
+fn filters_in(repo: &Repository, scope: Option<&str>) -> bool {
     let mut command = repo.read_command();
-    command.args(["config", "--get-regexp", r"^filter\.lfs\.(process|smudge|clean)$"]);
+    command.arg("config").args(scope).args(["--get-regexp", r"^filter\.lfs\.(process|smudge|clean)$"]);
     run(&mut command).is_ok_and(|output| output.status.success() && !output.stdout.is_empty())
 }
 
@@ -366,11 +374,11 @@ pub(crate) fn patterns(repo: &Repository) -> Result<Vec<Pattern>, String> {
 }
 
 pub(crate) fn install(repo: &Repository) -> Result<Outcome, String> {
-    if configured(repo) {
+    if configured_here(repo) {
         return Err(ALREADY_SET_UP.to_owned());
     }
     checked(git_lfs(repo, false)?.args(["install", "--local"]))?;
-    if !configured(repo) {
+    if !configured_here(repo) {
         return Err("Git LFS ran but did not set up its filters for this repository.".to_owned());
     }
     let outcome = Outcome::titled(
@@ -1159,7 +1167,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         diff_doc::{DiffDoc, Source as DiffSource},
-        repository::tests::Fixture,
+        repository::tests::{Fixture, GlobalConfig},
     };
     use std::{fs, os::unix::fs::PermissionsExt};
 
@@ -1312,6 +1320,20 @@ esac
         g.git(&["commit", "-qm", "Use LFS"]);
         let offers: Vec<String> = install(&g.repo).unwrap().actions.iter().map(|(label, _)| label.to_string()).collect();
         assert_eq!(offers, ["Pull LFS files"]);
+    }
+
+    #[test]
+    fn setting_up_still_runs_here_when_only_the_global_settings_have_the_filters() {
+        let f = managed();
+        let global = f.dir.join(".git/global-config");
+        fs::write(&global, "[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n").unwrap();
+        let _global = GlobalConfig::set(&global);
+        assert!(configured(&f.repo));
+        assert_eq!(install(&f.repo).unwrap().title, SET_UP_TITLE);
+        assert_eq!(calls(&f), ["install --local"]);
+        assert_eq!(String::from_utf8(f.git(&["config", "--local", "filter.lfs.clean"])).unwrap(), "git-lfs clean -- %f\n");
+        assert_eq!(install(&f.repo).unwrap_err(), ALREADY_SET_UP);
+        assert_eq!(calls(&f), ["install --local"]);
     }
 
     #[test]

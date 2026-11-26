@@ -515,7 +515,13 @@ pub(crate) fn start(tab: &mut Tab, request: Request, cx: &mut Context<Tab>) {
         };
         let branch = &request.branch;
         let made = match (&created.commit, &created.lfs) {
-            (Some(Err(reason)), _) => Notice::new(Tone::Info, format!("Created {title}"), reason.clone()).sticky(),
+            (Some(Err(reason)), lfs) => {
+                let detail = match lfs {
+                    Some(Err(why)) => format!("{reason} Git LFS was not set up for it: {why}"),
+                    _ => reason.clone(),
+                };
+                Notice::new(Tone::Info, format!("Created {title}"), detail).sticky()
+            }
             (_, Some(Err(reason))) => {
                 Notice::new(Tone::Info, format!("Created {title}"), format!("Git LFS was not set up for it: {reason}")).sticky()
             }
@@ -734,6 +740,25 @@ mod tests {
         assert!(!git(&created.root, &["config", "--local", "--list"]).contains("filter.lfs"));
         let plain = with_stub(&bin, refused, || create(&new(dir.path(), "Plain-files", "main", false))).unwrap();
         assert_eq!(plain.lfs, None);
+    }
+
+    #[test]
+    fn git_lfs_is_set_up_in_a_new_repository_even_when_the_global_settings_have_its_filters() {
+        use crate::lfs::tests::{MANAGER, with_stub};
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gitconfig");
+        fs::write(
+            &file,
+            "[user]\n\tname = Aspen Walker\n\temail = aspen@example.invalid\n[core]\n\thooksPath = /dev/null\n[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n",
+        )
+        .unwrap();
+        let _global = GlobalConfig::set(&file);
+        let bin = dir.path().join("stub-bin");
+        let request = Request { lfs: true, ..new(dir.path(), "Shared-filters", "main", false) };
+        let created = with_stub(&bin, MANAGER, || create(&request)).unwrap();
+        assert_eq!(created.lfs, Some(Ok(())));
+        assert_eq!(fs::read_to_string(bin.join("calls")).unwrap(), "install --local\n");
+        assert_eq!(git(&created.root, &["config", "--local", "filter.lfs.clean"]), "git-lfs clean -- %f\n");
     }
 
     #[test]
