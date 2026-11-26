@@ -2,9 +2,10 @@ use super::*;
 use crate::{
     commands::{self, Availability, Target},
     commands::Side,
-    journal, lfs, notice,
+    clone, journal, lfs, notice, paging,
     prompt::{self, Stop},
     refs::{Section, SideRow},
+    sparse::{self, Mode, Row},
     submodule, sync, worktree,
 };
 
@@ -29,6 +30,8 @@ const SUNSET: &str = "photos/sunset.png";
 const STUB_VERSION: &str = "git-lfs/3.6.1 (FastKraken acceptance stub)";
 const PNG_LINE: &str = "*.png filter=lfs diff=lfs merge=lfs -text\n";
 const PSD_LINE: &str = "*.psd filter=lfs diff=lfs merge=lfs -text\n";
+const SPARSE_TRAIL: &str = "Sparse-trail";
+const DEEP_TRAIL: &str = "Deep-trail";
 
 fn path(path: &Path) -> Result<&str> {
     path.to_str().ok_or_else(|| format!("{} is not UTF-8", path.display()).into())
@@ -102,7 +105,9 @@ impl Replay<'_> {
         self.pull_a_moved_submodule(dir, &summit, &maps).await?;
         self.add_and_remove_a_submodule(dir).await?;
         self.lfs_without_the_helper(dir).await?;
-        self.track_a_pattern_with_a_stub_git_lfs(dir).await
+        self.track_a_pattern_with_a_stub_git_lfs(dir).await?;
+        self.enable_sparse_checkout_for_one_folder(dir).await?;
+        self.shallow_clone_then_fetch_full_history(dir).await
     }
 
     async fn until_tab_count(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
@@ -1515,6 +1520,279 @@ impl Replay<'_> {
         if !hidden.0.0.is_empty() || !hidden.1.0.is_empty() {
             return Err(format!("With the stub gone, the menus still offer {hidden:?}").into());
         }
+        self.pass();
+        Ok(())
+    }
+
+    fn repo_menu(&mut self) -> Result<Vec<(&'static str, String, Option<String>)>> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            commands::entries_of(&tab.ui, &view::Menu::Repo, cx).into_iter().map(|entry| (entry.id, entry.title, entry.disabled)).collect()
+        })?)
+    }
+
+    fn working_files(root: &Path) -> Result<Vec<String>> {
+        let mut found = Vec::new();
+        let mut folders = vec![root.to_owned()];
+        while let Some(folder) = folders.pop() {
+            for entry in fs::read_dir(&folder)? {
+                let entry = entry?.path();
+                if entry.file_name().is_some_and(|name| name == ".git") {
+                    continue;
+                }
+                if entry.is_dir() {
+                    folders.push(entry);
+                } else {
+                    found.push(entry.strip_prefix(root)?.to_string_lossy().into_owned());
+                }
+            }
+        }
+        found.sort();
+        Ok(found)
+    }
+
+    fn folder_rows(&mut self) -> Result<Vec<(String, sparse::Tick)>> {
+        Ok(self.tab.read_with(self.cx, |tab, _| {
+            tab.ui
+                .sparse
+                .rows()
+                .iter()
+                .filter_map(|row| match row {
+                    Row::Folder { path, tick, .. } => Some((path.to_string_lossy().into_owned(), *tick)),
+                    Row::Note { .. } => None,
+                })
+                .collect()
+        })?)
+    }
+
+    async fn enable_sparse_checkout_for_one_folder(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1111");
+        let root = init(dir, SPARSE_TRAIL)?;
+        for (path, text) in [
+            ("readme.txt", "Trail guide\n"),
+            ("maps/lake.txt", "Lake map\n"),
+            ("maps/ridge/route.txt", "Ridge route\n"),
+            ("camp/tent.txt", "Tent\n"),
+            ("gear/rope.txt", "Rope\n"),
+        ] {
+            let file = root.join(path);
+            fs::create_dir_all(file.parent().ok_or("A file has no folder")?)?;
+            fs::write(file, text)?;
+        }
+        git(&root, &["add", "--all"])?;
+        git(&root, &["commit", "-qm", "Lay out the trail"])?;
+        let head = oid(&root, "HEAD")?;
+        let everything = ["camp/tent.txt", "gear/rope.txt", "maps/lake.txt", "maps/ridge/route.txt", "readme.txt"];
+
+        self.open(&root)?;
+        self.until("Sparse-trail open with every file and sparse checkout off", |tab| {
+            tab.ui.repo == SPARSE_TRAIL && tab.ui.head.as_deref() == Some(head.as_str()) && tab.ui.sparse.mode == Some(Mode::Off)
+        })
+        .await?;
+        let rows = self.repo_menu()?;
+        if rows.iter().any(|row| row.0 == "sparse.status") {
+            return Err(format!("With sparse checkout off the repository menu offers {rows:?}").into());
+        }
+        let settings = self.tab.read_with(self.cx, |tab, cx| {
+            commands::find("sparse.settings").and_then(|command| commands::entry(command, &tab.ui, &Target::Repo, cx)).map(|entry| (entry.title, entry.disabled))
+        })?;
+        if settings != Some(("Sparse checkout…".to_owned(), None)) {
+            return Err(format!("The palette offers {settings:?} for sparse checkout").into());
+        }
+        let open = self.tab.read_with(self.cx, |tab, cx| {
+            commands::find("sparse.settings").and_then(|command| commands::entry(command, &tab.ui, &Target::Repo, cx)).and_then(|entry| entry.action)
+        })?;
+        self.action(open.ok_or("Sparse checkout… has no action")?)?;
+        self.until("the folder tree in Preferences", |tab| {
+            tab.ui.preferences.open()
+                && tab.ui.preferences.section() == crate::preferences::Section::Repository
+                && tab.ui.sparse.rows().iter().filter(|row| matches!(row, Row::Folder { .. })).count() == 3
+        })
+        .await?;
+        let off = sparse::Tick::Off;
+        let shown = self.folder_rows()?;
+        if shown != [("camp".to_owned(), off), ("gear".to_owned(), off), ("maps".to_owned(), off)] {
+            return Err(format!("The folder tree reads {shown:?}").into());
+        }
+        self.action(Action::Sparse(sparse::Action::Unfold("maps".into())))?;
+        self.until("maps unfolded", |tab| tab.ui.sparse.rows().iter().any(|row| matches!(row, Row::Folder { path, depth: 1, .. } if path == Path::new("maps/ridge")))).await?;
+        self.action(Action::Sparse(sparse::Action::Tick("maps".into())))?;
+        let shown = self.folder_rows()?;
+        let wanted = [
+            ("camp".to_owned(), off),
+            ("gear".to_owned(), off),
+            ("maps".to_owned(), sparse::Tick::On),
+            ("maps/ridge".to_owned(), sparse::Tick::Within),
+        ];
+        if shown != wanted {
+            return Err(format!("After ticking maps the tree reads {shown:?}").into());
+        }
+        if Self::working_files(&root)? != everything {
+            return Err("Ticking a folder changed the working copy before it was applied".into());
+        }
+
+        self.action(Action::Sparse(sparse::Action::Enable))?;
+        self.until_said("Sparse checkout on").await?;
+        let said = self.said()?.ok_or("No notice after turning sparse checkout on")?;
+        if said.2 != "Only maps and the top-level files are checked out." {
+            return Err(format!("Turning sparse checkout on said {said:?}").into());
+        }
+        let present = Self::working_files(&root)?;
+        if present != ["maps/lake.txt", "maps/ridge/route.txt", "readme.txt"] || root.join("camp").exists() || root.join("gear").exists() {
+            return Err(format!("With only maps chosen the working copy holds {present:?}").into());
+        }
+        git_is(&root, &["sparse-checkout", "list"], "maps\n")?;
+        git_is(&root, &["config", "--type=bool", "core.sparseCheckout"], "true\n")?;
+        git_is(&root, &["config", "--type=bool", "core.sparseCheckoutCone"], "true\n")?;
+        git_is(&root, &["status", "--porcelain"], "")?;
+        self.until("the sparse checkout read back with nothing listed as changed", |tab| {
+            tab.ui.sparse.mode == Some(Mode::Cone(vec!["maps".into()])) && !tab.ui.sparse.edited() && tab.ui.files.is_empty()
+        })
+        .await?;
+        let rows = self.repo_menu()?;
+        if !rows.iter().any(|row| *row == ("sparse.status", "Sparse: 1 folder".to_owned(), None)) {
+            return Err(format!("With one folder checked out the repository menu offers {rows:?}").into());
+        }
+
+        fs::write(root.join("maps/lake.txt"), "Lake map, redrawn\n")?;
+        self.until("the redrawn map listed", |tab| files(tab, &[], &["maps/lake.txt"])).await?;
+        self.action(Action::Sparse(sparse::Action::Tick("maps".into())))?;
+        self.action(Action::Sparse(sparse::Action::Tick("gear".into())))?;
+        self.action(Action::Sparse(sparse::Action::Apply))?;
+        let refused = "1 file outside the chosen folders has uncommitted changes: maps/lake.txt.";
+        self.until("applying refused with the changed map named", move |tab| {
+            !tab.ui.busy() && tab.ui.notices.newest().is_some_and(|notice| notice.title.contains(refused) || notice.detail.contains(refused))
+        })
+        .await?;
+        let said = self.said()?.ok_or("No notice after the refusal")?;
+        if said.3 != ["Stash them and apply"] {
+            return Err(format!("The refusal offers {said:?}").into());
+        }
+        git_is(&root, &["sparse-checkout", "list"], "maps\n")?;
+        git_is(&root, &["stash", "list"], "")?;
+        let offered = self.newest_notice()?;
+        self.action(Action::Notice(notice::Action::Take(offered, 0)))?;
+        self.until_said("Sparse checkout applied").await?;
+        git_is(&root, &["sparse-checkout", "list"], "gear\n")?;
+        git_is(&root, &["stash", "list", "--format=%s"], &format!("On main: {}\n", sparse::STASH_MESSAGE))?;
+        git_is(&root, &["stash", "show", "--name-only", "stash@{0}"], "maps/lake.txt\n")?;
+        let present = Self::working_files(&root)?;
+        if present != ["gear/rope.txt", "readme.txt"] {
+            return Err(format!("With gear chosen the working copy holds {present:?}").into());
+        }
+
+        self.action(Action::Sparse(sparse::Action::Disable))?;
+        self.until_said("Sparse checkout off").await?;
+        if Self::working_files(&root)? != everything {
+            return Err(format!("With sparse checkout off the working copy holds {:?}", Self::working_files(&root)?).into());
+        }
+        git_is(&root, &["config", "--type=bool", "core.sparseCheckout"], "false\n")?;
+        self.until("sparse checkout read as off", |tab| tab.ui.sparse.mode == Some(Mode::Off)).await?;
+        let rows = self.repo_menu()?;
+        if rows.iter().any(|row| row.0 == "sparse.status") {
+            return Err(format!("After turning it off the repository menu offers {rows:?}").into());
+        }
+        git(&root, &["stash", "drop", "-q"])?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        git_is(&root, &["for-each-ref", "--format=%(refname)", "refs/heads", "refs/tags"], "refs/heads/main\n")?;
+        self.action(Action::Preferences(crate::preferences::Action::Close))?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn shallow_clone_then_fetch_full_history(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1112");
+        let source = init(dir, "Deep-trail-source")?;
+        for day in 1..=6 {
+            record(&source, "log.txt", &format!("Day {day} on the trail\n"), &format!("Walk day {day}"))?;
+        }
+        git(&source, &["branch", "detour", "HEAD~2"])?;
+        let bare = dir.join("Deep-trail.git");
+        git(dir, &["init", "-q", "--bare", "-b", "main", path(&bare)?])?;
+        git(&source, &["push", "-q", path(&bare)?, "main", "detour"])?;
+        let tip = oid(&bare, "main")?;
+        let clones = dir.join("shallow-clones");
+        fs::create_dir(&clones)?;
+        let destination = clones.join(DEEP_TRAIL);
+
+        self.action(Action::Clone(clone::Action::Open))?;
+        self.until("the clone dialog", |tab| tab.ui.cloning.open()).await?;
+        let address = path(&bare)?.to_owned();
+        self.tab.update(self.cx, |tab, window, cx| {
+            tab.ui.cloning.address.update(cx, |field, cx| field.replace_text_in_range(None, &address, window, cx))
+        })?;
+        self.action(Action::Clone(clone::Action::SetParent(clones.clone())))?;
+        self.action(Action::Clone(clone::Action::ToggleAdvanced))?;
+        self.action(Action::Clone(clone::Action::Toggle(clone::Choice::Shallow)))?;
+        let prefilled = self.tab.read_with(self.cx, |tab, cx| (tab.ui.cloning.advanced(), tab.ui.cloning.request(cx)))?;
+        if !prefilled.0 || prefilled.1.options.depth.as_deref() != Some("1") {
+            return Err(format!("Ticking Only the latest commits gives {prefilled:?}").into());
+        }
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.cloning.depth.update(cx, |field, cx| field.set_text("0", cx)))?;
+        let refused = self.tab.read_with(self.cx, |tab, cx| tab.ui.cloning.request(cx).problem())?;
+        if refused.as_deref() != Some(clone::DEPTH_PROBLEM) {
+            return Err(format!("A depth of 0 gives {refused:?}").into());
+        }
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.cloning.depth.update(cx, |field, cx| field.set_text("2", cx)))?;
+        let wanted = destination.clone();
+        let started = Instant::now();
+        let request = loop {
+            self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
+            let request = self.tab.read_with(self.cx, |tab, cx| tab.ui.cloning.request(cx))?;
+            if request.destination() == wanted && request.problem().is_none() {
+                break request;
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                return Err(format!("The clone dialog never became ready: {request:?}").into());
+            }
+            self.cx.background_executor().timer(Duration::from_millis(12)).await;
+        };
+        if request.options.arguments(true) != ["--depth=2", "--no-single-branch", "--no-local"] {
+            return Err(format!("The shallow clone would run with {:?}", request.options.arguments(true)).into());
+        }
+
+        self.action(Action::Clone(clone::Action::Submit))?;
+        self.until_tab_count("the clone in a second tab", 2, 1).await?;
+        self.until("Deep-trail open with the latest two commits of each branch", |tab| {
+            tab.ui.repo == DEEP_TRAIL
+                && tab.ui.history.len() == 4
+                && tab.ui.sparse.shallow
+                && paging::tail(&tab.ui).as_deref() == Some("History is shallow · 4 commits")
+        })
+        .await?;
+        git_is(&destination, &["rev-list", "--count", "--all"], "4\n")?;
+        git_is(&destination, &["rev-parse", "--is-shallow-repository"], "true\n")?;
+        git_is(&destination, &["rev-list", "--count", "HEAD"], "2\n")?;
+        git_is(&destination, &["rev-parse", "HEAD"], &format!("{tip}\n"))?;
+        git_is(&destination, &["for-each-ref", "--format=%(refname)", "refs/remotes"], "refs/remotes/origin/HEAD\nrefs/remotes/origin/detour\nrefs/remotes/origin/main\n")?;
+        let rows = self.repo_menu()?;
+        if !rows.iter().any(|row| *row == ("repo.fetch-history", "Fetch full history".to_owned(), None)) {
+            return Err(format!("In the shallow clone the repository menu offers {rows:?}").into());
+        }
+
+        self.action(Action::Sparse(sparse::Action::FetchHistory))?;
+        self.until_said("Fetched the full history").await?;
+        let said = self.said()?.ok_or("No notice after fetching the full history")?;
+        if said.2 != "From origin. The checked-out branch now has 6 commits of history, 4 more than before." {
+            return Err(format!("Fetching the full history said {said:?}").into());
+        }
+        self.until("the whole history listed with the shallow marker gone", |tab| {
+            !tab.ui.sparse.shallow && tab.ui.history.len() == 6 && paging::tail(&tab.ui).as_deref() == Some("Start of history · 6 commits")
+        })
+        .await?;
+        git_is(&destination, &["rev-parse", "--is-shallow-repository"], "false\n")?;
+        git_is(&destination, &["rev-list", "--count", "HEAD"], "6\n")?;
+        if destination.join(".git/shallow").exists() {
+            return Err("The clone still has a shallow boundary file".into());
+        }
+        let rows = self.repo_menu()?;
+        if rows.iter().any(|row| row.0 == "repo.fetch-history") {
+            return Err(format!("With the full history the repository menu still offers {rows:?}").into());
+        }
+        git_is(&destination, &["rev-parse", "HEAD"], &format!("{tip}\n"))?;
+        git_is(&destination, &["status", "--porcelain"], "")?;
+        self.key("cmd-w")?;
+        self.until_tab_count("one tab again", 1, 0).await?;
+        self.until("Sparse-trail in front", |tab| tab.ui.repo == SPARSE_TRAIL).await?;
         self.pass();
         Ok(())
     }

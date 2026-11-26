@@ -324,6 +324,20 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             None
         }
         "cloneinto" => Some(Action::Clone(crate::clone::Action::SetParent(argument.into()))),
+        "cloneadvanced" => Some(Action::Clone(crate::clone::Action::ToggleAdvanced)),
+        "cloneoption" => {
+            use crate::clone::Choice;
+            let choice = match argument {
+                "single" => Choice::Single,
+                "blobless" => Choice::Blobless,
+                "sparse" => Choice::Sparse,
+                "submodules" => Choice::Submodules,
+                _ => Choice::Shallow,
+            };
+            Some(Action::Clone(crate::clone::Action::Toggle(choice)))
+        }
+        "sparseunfold" => Some(Action::Sparse(crate::sparse::Action::Unfold(argument.into()))),
+        "sparsetick" => Some(Action::Sparse(crate::sparse::Action::Tick(argument.into()))),
         "close" => Some(Action::Start(crate::start::Action::Close)),
         "opentab" => {
             crate::tabs::open_elsewhere(argument.into(), |_, _| {}, cx);

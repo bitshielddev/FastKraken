@@ -27,11 +27,80 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
     .bar(Bar::File)]
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) const MAX_DEPTH: u32 = 1_000_000;
+pub(crate) const DEPTH_PROBLEM: &str = "Enter how many of the latest commits to download, a whole number from 1.";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Options {
+    pub depth: Option<String>,
+    pub branch: Option<String>,
+    pub blobless: bool,
+    pub sparse: bool,
+    pub submodules: bool,
+}
+
+impl Options {
+    pub(crate) fn any(&self) -> bool {
+        *self != Self::default()
+    }
+
+    pub(crate) fn depth(&self) -> Option<u32> {
+        self.depth.as_deref().and_then(|text| text.trim().parse().ok()).filter(|depth| (1..=MAX_DEPTH).contains(depth))
+    }
+
+    fn branch(&self) -> Option<&str> {
+        self.branch.as_deref().map(str::trim).filter(|name| !name.is_empty())
+    }
+
+    pub(crate) fn problem(&self) -> Option<String> {
+        if self.depth.is_some() && self.depth().is_none() {
+            return Some(DEPTH_PROBLEM.to_owned());
+        }
+        self.branch().and_then(crate::preferences::branch_problem)
+    }
+
+    pub(crate) fn arguments(&self, local: bool) -> Vec<String> {
+        let mut arguments = Vec::new();
+        if let Some(depth) = self.depth() {
+            arguments.push(format!("--depth={depth}"));
+        }
+        match (self.branch.is_some(), self.branch()) {
+            (true, Some(name)) => arguments.extend(["--single-branch".to_owned(), format!("--branch={name}")]),
+            (true, None) => arguments.push("--single-branch".to_owned()),
+            (false, _) if self.depth().is_some() => arguments.push("--no-single-branch".to_owned()),
+            (false, _) => {}
+        }
+        if self.blobless {
+            arguments.push("--filter=blob:none".to_owned());
+        }
+        if self.sparse {
+            arguments.push("--sparse".to_owned());
+        }
+        if self.submodules {
+            arguments.push("--recurse-submodules".to_owned());
+        }
+        if local && (self.depth().is_some() || self.blobless) {
+            arguments.push("--no-local".to_owned());
+        }
+        arguments
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Choice {
+    Shallow,
+    Single,
+    Blobless,
+    Sparse,
+    Submodules,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Request {
     pub address: String,
     pub parent: PathBuf,
     pub name: String,
+    pub options: Options,
 }
 
 impl Request {
@@ -43,6 +112,7 @@ impl Request {
         address_problem(&self.address)
             .or_else(|| name_problem(&self.name))
             .or_else(|| destination_problem(&self.parent, &self.destination()).err())
+            .or_else(|| self.options.problem())
     }
 }
 
@@ -56,6 +126,8 @@ pub(crate) enum Action {
     Close,
     Again(Request),
     Show(PathBuf),
+    ToggleAdvanced,
+    Toggle(Choice),
 }
 
 pub(crate) struct State {
@@ -64,6 +136,14 @@ pub(crate) struct State {
     pub(crate) name: Entity<CommitInput>,
     parent: PathBuf,
     derived: String,
+    pub(crate) depth: Entity<CommitInput>,
+    pub(crate) branch: Entity<CommitInput>,
+    advanced: bool,
+    shallow: bool,
+    single: bool,
+    blobless: bool,
+    sparse: bool,
+    submodules: bool,
 }
 
 impl State {
@@ -72,7 +152,49 @@ impl State {
         let name = cx.new(|cx| CommitInput::with_placeholder(cx, "Folder name"));
         cx.observe(&address, |tab, _, cx| follow(tab, cx)).detach();
         cx.observe(&name, |_, _, cx| cx.notify()).detach();
-        Self { open: false, address, name, parent: PathBuf::new(), derived: String::new() }
+        let depth = cx.new(|cx| CommitInput::with_placeholder(cx, "1"));
+        let branch = cx.new(|cx| CommitInput::with_placeholder(cx, "The default branch"));
+        cx.observe(&depth, |_, _, cx| cx.notify()).detach();
+        cx.observe(&branch, |_, _, cx| cx.notify()).detach();
+        Self {
+            open: false,
+            address,
+            name,
+            parent: PathBuf::new(),
+            derived: String::new(),
+            depth,
+            branch,
+            advanced: false,
+            shallow: false,
+            single: false,
+            blobless: false,
+            sparse: false,
+            submodules: false,
+        }
+    }
+
+    pub(crate) fn advanced(&self) -> bool {
+        self.advanced
+    }
+
+    pub(crate) fn chosen(&self, choice: Choice) -> bool {
+        match choice {
+            Choice::Shallow => self.shallow,
+            Choice::Single => self.single,
+            Choice::Blobless => self.blobless,
+            Choice::Sparse => self.sparse,
+            Choice::Submodules => self.submodules,
+        }
+    }
+
+    fn options(&self, cx: &App) -> Options {
+        Options {
+            depth: self.shallow.then(|| self.depth.read(cx).text().trim().to_owned()),
+            branch: self.single.then(|| self.branch.read(cx).text().trim().to_owned()),
+            blobless: self.blobless,
+            sparse: self.sparse,
+            submodules: self.submodules,
+        }
     }
 
     pub(crate) fn open(&self) -> bool {
@@ -88,6 +210,7 @@ impl State {
             address: self.address.read(cx).text().trim().to_owned(),
             parent: self.parent.clone(),
             name: self.name.read(cx).text().trim().to_owned(),
+            options: self.options(cx),
         }
     }
 }
@@ -183,8 +306,14 @@ pub(crate) fn clone(request: &Request) -> Result<PathBuf, String> {
         Err(error) => return Err(failed(format!("Could not create {}: {error}.", destination.display()))),
     };
     let result = repository::clone_command(&request.parent).and_then(|mut command| {
-        command.args(["clone", "--progress", "--"]).arg(&request.address).arg(&request.name);
-        repository::checked(&mut command)
+        command.args(["clone", "--progress"]).args(request.options.arguments(local(&request.address)));
+        if request.options.submodules {
+            repository::with_system_tools(&mut command);
+        }
+        command.arg("--").arg(&request.address).arg(&request.name);
+        repository::checked(&mut command).map_err(|error| {
+            if error.contains("transport 'file' not allowed") { crate::submodule::LOCAL_REFUSED.to_owned() } else { error }
+        })
     });
     match result {
         Ok(_) => fs::canonicalize(&destination).map_err(|error| failed(format!("{} cannot be read: {error}.", destination.display()))),
@@ -235,11 +364,21 @@ fn show(tab: &mut Tab, request: Option<Request>, window: &mut Window, cx: &mut C
         address: clipboard(cx).unwrap_or_default(),
         parent: default_parent(cx),
         name: String::new(),
+        options: Options::default(),
     });
     let state = &mut tab.ui.cloning;
     state.open = true;
     state.parent = request.parent;
     state.derived = String::new();
+    let options = request.options;
+    state.advanced = options.any();
+    state.shallow = options.depth.is_some();
+    state.single = options.branch.is_some();
+    state.blobless = options.blobless;
+    state.sparse = options.sparse;
+    state.submodules = options.submodules;
+    state.depth.update(cx, |field, cx| field.set_text(options.depth.as_deref().unwrap_or_default(), cx));
+    state.branch.update(cx, |field, cx| field.set_text(options.branch.as_deref().unwrap_or_default(), cx));
     state.name.update(cx, |name, cx| name.set_text(&request.name, cx));
     state.address.update(cx, |address, cx| address.set_text(&request.address, cx));
     if request.name.is_empty() {
@@ -282,6 +421,29 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
                 .detach();
         }
         Action::SetParent(path) => tab.ui.cloning.parent = path,
+        Action::ToggleAdvanced => tab.ui.cloning.advanced = !tab.ui.cloning.advanced,
+        Action::Toggle(choice) => {
+            let state = &mut tab.ui.cloning;
+            let flag = match choice {
+                Choice::Shallow => &mut state.shallow,
+                Choice::Single => &mut state.single,
+                Choice::Blobless => &mut state.blobless,
+                Choice::Sparse => &mut state.sparse,
+                Choice::Submodules => &mut state.submodules,
+            };
+            *flag = !*flag;
+            let field = match choice {
+                Choice::Shallow if state.shallow => Some(state.depth.clone()),
+                Choice::Single if state.single => Some(state.branch.clone()),
+                _ => None,
+            };
+            if let Some(field) = field {
+                if choice == Choice::Shallow && field.read(cx).text().trim().is_empty() {
+                    field.update(cx, |field, cx| field.set_text("1", cx));
+                }
+                window.focus(&field.focus_handle(cx));
+            }
+        }
         Action::Submit => {
             let request = tab.ui.cloning.request(cx);
             if request.problem().is_some() {
@@ -376,6 +538,15 @@ pub(crate) fn start(tab: &mut Tab, request: Request, cx: &mut Context<Tab>) {
 }
 
 
+fn submit<T: Desk>(cx: &mut Context<T>) -> impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static {
+    cx.listener(|app: &mut T, e: &KeyDownEvent, w, cx| {
+        if e.keystroke.key == "enter" && e.keystroke.modifiers == Default::default() {
+            app.dispatch(view::Action::Clone(Action::Submit), w, cx);
+            cx.stop_propagation();
+        }
+    })
+}
+
 pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoElement + use<T>> {
     let ui = app.ui();
     let state = &ui.cloning;
@@ -387,14 +558,6 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
     let name = name_problem(&request.name).filter(|problem| !problem.is_empty());
     let destination = destination_problem(&request.parent, &request.destination()).err();
     let ready = request.problem().is_none();
-    fn submit<T: Desk>(cx: &mut Context<T>) -> impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static {
-        cx.listener(|app: &mut T, e: &KeyDownEvent, w, cx| {
-            if e.keystroke.key == "enter" && e.keystroke.modifiers == Default::default() {
-                app.dispatch(view::Action::Clone(Action::Submit), w, cx);
-                cx.stop_propagation();
-            }
-        })
-    }
     let parent = div()
         .flex()
         .items_center()
@@ -431,6 +594,7 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
         .child(div().on_key_down(submit(cx)).child(kit::field("Folder name", state.name.clone(), name.map(Into::into))))
         .child(full.text_size(px(TEXT_SMALL)))
         .when_some(taken, |d, taken| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(taken)))
+        .child(advanced(app, &request, cx))
         .child(
             div()
                 .mt_1()
@@ -441,6 +605,77 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                 .child(kit::btn("clone-start", "Clone").primary().enabled(ready).on(view::Action::Clone(Action::Submit), cx)),
         );
     Some(kit::modal(body, Some(view::Action::Clone(Action::Close)), &ui.modal_focus, cx))
+}
+
+fn choice<T: Desk>(state: &State, choice: Choice, title: &'static str, help: &'static str, cx: &Context<T>) -> gpui::Stateful<gpui::Div> {
+    let row = div()
+        .id(("clone-option", choice as usize))
+        .flex()
+        .items_start()
+        .gap_2()
+        .py(px(3.))
+        .cursor_pointer()
+        .focusable()
+        .focus(|s| s.bg(rgb(HOVER)))
+        .child(div().pt(px(2.)).child(kit::checkbox(state.chosen(choice))))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(px(12.5)).text_color(rgb(TEXT)).child(title))
+                .child(kit::muted(help).text_size(px(11.5))),
+        );
+    kit::pressable(row, view::Action::Clone(Action::Toggle(choice)), cx)
+}
+
+fn advanced<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::Div {
+    let state = &app.ui().cloning;
+    let open = state.advanced;
+    let disclosure = div()
+        .id("clone-advanced")
+        .flex()
+        .items_center()
+        .gap_1()
+        .cursor_pointer()
+        .text_size(px(TEXT_SMALL))
+        .text_color(rgb(TEXT_2))
+        .focusable()
+        .focus(|s| s.text_color(rgb(TEXT)))
+        .child(kit::icon(if open { "chevron-down" } else { "chevron-right" }).size(px(12.)).text_color(rgb(TEXT_3)))
+        .child("Advanced")
+        .when(!open && request.options.any(), |d| d.child(kit::muted("· options chosen")));
+    let body = div().flex().flex_col().gap_1().child(kit::pressable(disclosure, view::Action::Clone(Action::ToggleAdvanced), cx));
+    if !open {
+        return body;
+    }
+    let depth = request.options.depth.is_some().then(|| request.options.depth().is_none()).unwrap_or(false);
+    let branch = request.options.branch.is_some().then(|| request.options.problem()).flatten().filter(|_| !depth);
+    let field = |input: Entity<CommitInput>, problem: Option<String>, width: f32, cx: &mut Context<T>| {
+        div()
+            .pl(px(22.))
+            .flex()
+            .flex_col()
+            .gap(px(3.))
+            .child(div().w(px(width)).on_key_down(submit(cx)).child(input))
+            .when_some(problem, |d, problem| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(problem)))
+    };
+    let mut options = div().pl_1().flex().flex_col().gap_1();
+    options = options.child(choice(state, Choice::Shallow, "Only the latest commits", "Downloads less history. Fetch the full history later from the end of the graph.", cx));
+    if state.shallow {
+        options = options.child(field(state.depth.clone(), depth.then(|| DEPTH_PROBLEM.to_owned()), 90., cx));
+    }
+    options = options.child(choice(state, Choice::Single, "Only one branch", "Leave the name empty for the repository's default branch.", cx));
+    if state.single {
+        options = options.child(field(state.branch.clone(), branch, 220., cx));
+    }
+    let options = options
+        .child(choice(state, Choice::Blobless, "Download file contents when needed", "Older versions of files are fetched when you look at them. The host must support it, as GitHub does.", cx))
+        .child(choice(state, Choice::Sparse, "Start with only the top-level files", "Choose the folders to check out afterwards, in Preferences under the repository.", cx))
+        .child(choice(state, Choice::Submodules, "Include submodules", "Clones each submodule at the commit the repository records.", cx));
+    body.child(options)
 }
 
 #[cfg(test)]
@@ -502,7 +737,7 @@ mod tests {
     #[test]
     fn a_relative_path_or_a_slash_in_the_name_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let request = |address: &str, name: &str| Request { address: address.into(), parent: dir.path().into(), name: name.into() };
+        let request = |address: &str, name: &str| Request { address: address.into(), parent: dir.path().into(), name: name.into(), ..Request::default() };
         assert_eq!(request("", "trail").problem().as_deref(), Some(""));
         assert_eq!(request("https://github.com/team/trail.git", "").problem().as_deref(), Some(""));
         assert!(request("../peer.git", "peer").problem().unwrap().contains("full path"));
@@ -541,7 +776,7 @@ mod tests {
         let clones = dir.path().join("clones");
         fs::create_dir(&clones).unwrap();
         let address = format!("file://{}", bare.display());
-        let request = Request { address: address.clone(), parent: clones.clone(), name: folder_name(&address).unwrap() };
+        let request = Request { address: address.clone(), parent: clones.clone(), name: folder_name(&address).unwrap(), ..Request::default() };
         assert_eq!(request.problem(), None);
         let root = clone(&request).unwrap();
         assert_eq!(root, fs::canonicalize(clones.join("Juniper-trail")).unwrap());
@@ -561,6 +796,127 @@ mod tests {
     }
 
     #[test]
+    fn the_advanced_options_become_clone_arguments_and_are_checked_first() {
+        let shallow = Options { depth: Some("3".into()), ..Options::default() };
+        assert_eq!(shallow.arguments(false), ["--depth=3", "--no-single-branch"]);
+        assert_eq!(shallow.arguments(true), ["--depth=3", "--no-single-branch", "--no-local"]);
+        let single = Options { branch: Some(" ridge ".into()), ..Options::default() };
+        assert_eq!(single.arguments(false), ["--single-branch", "--branch=ridge"]);
+        let default_branch = Options { depth: Some("1".into()), branch: Some(String::new()), ..Options::default() };
+        assert_eq!(default_branch.arguments(false), ["--depth=1", "--single-branch"]);
+        let rest = Options { blobless: true, sparse: true, submodules: true, ..Options::default() };
+        assert_eq!(rest.arguments(true), ["--filter=blob:none", "--sparse", "--recurse-submodules", "--no-local"]);
+        assert_eq!(Options { sparse: true, ..Options::default() }.arguments(true), ["--sparse"]);
+        assert!(Options::default().arguments(true).is_empty());
+        assert!(!Options::default().any() && rest.any());
+        for depth in ["", "0", "-1", "two", "1.5", "1000001"] {
+            assert_eq!(Options { depth: Some(depth.into()), ..Options::default() }.problem().as_deref(), Some(DEPTH_PROBLEM), "{depth:?}");
+        }
+        assert_eq!(Options { depth: Some(" 12 ".into()), ..Options::default() }.depth(), Some(12));
+        for name in ["-ridge", "two words", "a..b", "ridge.lock"] {
+            assert!(Options { branch: Some(name.into()), ..Options::default() }.problem().is_some(), "{name:?}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let request = Request {
+            address: "/srv/git/trail.git".into(),
+            parent: dir.path().into(),
+            name: "trail".into(),
+            options: Options { depth: Some("0".into()), ..Options::default() },
+        };
+        assert_eq!(request.problem().as_deref(), Some(DEPTH_PROBLEM));
+        assert_eq!(clone(&request).unwrap_err(), format!("Clone Failed — {DEPTH_PROBLEM}"));
+        assert!(!dir.path().join("trail").exists());
+    }
+
+    #[test]
+    fn a_shallow_single_branch_clone_from_a_folder_downloads_only_what_was_asked() {
+        let f = Fixture::new();
+        let dir = tempfile::tempdir().unwrap();
+        let bare = bare(&f, dir.path());
+        f.git(&["switch", "-q", "-c", "ridge"]);
+        fs::write(f.dir.join("ridge.txt"), "Ridge path\n").unwrap();
+        f.git(&["add", "ridge.txt"]);
+        f.git(&["commit", "-qm", "Climb the ridge"]);
+        f.git(&["push", "-q", bare.to_str().unwrap(), "ridge"]);
+        let clones = dir.path().join("clones");
+        fs::create_dir(&clones).unwrap();
+        let ask = |name: &str, options: Options| Request { address: bare.display().to_string(), parent: clones.clone(), name: name.into(), options };
+        let root = clone(&ask("shallow", Options { depth: Some("1".into()), ..Options::default() })).unwrap();
+        assert_eq!(git(&root, &["rev-parse", "--is-shallow-repository"]), "true\n");
+        assert_eq!(git(&root, &["rev-list", "--count", "HEAD"]), "1\n");
+        assert_eq!(git(&root, &["for-each-ref", "--format=%(refname)", "refs/remotes"]), "refs/remotes/origin/HEAD\nrefs/remotes/origin/main\nrefs/remotes/origin/ridge\n");
+        assert_eq!(fs::read_to_string(root.join("camp.txt")).unwrap(), "Camp at the ridge\n");
+        let root = clone(&ask("single", Options { branch: Some("ridge".into()), ..Options::default() })).unwrap();
+        assert_eq!(git(&root, &["symbolic-ref", "--short", "HEAD"]), "ridge\n");
+        assert_eq!(git(&root, &["rev-parse", "--is-shallow-repository"]), "false\n");
+        assert_eq!(git(&root, &["rev-list", "--count", "HEAD"]), "3\n");
+        assert_eq!(git(&root, &["for-each-ref", "--format=%(refname)", "refs/remotes"]), "refs/remotes/origin/ridge\n");
+        assert_eq!(git(&root, &["config", "--get-all", "remote.origin.fetch"]), "+refs/heads/ridge:refs/remotes/origin/ridge\n");
+        let missing = clone(&ask("missing", Options { branch: Some("valley".into()), ..Options::default() })).unwrap_err();
+        assert!(missing.contains("valley"), "{missing}");
+        assert!(!clones.join("missing").exists());
+    }
+
+    #[test]
+    fn a_blobless_sparse_clone_starts_with_the_top_level_files_and_no_old_contents() {
+        let f = Fixture::new();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(f.dir.join("maps")).unwrap();
+        fs::write(f.dir.join("maps/lake.txt"), "Lake map\n").unwrap();
+        f.git(&["add", "maps/lake.txt"]);
+        let bare = bare(&f, dir.path());
+        git(&bare, &["config", "uploadpack.allowFilter", "true"]);
+        let clones = dir.path().join("clones");
+        fs::create_dir(&clones).unwrap();
+        let options = Options { blobless: true, sparse: true, ..Options::default() };
+        let request = Request { address: bare.display().to_string(), parent: clones.clone(), name: "light".into(), options };
+        let root = clone(&request).unwrap();
+        assert_eq!(git(&root, &["config", "remote.origin.promisor"]), "true\n");
+        assert_eq!(git(&root, &["config", "remote.origin.partialclonefilter"]), "blob:none\n");
+        assert_eq!(git(&root, &["config", "core.sparseCheckout"]), "true\n");
+        assert_eq!(git(&root, &["sparse-checkout", "list"]), "");
+        assert!(root.join("trail.txt").exists() && root.join("camp.txt").exists());
+        assert!(!root.join("maps").exists());
+        let missing = git(&root, &["rev-list", "--objects", "--all", "--missing=print"]);
+        assert!(missing.lines().any(|line| line.starts_with('?')), "{missing}");
+        assert_eq!(git(&root, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn submodules_are_cloned_when_asked_and_a_local_folder_refusal_is_explained() {
+        use crate::repository::tests::GlobalConfig;
+        let library = Fixture::new();
+        fs::write(library.dir.join("map.txt"), "Ridge map\n").unwrap();
+        library.git(&["add", "map.txt"]);
+        library.git(&["commit", "-qm", "Draw the ridge map"]);
+        let f = Fixture::new();
+        let dir = tempfile::tempdir().unwrap();
+        f.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", library.dir.to_str().unwrap(), "maps"]);
+        let bare = bare(&f, dir.path());
+        let clones = dir.path().join("clones");
+        fs::create_dir(&clones).unwrap();
+        let ask = |name: &str| Request {
+            address: bare.display().to_string(),
+            parent: clones.clone(),
+            name: name.into(),
+            options: Options { submodules: true, ..Options::default() },
+        };
+        let empty = tempfile::NamedTempFile::new().unwrap();
+        let refused = {
+            let _config = GlobalConfig::set(empty.path());
+            clone(&ask("refused")).unwrap_err()
+        };
+        assert_eq!(refused, format!("Clone Failed — {}", crate::submodule::LOCAL_REFUSED));
+        assert!(!clones.join("refused").exists());
+        let mut allowed = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut allowed, b"[protocol \"file\"]\n\tallow = always\n").unwrap();
+        let _config = GlobalConfig::set(allowed.path());
+        let root = clone(&ask("nested")).unwrap();
+        assert_eq!(fs::read_to_string(root.join("maps/map.txt")).unwrap(), "Ridge map\n");
+        assert_eq!(git(&root.join("maps"), &["rev-parse", "HEAD"]), String::from_utf8(library.git(&["rev-parse", "HEAD"])).unwrap());
+    }
+
+    #[test]
     fn a_folder_that_is_there_and_not_empty_is_refused_before_git_runs() {
         let f = Fixture::new();
         let dir = tempfile::tempdir().unwrap();
@@ -569,7 +925,7 @@ mod tests {
         let taken = clones.join("Juniper-trail");
         fs::create_dir_all(&taken).unwrap();
         fs::write(taken.join("notes.txt"), "Keep me\n").unwrap();
-        let request = Request { address: bare.display().to_string(), parent: clones.clone(), name: "Juniper-trail".into() };
+        let request = Request { address: bare.display().to_string(), parent: clones.clone(), name: "Juniper-trail".into(), ..Request::default() };
         let problem = request.problem().unwrap();
         assert_eq!(problem, format!("{} already exists and is not empty.", taken.display()));
         let refused = clone(&request).unwrap_err();
@@ -589,7 +945,7 @@ mod tests {
         let bare = bare(&f, dir.path());
         let clones = dir.path().join("clones");
         fs::create_dir(&clones).unwrap();
-        let request = Request { address: bare.display().to_string(), parent: clones.clone(), name: "late".into() };
+        let request = Request { address: bare.display().to_string(), parent: clones.clone(), name: "late".into(), ..Request::default() };
         assert_eq!(request.problem(), None);
         fs::create_dir(clones.join("late")).unwrap();
         fs::write(clones.join("late/mine.txt"), "mine\n").unwrap();
@@ -601,7 +957,7 @@ mod tests {
     #[test]
     fn a_failed_clone_leaves_nothing_behind() {
         let dir = tempfile::tempdir().unwrap();
-        let request = Request { address: dir.path().join("nowhere.git").display().to_string(), parent: dir.path().into(), name: "nowhere".into() };
+        let request = Request { address: dir.path().join("nowhere.git").display().to_string(), parent: dir.path().into(), name: "nowhere".into(), ..Request::default() };
         let failure = clone(&request).unwrap_err();
         assert!(failure.starts_with("Clone Failed — fatal: repository '"), "{failure}");
         assert!(!failure.contains("Cloning into"), "{failure}");
@@ -700,6 +1056,7 @@ mod tests {
             address: format!("http://127.0.0.1:{}/Hollow-creek.git", server.port),
             parent: dir.path().into(),
             name: "Hollow-creek".into(),
+            ..Request::default()
         };
         let link = jobs::Link::new(true);
         let running = link.clone();

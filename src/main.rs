@@ -82,6 +82,7 @@ mod scrollbar;
 mod search;
 mod settings;
 mod sidebar;
+mod sparse;
 mod start;
 mod stash;
 mod storage;
@@ -551,6 +552,7 @@ impl Tab {
                         browse::status_changed(tab, cx);
                         submodule::status_changed(tab, cx);
                         lfs::status_changed(tab, cx);
+                        sparse::status_changed(tab, cx);
                         if let Some(Selection::File { path, staged }) = tab.ui.selection.clone() {
                             if tab
                                 .ui
@@ -1715,6 +1717,7 @@ impl Tab {
             Action::Worktree(action) => worktree::dispatch(self, action, window, cx),
             Action::Submodule(action) => submodule::dispatch(self, action, cx),
             Action::Lfs(action) => lfs::dispatch(self, action, cx),
+            Action::Sparse(action) => sparse::dispatch(self, action, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
             Action::Rewrite(action) => rewrite::dispatch(self, action, window, cx),

@@ -281,6 +281,8 @@ pub(crate) const REPO_MENU: &[&str] = &[
     "repo.terminal",
     "repo.editor",
     "repo.labels",
+    "sparse.status",
+    "repo.fetch-history",
     "lfs.setup",
     "lfs.fetch",
     "lfs.pull",
@@ -615,6 +617,7 @@ pub enum Action {
     Worktree(crate::worktree::Action),
     Submodule(crate::submodule::Action),
     Lfs(crate::lfs::Action),
+    Sparse(crate::sparse::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
     Rewrite(crate::rewrite::Action),
@@ -805,6 +808,7 @@ pub struct Ui {
     pub(crate) worktree: crate::worktree::State,
     pub(crate) submodule: crate::submodule::State,
     pub(crate) lfs: crate::lfs::State,
+    pub(crate) sparse: crate::sparse::State,
     pub(crate) rebase_editor: crate::rebase_editor::State,
     pub(crate) chrome_drawn: bool,
 }
@@ -908,6 +912,7 @@ impl Ui {
             worktree: Default::default(),
             submodule: Default::default(),
             lfs: Default::default(),
+            sparse: Default::default(),
             rebase_editor: Default::default(),
             chrome_drawn: false,
             diff_layout: DiffLayout::default(),
@@ -2124,7 +2129,7 @@ fn graph_cell<T: Desk>(
         })
 }
 
-fn history_tail(ui: &Ui, graph_width: Pixels) -> gpui::Stateful<Div> {
+fn history_tail<T: Desk>(ui: &Ui, graph_width: Pixels, cx: &Context<T>) -> gpui::Stateful<Div> {
     div()
         .id("history-tail")
         .h(px(ROW))
@@ -2150,6 +2155,7 @@ fn history_tail(ui: &Ui, graph_width: Pixels) -> gpui::Stateful<Div> {
                 .child(crate::paging::tail(ui).unwrap_or_default()),
         )
         .when(graph_width <= px(0.) && ui.has_more, |d| d.child(div().pl_2().child(kit::spinner("history-loading"))))
+        .when_some(crate::sparse::fetch_button(ui, cx), |d, button| d.child(div().pl_3().child(button)))
 }
 
 fn heading_divider<T: Desk>(column: crate::columns::Column, at_right: bool, cx: &Context<T>) -> impl IntoElement + use<T> {
@@ -2352,7 +2358,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
             range
                 .map(|index| {
                     if index >= ui.history_items() {
-                        return history_tail(ui, graph_width);
+                        return history_tail(ui, graph_width, cx);
                     }
                     let lanes_here = |art| graph_cell(art, lanes, limit, pointed == Some(index), cx);
                     let i = match ui.stash.item(index) {

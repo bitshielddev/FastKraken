@@ -442,7 +442,7 @@ pub(crate) fn update_all(repo: &Repository, expected: &[Module]) -> Result<Outco
     Ok(Outcome::titled(title, detail))
 }
 
-const LOCAL_REFUSED: &str = "Git does not clone submodules from local folders unless your Git configuration allows it with protocol.file.allow. Use the repository's network address, or allow local folders in your own Git configuration if you trust them.";
+pub(crate) const LOCAL_REFUSED: &str = "Git does not clone submodules from local folders unless your Git configuration allows it with protocol.file.allow. Use the repository's network address, or allow local folders in your own Git configuration if you trust them.";
 
 pub(crate) fn address_problem(text: &str) -> Option<String> {
     match text.trim() {

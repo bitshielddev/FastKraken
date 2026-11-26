@@ -746,7 +746,7 @@ impl Repository {
         push
     }
 
-    fn save_stash(&self, paths: &[PathBuf], message: &str) -> Result<(), String> {
+    pub(crate) fn save_stash(&self, paths: &[PathBuf], message: &str) -> Result<(), String> {
         let status = self.status()?;
         if let Some(kind) = status.operation.filter(|kind| kind.holds()) {
             return Err(format!("{}.", kind.refusal()));

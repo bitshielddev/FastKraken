@@ -330,7 +330,8 @@ pub(crate) fn tail(ui: &Ui) -> Option<String> {
         return None;
     }
     let count = ui.history.len();
-    Some(format!("Start of history · {} {}", grouped(count), if count == 1 { "commit" } else { "commits" }))
+    let start = if ui.sparse.shallow { "History is shallow" } else { "Start of history" };
+    Some(format!("{start} · {} {}", grouped(count), if count == 1 { "commit" } else { "commits" }))
 }
 
 pub(crate) fn items(ui: &Ui) -> usize {

@@ -1015,6 +1015,7 @@ mod tests {
             address: "/srv/gone.git".into(),
             parent: "/srv/clones".into(),
             name: "gone".into(),
+            ..Default::default()
         };
         let cloning = About {
             url: Some(request.address.clone()),
