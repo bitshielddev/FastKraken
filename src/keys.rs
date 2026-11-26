@@ -399,6 +399,19 @@ pub(crate) fn generate(folder: &Path, name: &str, comment: Option<&str>) -> Resu
     key_at(&public).ok_or_else(|| format!("ssh-keygen made no readable key at {}", public.display()))
 }
 
+pub(crate) fn opens_without_passphrase(private: &Path) -> bool {
+    ran(command(&tool("ssh-keygen"), None).args(["-y", "-P", "", "-f"]).arg(private)).is_ok_and(|output| output.status.success())
+}
+
+pub(crate) fn kept_locked(key: SshKey) -> Result<SshKey, String> {
+    if !opens_without_passphrase(key.identity()) {
+        return Ok(key);
+    }
+    let _ = fs::remove_file(key.identity());
+    let _ = fs::remove_file(&key.public);
+    Err(format!("ssh-keygen made {} without the passphrase, so FastKraken removed it. Try again.", key.name()))
+}
+
 pub(crate) fn adding(key: &Path, agent: &Path, keychain: bool) -> Command {
     let apple = Path::new(APPLE_SSH_ADD);
     let keychain = keychain && executable(apple);
@@ -1042,7 +1055,7 @@ fn make(tab: &mut Tab, name: String, passphrase: String, comment: Option<String>
         tab,
         "Generating the SSH key…",
         Some(passphrase),
-        move || generate(&folder, &name, comment.as_deref()),
+        move || generate(&folder, &name, comment.as_deref()).and_then(|key| if locked { kept_locked(key) } else { Ok(key) }),
         move |_, key| {
             let place = key.public.parent().map(|folder| folder.display().to_string()).unwrap_or_default();
             let lock = if locked { "with a passphrase" } else { "with no passphrase" };
@@ -1485,6 +1498,31 @@ mod tests {
         assert!(again.contains("already exists"), "{again}");
         assert_eq!((fs::read(&path).unwrap(), fs::read(&key.public).unwrap()), before);
         assert_eq!(fs::read_to_string(&asked).unwrap().lines().count(), 2);
+    }
+
+    #[test]
+    fn a_key_made_without_the_chosen_passphrase_is_removed_and_refused() {
+        if !keygen_present() {
+            return;
+        }
+        let dir = temp();
+        let folder = dir.path().join("home/.ssh");
+        let program = script(&dir.path().join("askpass.sh"), "exit 1\n");
+        let _program = crate::askpass::tests::Program::set(program);
+        let link = crate::jobs::Link::answering();
+        link.session().unwrap().choose_passphrase("summit lantern".into());
+        let key = link.enter(|| generate(&folder, "trail", None)).unwrap();
+        assert!(opens_without_passphrase(key.identity()));
+        let refused = kept_locked(key).unwrap_err();
+        assert!(refused.contains("id_ed25519_trail without the passphrase"), "{refused}");
+        assert!(!folder.join("id_ed25519_trail").exists() && !folder.join("id_ed25519_trail.pub").exists());
+
+        let opener = script(&dir.path().join("open.sh"), "echo 'summit lantern'\n");
+        let _program = crate::askpass::tests::Program::set(opener);
+        let locked = link.enter(|| generate(&folder, "trail", None)).unwrap();
+        assert!(!opens_without_passphrase(locked.identity()));
+        let kept = kept_locked(locked).unwrap();
+        assert!(kept.identity().is_file() && kept.public.is_file());
     }
 
     #[test]
