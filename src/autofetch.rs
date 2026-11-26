@@ -198,6 +198,8 @@ fn start(tab: &mut Tab, cx: &mut Context<Tab>) {
         state.since = Some(Instant::now());
         match result {
             Ok(_) => {
+                tab.ui.pulls.due = true;
+                let state = &mut tab.ui.autofetch;
                 state.fetched = Some(view::now());
                 state.failures = 0;
                 state.failed = None;

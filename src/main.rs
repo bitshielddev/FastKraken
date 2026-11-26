@@ -71,6 +71,7 @@ mod recover;
 mod prompt;
 mod publish;
 mod pull_request;
+mod pulls;
 mod push_to;
 mod refs;
 mod remotes;
@@ -312,6 +313,7 @@ impl Tab {
                 journal::restore(tab, cx);
                 tab.ui.autofetch.fetched = fetched;
                 autofetch::arm(tab, cx);
+                pulls::arm(tab, cx);
                 sync::restore(tab, configured, cx);
                 merge::restore(tab, cx);
                 commit_options::restore(tab, cx);
@@ -1165,6 +1167,7 @@ impl Tab {
                     journal::refuse(tab, "Push".to_owned(), journal::PUSHED, cx);
                 }
                 tab.follow = Follow::head_if(select_head);
+                pulls::after_network(&mut tab.ui, job.spec.kind);
                 after_success(tab, cx);
             } else {
                 after_failure(tab, cx);
@@ -1311,6 +1314,7 @@ impl Tab {
             tab.ui.jobs.end_network(id);
             journal::record(tab, watched, &mut result, cx);
             if tab.conclude(Some(spinner), Some(notice), result) {
+                pulls::after_network(&mut tab.ui, jobs::Kind::Pull);
                 tab.follow = Follow::head_if(select_head);
                 after_success(tab, cx);
             } else {
@@ -1741,6 +1745,7 @@ impl Tab {
             Action::Drag(action) => drag::dispatch(self, action, window, cx),
             Action::PushTo(action) => push_to::dispatch(self, action, window, cx),
             Action::PullRequest(action) => pull_request::dispatch(self, action, window, cx),
+            Action::Pulls(action) => pulls::dispatch(self, action, window, cx),
             Action::ViewChanges => {
                 if let Some(first) = self.ui.files.first() {
                     self.follow = Follow::Nothing;

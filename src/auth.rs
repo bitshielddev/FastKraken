@@ -236,6 +236,23 @@ pub(crate) fn bindings(repo: &Repository) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
+pub(crate) struct Connection {
+    pub(crate) client: Client,
+    pub(crate) token: String,
+}
+
+pub(crate) fn connection(repo: &Repository, remote: &str) -> Result<Option<Connection>> {
+    let dir = directory()?;
+    let common = repo.common_dir().as_os_str().as_bytes();
+    let settings = load(&dir)?;
+    let Some(binding) = settings.bindings.iter().find(|b| b.directory == common && b.remote == remote) else {
+        return Ok(None);
+    };
+    let client = Client::new(&binding.registration.id, &binding.registration.slug)?;
+    let tokens = fresh(&dir, &client, binding.account)?.ok_or_else(|| format!("{LAPSED}. Reconnect GitHub."))?;
+    Ok(Some(Connection { client, token: tokens.access_token }))
+}
+
 pub(crate) fn bound(repo: &Repository, remote: &str) -> Result<Option<String>> {
     Ok(bindings(repo)?.into_iter().find(|(name, _)| name == remote).map(|(_, url)| url))
 }

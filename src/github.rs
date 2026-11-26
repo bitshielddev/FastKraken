@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     env, fmt,
+    sync::OnceLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use ureq::{
@@ -66,6 +67,71 @@ pub(crate) struct CreatedRepo {
     pub private: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PullState {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PullRequest {
+    pub number: u64,
+    pub title: String,
+    pub author: String,
+    pub state: PullState,
+    pub head: String,
+    pub head_sha: String,
+    pub head_repo: Option<String>,
+    pub base: String,
+    pub page: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RunState {
+    Running,
+    Passed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckRun {
+    pub name: String,
+    pub state: RunState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Cached<T> {
+    Fresh { value: T, etag: Option<String> },
+    Unchanged,
+}
+
+static REPLAY_ORIGIN: OnceLock<String> = OnceLock::new();
+
+pub(crate) fn serve_replay_from(base: &str) -> Result<(), String> {
+    if !crate::acceptance::replaying() {
+        return Err("Only an acceptance replay can redirect GitHub.".into());
+    }
+    let url = url::Url::parse(base).map_err(|e| e.to_string())?;
+    if url.scheme() != "http" || url.host_str() != Some("127.0.0.1") || url.port().is_none() || url.path() != "/" {
+        return Err("A replay serves GitHub only from 127.0.0.1.".into());
+    }
+    let origin = url.origin().ascii_serialization();
+    match REPLAY_ORIGIN.get() {
+        Some(existing) if *existing != origin => Err("The replay already serves GitHub from another address.".into()),
+        _ => {
+            let _ = REPLAY_ORIGIN.set(origin);
+            Ok(())
+        }
+    }
+}
+
+fn replay_origin() -> Option<&'static String> {
+    REPLAY_ORIGIN.get().filter(|_| crate::acceptance::replaying())
+}
+
 #[derive(Debug)]
 pub(crate) enum Error {
     Unauthorized(String),
@@ -92,6 +158,7 @@ struct Reply {
     status: u16,
     json: Value,
     next_page: bool,
+    etag: Option<String>,
 }
 
 impl Client {
@@ -118,6 +185,15 @@ impl Client {
         }
         if !valid_slug(slug) {
             return Err("Set the GitHub App slug from its public installation URL.".into());
+        }
+        if let Some(origin) = replay_origin() {
+            return Ok(Self {
+                client_id: client_id.into(),
+                slug: slug.into(),
+                http: http_agent(true),
+                web: origin.clone(),
+                api: origin.clone(),
+            });
         }
         Ok(Self {
             client_id: client_id.into(),
@@ -234,15 +310,79 @@ impl Client {
     }
 
     fn get(&self, token: &str, path: &str) -> Result<Reply, Error> {
+        self.get_since(token, path, None)
+    }
+
+    fn get_since(&self, token: &str, path: &str, etag: Option<&str>) -> Result<Reply, Error> {
         self.offline()?;
-        let response = self
+        let mut request = self
             .http
             .get(format!("{}{}", self.api, path))
             .header("Authorization", format!("Bearer {token}"))
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", API_VERSION)
-            .call();
-        read_reply(response, false)
+            .header("X-GitHub-Api-Version", API_VERSION);
+        if let Some(etag) = etag.filter(|etag| clean_etag(etag)) {
+            request = request.header("If-None-Match", etag);
+        }
+        read_reply(request.call(), false)
+    }
+
+    fn cached(&self, token: &str, path: &str, etag: Option<&str>) -> Result<Cached<Value>, Error> {
+        let reply = self.get_since(token, path, etag)?;
+        match reply.status {
+            304 if etag.is_some() => Ok(Cached::Unchanged),
+            200 => Ok(Cached::Fresh { value: reply.json, etag: reply.etag.filter(|etag| clean_etag(etag)) }),
+            403 | 404 if !rate_limited(reply.status, &reply.json) => {
+                Err(Error::Denied("GitHub did not let FastKraken read this repository.".into()))
+            }
+            status => Err(status_error(status, &reply.json)),
+        }
+    }
+
+    pub(crate) fn pull_requests(
+        &self,
+        token: &str,
+        owner: &str,
+        name: &str,
+        open: bool,
+        etag: Option<&str>,
+    ) -> Result<Cached<Vec<PullRequest>>, Error> {
+        validate_destination(owner, name)?;
+        let path = if open {
+            format!("/repos/{owner}/{name}/pulls?state=open&per_page=100")
+        } else {
+            format!("/repos/{owner}/{name}/pulls?state=closed&sort=updated&direction=desc&per_page=50")
+        };
+        Ok(match self.cached(token, &path, etag)? {
+            Cached::Unchanged => Cached::Unchanged,
+            Cached::Fresh { value, etag } => {
+                let listed = value.as_array().ok_or_else(invalid_response)?;
+                let base = format!("{owner}/{name}");
+                Cached::Fresh { value: listed.iter().filter_map(|item| pull_from_response(item, &base)).collect(), etag }
+            }
+        })
+    }
+
+    pub(crate) fn check_runs(
+        &self,
+        token: &str,
+        owner: &str,
+        name: &str,
+        sha: &str,
+        etag: Option<&str>,
+    ) -> Result<Cached<Vec<CheckRun>>, Error> {
+        validate_destination(owner, name)?;
+        if sha.len() < 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Other("The pull request's head commit is not a full commit ID.".into()));
+        }
+        let path = format!("/repos/{owner}/{name}/commits/{sha}/check-runs?per_page=100");
+        Ok(match self.cached(token, &path, etag)? {
+            Cached::Unchanged => Cached::Unchanged,
+            Cached::Fresh { value, etag } => {
+                let runs = value["check_runs"].as_array().ok_or_else(invalid_response)?;
+                Cached::Fresh { value: runs.iter().filter_map(check_from_response).collect(), etag }
+            }
+        })
     }
 
     pub(crate) fn user(&self, token: &str) -> Result<(u64, String), Error> {
@@ -445,6 +585,11 @@ fn read_reply(raw: Result<Response<Body>, ureq::Error>, creating: bool) -> Resul
     };
     let mut response = raw.map_err(|_| unavailable())?;
     let status = response.status().as_u16();
+    let etag = response
+        .headers()
+        .get("ETag")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let next_page = response
         .headers()
         .get_all("Link")
@@ -470,6 +615,7 @@ fn read_reply(raw: Result<Response<Body>, ureq::Error>, creating: bool) -> Resul
         status,
         json: body,
         next_page,
+        etag,
     })
 }
 
@@ -489,6 +635,63 @@ fn success(reply: Reply, status: u16) -> Result<Value, Error> {
         Err(status_error(reply.status, &reply.json))
     }
 }
+fn clean_etag(etag: &str) -> bool {
+    !etag.is_empty() && etag.len() <= 200 && etag.bytes().all(|b| b.is_ascii_graphic())
+}
+
+fn rate_limited(status: u16, body: &Value) -> bool {
+    status == 429 || body["message"].as_str().is_some_and(|s| s.to_ascii_lowercase().contains("rate limit"))
+}
+
+fn plain_text(value: &Value, limit: usize) -> Option<String> {
+    let text: String = value.as_str()?.chars().filter(|c| !c.is_control()).take(limit).collect();
+    (!text.trim().is_empty()).then(|| text.trim().to_owned())
+}
+
+fn branch_name(value: &Value) -> Option<String> {
+    let name = value.as_str()?;
+    (!name.is_empty() && name.len() <= 255 && !name.chars().any(|c| c.is_control() || c.is_whitespace())).then(|| name.to_owned())
+}
+
+fn full_name(value: &Value) -> Option<String> {
+    let (owner, name) = value.as_str()?.split_once('/')?;
+    (valid_owner_login(owner) && validate_repo_name(name).is_ok()).then(|| format!("{owner}/{name}"))
+}
+
+fn pull_from_response(item: &Value, base: &str) -> Option<PullRequest> {
+    let number = item["number"].as_u64().filter(|n| *n > 0)?;
+    let head_sha = item["head"]["sha"].as_str().filter(|sha| sha.len() >= 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))?;
+    let state = match (item["state"].as_str()?, item["draft"].as_bool().unwrap_or(false), item["merged_at"].is_string()) {
+        ("open", true, _) => PullState::Draft,
+        ("open", false, _) => PullState::Open,
+        ("closed", _, true) => PullState::Merged,
+        ("closed", _, false) => PullState::Closed,
+        _ => return None,
+    };
+    Some(PullRequest {
+        number,
+        title: plain_text(&item["title"], 300).unwrap_or_else(|| format!("Pull request #{number}")),
+        author: item["user"]["login"].as_str().filter(|login| valid_owner_login(login.trim_end_matches("[bot]"))).unwrap_or("someone").to_owned(),
+        state,
+        head: branch_name(&item["head"]["ref"])?,
+        head_sha: head_sha.to_ascii_lowercase(),
+        head_repo: full_name(&item["head"]["repo"]["full_name"]),
+        base: branch_name(&item["base"]["ref"])?,
+        page: format!("https://github.com/{base}/pull/{number}"),
+    })
+}
+
+fn check_from_response(item: &Value) -> Option<CheckRun> {
+    let name = plain_text(&item["name"], 200)?;
+    let state = match (item["status"].as_str()?, item["conclusion"].as_str()) {
+        ("completed", Some("success")) => RunState::Passed,
+        ("completed", Some("neutral" | "skipped" | "stale")) => RunState::Skipped,
+        ("completed", _) => RunState::Failed,
+        _ => RunState::Running,
+    };
+    Some(CheckRun { name, state })
+}
+
 fn status_error(status: u16, body: &Value) -> Error {
     match status {
         401 => Error::Unauthorized("The GitHub authorisation has expired or was revoked. Connect GitHub again.".into()),

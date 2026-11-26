@@ -39,6 +39,7 @@ pub(crate) enum Target {
     Section(crate::refs::Section),
     Worktree(PathBuf),
     Submodule(PathBuf),
+    PullRequest { remote: String, number: u64 },
     Pair { dragged: Box<Target>, onto: Box<Target> },
 }
 
@@ -318,6 +319,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::cleanup::COMMANDS,
         crate::push_to::COMMANDS,
         crate::pull_request::COMMANDS,
+        crate::pulls::COMMANDS,
         crate::drag::COMMANDS,
         crate::journal::COMMANDS,
         crate::worktree::COMMANDS,
@@ -466,6 +468,7 @@ fn rows(ui: &Ui, target: &Target, cx: &App, flat: bool) -> Vec<Entry> {
         }
     }
     entries.sort_by_key(|entry| entry.group);
+    crate::pulls::merged_first(ui, target, &mut entries);
     entries
 }
 
@@ -837,6 +840,7 @@ pub(crate) fn default_command(target: &Target) -> Option<&'static str> {
         Target::Tag(_) => Some("tag.checkout"),
         Target::Worktree(_) => Some("worktree.open"),
         Target::Submodule(_) => Some("submodule.open"),
+        Target::PullRequest { .. } => Some("pull.checkout"),
         _ => None,
     }
 }

@@ -356,3 +356,66 @@ fn the_built_in_registration_is_compiled_in() {
     let client = Client::new(id, slug).unwrap();
     assert!(client.installation_url().starts_with("https://github.com/apps/"));
 }
+
+#[test]
+fn pull_requests_are_read_once_and_then_only_when_their_etag_changed() {
+    let sha = "b".repeat(40);
+    let pull = |number: u64, state: &str, draft: bool, merged: bool| {
+        json!({
+            "number": number, "title": format!("Walk\u{7}the ridge {number}"), "state": state, "draft": draft,
+            "merged_at": if merged { json!("2026-11-01T00:00:00Z") } else { Value::Null },
+            "user": {"login": "hiker"}, "html_url": "https://evil.example.invalid/",
+            "head": {"ref": "ridge", "sha": sha, "repo": {"full_name": "hiker/trail"}}, "base": {"ref": "trunk"},
+        })
+    };
+    let tagged = response(200, json!([pull(12, "open", false, false), pull(14, "open", true, false), {"number": 3}]))
+        .replace("Content-Type:", "ETag: \"open-1\"\r\nContent-Type:");
+    let closed = response(200, json!([pull(9, "closed", false, true), pull(8, "closed", false, false)]));
+    let records = mock(
+        vec![tagged, response(304, Value::Null), closed, response(403, json!({"message":"Resource not accessible by integration"})), response(403, json!({"message":"API rate limit exceeded"}))],
+        |client| {
+            let Cached::Fresh { value, etag } = client.pull_requests("auth-fixture", "cedar", "trail", true, None).unwrap() else {
+                panic!("expected a fresh list")
+            };
+            assert_eq!(etag.as_deref(), Some("\"open-1\""));
+            assert_eq!(value.len(), 2);
+            assert_eq!((value[0].number, value[0].state, value[1].state), (12, PullState::Open, PullState::Draft));
+            assert_eq!(value[0].title, "Walkthe ridge 12");
+            assert_eq!(value[0].page, "https://github.com/cedar/trail/pull/12");
+            assert_eq!((value[0].head.as_str(), value[0].head_repo.as_deref(), value[0].base.as_str()), ("ridge", Some("hiker/trail"), "trunk"));
+            assert_eq!(client.pull_requests("auth-fixture", "cedar", "trail", true, etag.as_deref()).unwrap(), Cached::Unchanged);
+            let Cached::Fresh { value, .. } = client.pull_requests("auth-fixture", "cedar", "trail", false, None).unwrap() else {
+                panic!("expected closed pull requests")
+            };
+            assert_eq!(value.iter().map(|pull| pull.state).collect::<Vec<_>>(), [PullState::Merged, PullState::Closed]);
+            assert!(matches!(client.pull_requests("auth-fixture", "cedar", "trail", true, None), Err(Error::Denied(_))));
+            assert!(matches!(client.pull_requests("auth-fixture", "cedar", "trail", true, None), Err(Error::Other(said)) if said.contains("rate-limited")));
+        },
+    );
+    assert_eq!(records[0].line, "GET /repos/cedar/trail/pulls?state=open&per_page=100 HTTP/1.1");
+    assert!(!records[0].headers.iter().any(|h| h.to_ascii_lowercase().starts_with("if-none-match")));
+    assert!(records[1].headers.iter().any(|h| h == "if-none-match: \"open-1\"" || h == "If-None-Match: \"open-1\""));
+    assert_eq!(records[2].line, "GET /repos/cedar/trail/pulls?state=closed&sort=updated&direction=desc&per_page=50 HTTP/1.1");
+}
+
+#[test]
+fn check_runs_are_read_for_one_full_commit() {
+    let sha = "c".repeat(40);
+    let runs = json!({"total_count": 4, "check_runs": [
+        {"name": "build", "status": "completed", "conclusion": "success"},
+        {"name": "lint", "status": "completed", "conclusion": "failure"},
+        {"name": "docs", "status": "completed", "conclusion": "skipped"},
+        {"name": "test", "status": "in_progress", "conclusion": null},
+    ]});
+    let records = mock(vec![response(200, runs), response(404, json!({}))], |client| {
+        let Cached::Fresh { value, .. } = client.check_runs("auth-fixture", "cedar", "trail", &sha, None).unwrap() else {
+            panic!("expected check runs")
+        };
+        let states: Vec<_> = value.iter().map(|run| (run.name.as_str(), run.state)).collect();
+        assert_eq!(states, [("build", RunState::Passed), ("lint", RunState::Failed), ("docs", RunState::Skipped), ("test", RunState::Running)]);
+        assert!(matches!(client.check_runs("auth-fixture", "cedar", "trail", &sha, None), Err(Error::Denied(_))));
+        assert!(client.check_runs("auth-fixture", "cedar", "trail", "main", None).is_err());
+    });
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].line, format!("GET /repos/cedar/trail/commits/{sha}/check-runs?per_page=100 HTTP/1.1"));
+}

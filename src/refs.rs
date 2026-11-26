@@ -191,6 +191,7 @@ pub enum Section {
     Stashes,
     Worktrees,
     Submodules,
+    PullRequests,
 }
 
 #[derive(Clone, Debug)]
@@ -262,6 +263,8 @@ pub(crate) enum SideRow {
     Stash(usize),
     Worktree(usize),
     Submodule(usize),
+    Pull(usize),
+    PullNote(usize),
     Note,
 }
 
@@ -657,6 +660,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
                     crate::pin::refs_loaded(&mut tab.ui);
                     crate::graph_view::follow_upstream(tab, cx);
                     crate::forecast::refs_loaded(tab, cx);
+                    crate::pulls::refs_loaded(tab, cx);
                 }
                 Err(error) => tab.error(error, cx),
             }
@@ -1001,6 +1005,14 @@ pub(crate) fn activate_row(tab: &mut Tab, index: usize, window: &mut Window, cx:
             Some(module) => view::Action::Submodule(crate::submodule::Action::Open(module.path.clone())),
             None => return,
         },
+        Some(SideRow::Pull(index)) => match crate::pulls::row_action(&tab.ui, *index) {
+            Some(action) => action,
+            None => return,
+        },
+        Some(SideRow::PullNote(index)) => match crate::pulls::note_action(&tab.ui, *index) {
+            Some(action) => action,
+            None => return,
+        },
         Some(SideRow::Note) => view::Action::Publish(crate::publish::Action::Publish),
         None => return,
     };
@@ -1013,7 +1025,7 @@ fn kind_of(section: Section) -> Option<Kind> {
         Section::Branches => Some(Kind::Branch),
         Section::Remotes => Some(Kind::Remote),
         Section::Tags => Some(Kind::Tag),
-        Section::Stashes | Section::Worktrees | Section::Submodules => None,
+        Section::Stashes | Section::Worktrees | Section::Submodules | Section::PullRequests => None,
     }
 }
 
@@ -1060,6 +1072,7 @@ pub(crate) fn rebuild_rows(ui: &mut view::Ui, cx: &App) {
     for (section, kind) in [
         (Section::Branches, Some(Kind::Branch)),
         (Section::Remotes, Some(Kind::Remote)),
+        (Section::PullRequests, None),
         (Section::Worktrees, None),
         (Section::Submodules, None),
         (Section::Tags, Some(Kind::Tag)),
@@ -1083,6 +1096,17 @@ pub(crate) fn rebuild_rows(ui: &mut view::Ui, cx: &App) {
                         || worktree.on().to_lowercase().contains(&filter))
                     .then_some(SideRow::Worktree(i))
                 }));
+            }
+            continue;
+        }
+        if section == Section::PullRequests {
+            if !ui.pulls.bound {
+                continue;
+            }
+            rows.push(SideRow::Header { section, count: crate::pulls::listed(ui).len(), open });
+            if open {
+                rows.extend((0..crate::pulls::notes(ui).len()).map(SideRow::PullNote));
+                rows.extend(crate::pulls::shown_in(ui, &filter).into_iter().map(SideRow::Pull));
             }
             continue;
         }
@@ -1299,12 +1323,14 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 Section::Stashes => "Stashes",
                                 Section::Worktrees => "Worktrees",
                                 Section::Submodules => "Submodules",
+                                Section::PullRequests => "Pull requests",
                             };
                             let add = match section {
                                 Section::Branches => Some("New branch"),
                                 Section::Remotes => Some("Add a remote or publish"),
                                 Section::Worktrees => Some("New worktree"),
                                 Section::Submodules => Some("Add submodule"),
+                                Section::PullRequests => Some("Open a pull request for the checked-out branch"),
                                 _ => None,
                             };
                             let left_out = match crate::graph_view::section_prefix(section) {
@@ -1362,6 +1388,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                                         Section::Submodules => {
                                                             view::Action::Submodule(crate::submodule::Action::Add)
                                                         }
+                                                        Section::PullRequests => view::Action::Run("branch.pull-request"),
                                                         _ => view::Action::Run("repo.new-branch"),
                                                     };
                                                     app.dispatch(action, w, cx)
@@ -1547,6 +1574,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 Kind::Remote => kit::Chip::Remote,
                                 Kind::Tag => kit::Chip::Tag,
                             };
+                            let badge = crate::pulls::branch_badge(ui, &Target::of_ref(kind, item.name.clone()), ("side-pull-badge", i), cx);
                             let shown_ref = Target::of_ref(kind, item.name.clone());
                             let carried = crate::drag::Carried::new(shown_ref.clone(), None, chip, item.name.to_string_lossy())
                                 .at(item.oid.clone());
@@ -1586,6 +1614,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         })
                                         .grow(),
                                 )
+                                .children(badge)
                                 .when(kind == Kind::Branch, |d| {
                                     let elsewhere = crate::worktree::in_use(ui, &item.name);
                                     d.children(count_buttons(item, current, i, pointed == Some(i), cx))
@@ -1685,6 +1714,8 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                         }
                         SideRow::Worktree(index) => crate::worktree::side_row(ui, *index, i, pointed == Some(i), cx),
                         SideRow::Submodule(index) => crate::submodule::side_row(ui, *index, i, pointed == Some(i), cx),
+                        SideRow::Pull(index) => crate::pulls::side_row(ui, *index, i, pointed == Some(i), cx),
+                        SideRow::PullNote(index) => crate::pulls::note_row(ui, *index, i, cx),
                         SideRow::Note => div()
                             .id(("side-note", i))
                             .h(px(TREE_ROW))

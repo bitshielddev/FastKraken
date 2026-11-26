@@ -55,7 +55,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
                 Some(request) => format!("Open pull request for {}…", request.branch.to_string_lossy()),
                 None => String::new(),
             },
-            |ui, target, _| match branch_of(ui, target).and_then(|branch| resolve(ui, branch, None)) {
+            |ui, target, _| match branch_of(ui, target).filter(|branch| crate::pulls::open_of_local(ui, branch).is_none()).and_then(|branch| resolve(ui, branch, None)) {
                 Some(request) => available(ui, &request),
                 None => Availability::Hidden,
             },
@@ -191,7 +191,7 @@ pub(crate) fn page(base_page: &str, head_page: &str, base: &str, head: &str) -> 
     })
 }
 
-fn web(ui: &Ui, remote: &str) -> Option<String> {
+pub(crate) fn web(ui: &Ui, remote: &str) -> Option<String> {
     let addresses = ui.refs.addresses.get(remote)?;
     let push = addresses.separate_push().ok().flatten();
     addresses.single().and_then(crate::address::web_address).or_else(|| push.and_then(crate::address::web_address))
@@ -275,6 +275,10 @@ pub(crate) fn resolve(ui: &Ui, branch: &OsStr, onto: Option<&Onto>) -> Option<Re
 }
 
 pub(crate) fn offer(ui: &Ui, branch: &OsStr, remote: &str, destination: &OsStr) -> Option<(SharedString, view::Action)> {
+    if let Some((_, pull)) = crate::pulls::open_of_local(ui, branch) {
+        let open = view::Action::Handoff(crate::handoff::Action::OpenUrl(pull.page.clone()));
+        return Some((format!("View pull request #{}", pull.number).into(), open));
+    }
     let request = resolve(ui, branch, None)?;
     if request.remote != remote || OsStr::new(&request.there) != destination {
         return None;

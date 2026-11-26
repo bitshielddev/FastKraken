@@ -589,6 +589,7 @@ pub enum Action {
     Drag(crate::drag::Action),
     PushTo(crate::push_to::Action),
     PullRequest(crate::pull_request::Action),
+    Pulls(crate::pulls::Action),
     Stash(crate::stash::Action),
     Sync(crate::sync::Action),
     Publish(crate::publish::Action),
@@ -807,6 +808,7 @@ pub struct Ui {
     pub(crate) forecast: crate::forecast::State,
     pub(crate) journal: crate::journal::State,
     pub(crate) worktree: crate::worktree::State,
+    pub(crate) pulls: crate::pulls::State,
     pub(crate) submodule: crate::submodule::State,
     pub(crate) lfs: crate::lfs::State,
     pub(crate) sparse: crate::sparse::State,
@@ -911,6 +913,7 @@ impl Ui {
             forecast: Default::default(),
             journal: Default::default(),
             worktree: Default::default(),
+            pulls: Default::default(),
             submodule: Default::default(),
             lfs: Default::default(),
             sparse: Default::default(),
@@ -1914,6 +1917,12 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
                 None => tip,
             };
             let hovered = oid.to_owned();
+            let badge = label.target.as_ref().and_then(|target| {
+                crate::pulls::branch_badge(ui, target, ("label-pull", i), cx).or_else(|| {
+                    let remote = label.remote.as_ref()?;
+                    crate::pulls::branch_badge(ui, &crate::commands::Target::RemoteBranch(remote.into()), ("label-pull", i), cx)
+                })
+            });
             let chip = kit::chip_marked(label.chip, text, &marks)
                 .id(("label", i))
                 .tooltip(kit::tip(tip))
@@ -1922,9 +1931,13 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
                     let action = if *hovered_now { crate::highlight::Action::Enter(oid) } else { crate::highlight::Action::Leave(oid) };
                     app.dispatch(Action::Highlight(action), w, cx);
                 }));
-            match (label.target, carried) {
+            let shown = match (label.target, carried) {
                 (Some(target), Some(carried)) => live_label(chip, oid.to_owned(), carried, target, label.remote, cx).into_any_element(),
                 _ => chip.into_any_element(),
+            };
+            match badge {
+                Some(badge) => div().flex().flex_shrink_0().items_center().gap(px(3.)).child(shown).child(badge).into_any_element(),
+                None => shown,
             }
         }))
         .children(crate::worktree::chips(ui, oid, cx))
