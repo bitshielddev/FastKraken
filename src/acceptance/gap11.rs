@@ -1769,6 +1769,7 @@ impl Replay<'_> {
                 && tab.ui.history.len() == 4
                 && tab.ui.sparse.shallow
                 && paging::tail(&tab.ui).as_deref() == Some("History is shallow · 4 commits")
+                && tab.ui.refs.remotes.iter().any(|remote| remote == "origin")
         })
         .await?;
         git_is(&destination, &["rev-list", "--count", "--all"], "4\n")?;

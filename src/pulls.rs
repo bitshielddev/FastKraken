@@ -410,11 +410,11 @@ pub(crate) fn side_row<T: Desk>(ui: &Ui, index: usize, row: usize, pointed: bool
         .when(pointed, |d| d.tooltip(kit::tip(format!("{}\nClick to show its head commit. Double-click to check it out.", tip(ui, remote, pull)))))
         .on_click(cx.listener(move |app, event: &ClickEvent, w, cx| {
             let action = if event.click_count() > 1 {
-                Action::Checkout { remote: checkout_remote.clone(), number }
+                view::Action::Activate(Target::PullRequest { remote: checkout_remote.clone(), number })
             } else {
-                Action::Reveal { remote: reveal_remote.clone(), number }
+                view::Action::Pulls(Action::Reveal { remote: reveal_remote.clone(), number })
             };
-            app.dispatch(view::Action::Pulls(action), w, cx);
+            app.dispatch(action, w, cx);
         }))
         .on_mouse_down(
             MouseButton::Right,
@@ -1249,8 +1249,26 @@ mod tests {
         let stale = ForkCheckout { remote: "origin".into(), address: address.clone(), number: 15, seen: None };
         assert!(check_out_fork(&f.repo, &stale).unwrap_err().contains("pr/15 changed since"));
         assert_eq!(snapshot(&f), before_branch);
+        let tip = String::from_utf8(f.git(&["rev-parse", "pr/15"])).unwrap().trim().to_owned();
+        f.git(&["switch", "-q", "pr/15"]);
+        let checked_out = snapshot(&f);
+        let current = ForkCheckout { remote: "origin".into(), address: address.clone(), number: 15, seen: Some(tip) };
+        assert!(check_out_fork(&f.repo, &current).unwrap_err().contains("pr/15 is checked out"));
+        assert_eq!(snapshot(&f), checked_out);
+        f.git(&["switch", "-q", "main"]);
         f.git(&["branch", "-D", "pr/15"]);
         assert_eq!(snapshot(&f), before);
         assert!(f.git(&["for-each-ref", "refs/heads/pr"]).is_empty());
+    }
+
+    #[test]
+    fn only_head_commits_already_in_the_repository_count_as_present() {
+        let f = Fixture::new();
+        let first = commit(&f, "trail.txt", "Trail\n", "Start the trail");
+        let tree = String::from_utf8(f.git(&["rev-parse", "HEAD^{tree}"])).unwrap().trim().to_owned();
+        let missing = "d".repeat(40);
+        let asked = [first.clone(), tree, missing, "main".to_owned(), first.to_ascii_uppercase()];
+        assert_eq!(present(&f.repo, &asked), BTreeSet::from([first]));
+        assert!(present(&f.repo, &[]).is_empty());
     }
 }
