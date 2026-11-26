@@ -682,6 +682,7 @@ pub enum Action {
     DiffTool(crate::difftool::Action),
     Engine(crate::engine::Action),
     Cli(crate::cli::Action),
+    Updates(crate::updates::Action),
     CommitOptions(crate::commit_options::Action),
 }
 

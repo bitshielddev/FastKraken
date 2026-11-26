@@ -160,6 +160,10 @@ fn replay_origin() -> Option<&'static String> {
     REPLAY_ORIGIN.get().filter(|_| crate::acceptance::replaying())
 }
 
+pub(crate) fn replay_api() -> Option<String> {
+    replay_origin().cloned()
+}
+
 #[derive(Debug)]
 pub(crate) enum Error {
     Unauthorized(String),

@@ -8,7 +8,7 @@ use std::{
 
 pub(crate) struct Request {
     pub line: String,
-    headers: Vec<String>,
+    pub headers: Vec<String>,
     body: String,
 }
 
@@ -21,8 +21,14 @@ pub(crate) fn response(status: u16, body: Value) -> String {
 }
 
 pub(crate) fn mock(responses: Vec<String>, run: impl FnOnce(Client)) -> Vec<Request> {
+    let (base, handle) = listen(responses);
+    run(Client::for_test(&base));
+    handle.join().unwrap()
+}
+
+pub(crate) fn listen(responses: Vec<String>) -> (String, thread::JoinHandle<Vec<Request>>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let client = Client::for_test(&format!("http://{}", listener.local_addr().unwrap()));
+    let base = format!("http://{}", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
     let handle = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -74,8 +80,7 @@ pub(crate) fn mock(responses: Vec<String>, run: impl FnOnce(Client)) -> Vec<Requ
             })
             .collect()
     });
-    run(client);
-    handle.join().unwrap()
+    (base, handle)
 }
 
 #[test]

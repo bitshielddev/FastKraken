@@ -560,6 +560,14 @@ fn general<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             view::Action::Autostash(crate::autostash::Action::Toggle),
             cx,
         ))
+        .child(tick(
+            "preferences-check-updates",
+            chosen.check_updates,
+            crate::updates::AUTOMATIC_TITLE,
+            crate::updates::AUTOMATIC_HELP,
+            view::Action::Updates(crate::updates::Action::Automatically(!chosen.check_updates)),
+            cx,
+        ))
 }
 
 fn accounts<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
@@ -824,8 +832,8 @@ mod tests {
         assert_eq!(command.shortcut, Some("cmd-,"));
         assert_eq!(command.bar, Some(Bar::App));
         let app: Vec<_> = commands::in_bar(Bar::App).into_iter().map(|c| c.id).collect();
-        assert_eq!(app, ["app.about", "app.preferences", "app.install-command"]);
-        assert_eq!(commands::bar_index(Bar::App, "app.preferences"), Some(2));
+        assert_eq!(app, ["app.about", "app.updates", "app.preferences", "app.install-command"]);
+        assert_eq!(commands::bar_index(Bar::App, "app.preferences"), Some(3));
         let forget = commands::find("app.forget-credentials").expect("the forget command");
         assert_eq!(forget.bar, None);
     }

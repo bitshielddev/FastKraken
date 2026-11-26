@@ -310,6 +310,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::file_view::COMMANDS,
         crate::palette::COMMANDS,
         crate::help::COMMANDS,
+        crate::updates::COMMANDS,
         crate::preferences::COMMANDS,
         crate::appearance::COMMANDS,
         crate::identity::COMMANDS,
@@ -1137,7 +1138,7 @@ mod tests {
     #[test]
     fn the_menu_bar_lists_its_commands_by_group() {
         let ids = |bar| in_bar(bar).into_iter().map(|command| command.id).collect::<Vec<_>>();
-        assert_eq!(ids(Bar::App), ["app.about", "app.preferences", "app.install-command"]);
+        assert_eq!(ids(Bar::App), ["app.about", "app.updates", "app.preferences", "app.install-command"]);
         assert_eq!(
             ids(Bar::File),
             ["tab.new", "tab.close", "repo.clone", "repo.init", "repo.open", "repo.close", "repo.refresh", "repo.apply-patch", "repo.reveal", "repo.terminal", "repo.editor"]

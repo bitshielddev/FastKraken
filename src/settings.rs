@@ -95,6 +95,7 @@ pub(crate) struct Settings {
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) toolbar: crate::appearance::Toolbar,
     pub(crate) label_highlight: bool,
+    pub(crate) check_updates: bool,
 }
 
 impl Settings {
@@ -160,6 +161,7 @@ impl Default for Settings {
             notices: crate::appearance::Corner::default(),
             toolbar: crate::appearance::Toolbar::default(),
             label_highlight: true,
+            check_updates: false,
         }
     }
 }
@@ -180,6 +182,8 @@ pub(crate) struct Memory {
     pub(crate) recents: Vec<Recent>,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) clone_parent: Option<Vec<u8>>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) updates_checked: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -665,6 +669,7 @@ mod tests {
             repositories: Vec::new(),
             recents: Vec::new(),
             clone_parent: Some(b"/tmp/clones".to_vec()),
+            updates_checked: Some(1_795_000_200),
         };
         memory.add_recent(Path::new("/tmp/Oak"), 1_795_000_000);
         memory.add_recent(Path::new("/tmp/Cedar"), 1_795_000_100);
@@ -741,6 +746,7 @@ mod tests {
             notices: crate::appearance::Corner::TopRight,
             toolbar: crate::appearance::Toolbar::Icons,
             label_highlight: false,
+            check_updates: true,
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();
@@ -877,6 +883,7 @@ mod tests {
                 ],
                 "recents": [{"path": [47, 114], "name": "r", "opened": 5}, 7, {"path": "nope"}],
                 "clone_parent": "nope",
+                "updates_checked": "yesterday",
                 "tabs": ["one", "two"]}"#,
         )
         .unwrap();
@@ -894,6 +901,8 @@ mod tests {
         assert_eq!(memory.columns, Some(ColumnWidths::new(260., 320.)));
         assert_eq!(memory.recents, [Recent { path: b"/r".to_vec(), name: "r".into(), opened: 5 }]);
         assert_eq!(memory.clone_parent(), None);
+        assert_eq!(memory.updates_checked, None);
+        assert!(!settings.check_updates);
         assert_eq!(memory.window.as_ref().unwrap().mode, FrameMode::Windowed);
         assert_eq!(memory.repositories[0].closed, [Section::Tags]);
         assert_eq!(memory.repositories[0].folded, ["origin"]);

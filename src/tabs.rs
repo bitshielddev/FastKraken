@@ -356,6 +356,9 @@ impl Workspace {
         let mut desk = Self { tabs: Vec::new(), watching: Vec::new(), front: 0, saved: None };
         cx.observe_window_appearance(window, |_, window, cx| crate::appearance::system_changed(window.appearance(), cx))
             .detach();
+        if bench.is_none() {
+            crate::updates::arm(cx);
+        }
         desk.add(bench, cx);
         desk
     }

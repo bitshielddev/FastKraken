@@ -105,6 +105,7 @@ mod tag;
 mod tracking;
 mod theme;
 mod tools;
+mod updates;
 mod view;
 mod watch;
 mod worktree;
@@ -1562,7 +1563,7 @@ impl Tab {
                 find::dispatch(self, find::Action::Front, window, cx);
                 return;
             }
-            if self.ui.preferences.open() && !matches!(id, "app.palette" | "app.shortcuts" | "app.about") {
+            if self.ui.preferences.open() && !matches!(id, "app.palette" | "app.shortcuts" | "app.about" | "app.updates") {
                 preferences::dispatch(self, preferences::Action::Close, window, cx);
                 if id == "app.preferences" || closing {
                     return;
@@ -1620,6 +1621,7 @@ impl Tab {
                 | Action::TogglePanel
                 | Action::Tabs(_)
                 | Action::Cli(_)
+                | Action::Updates(_)
         );
         if self.ui.prompt.open() {
             let choosing = matches!(action, Action::Worktree(worktree::Action::ChooseFolder));
@@ -1870,6 +1872,7 @@ impl Tab {
             Action::Engine(action) => engine::dispatch(self, action, window, cx),
             Action::Tabs(action) => tabs::dispatch(self, action, window, cx),
             Action::Cli(action) => cli::dispatch(self, action, window, cx),
+            Action::Updates(action) => updates::dispatch(self, action, window, cx),
             Action::Palette(action) => palette::dispatch(self, action, window, cx),
             Action::ToggleSidebar => {
                 let hidden = !self.ui.sidebar_hidden;

@@ -794,7 +794,7 @@ impl Replay<'_> {
         self.until("sketches open", |tab| tab.ui.repo == "sketches").await?;
         let app: Vec<_> = commands::in_bar(commands::Bar::App).into_iter().map(|command| command.id).collect();
         let keys = commands::find("app.preferences").and_then(|command| command.shortcut);
-        if !app.starts_with(&["app.about", "app.preferences"]) || keys != Some("cmd-,") {
+        if !app.starts_with(&["app.about", "app.updates", "app.preferences"]) || keys != Some("cmd-,") {
             return Err(format!("The FastKraken menu lists {app:?}, and Preferences has the keys {keys:?}").into());
         }
         let (before, title) = self.tab.read_with(self.cx, |tab, cx| {

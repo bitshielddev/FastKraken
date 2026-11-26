@@ -352,8 +352,8 @@ mod tests {
     #[test]
     fn install_is_in_the_fastkraken_menu_after_preferences() {
         let ids: Vec<_> = crate::commands::in_bar(Bar::App).into_iter().map(|command| command.id).collect();
-        assert_eq!(ids, ["app.about", "app.preferences", "app.install-command"]);
-        assert_eq!(crate::commands::bar_index(Bar::App, "app.install-command"), Some(3));
+        assert_eq!(ids, ["app.about", "app.updates", "app.preferences", "app.install-command"]);
+        assert_eq!(crate::commands::bar_index(Bar::App, "app.install-command"), Some(4));
         let command = crate::commands::find("app.install-command").unwrap();
         assert_eq!(crate::commands::title_case("Install command line tool…"), "Install Command Line Tool…");
         assert_eq!(command.shortcut, None);
