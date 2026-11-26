@@ -592,7 +592,7 @@ pub(crate) fn start_on(
     stash: bool,
     cx: &mut Context<Tab>,
 ) {
-    if let Some(reason) = tab.ui.operation.refusal() {
+    if let Some(reason) = crate::commands::operating(&tab.ui) {
         tab.ui.notices.show(crate::notice::Notice::new(crate::view::Tone::Info, reason, ""));
         cx.notify();
         return;

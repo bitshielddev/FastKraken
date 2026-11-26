@@ -22,6 +22,7 @@ type Result<T> = std::result::Result<T, String>;
 pub(crate) const GIT: &str = "git";
 const OWN: &str = "fastkraken";
 const IN_A_TERMINAL: &[&str] = &["vimdiff", "nvimdiff", "emerge"];
+const APART: &str = "/usr/bin/env -u GIT_INDEX_FILE";
 
 pub(crate) struct Tool {
     pub(crate) known: Known,
@@ -134,9 +135,9 @@ pub(crate) fn runs(mode: Mode, found: &Found) -> Option<String> {
     let program = keys::quoted(&found.place().to_string_lossy());
     Some(match mode {
         Mode::Diff => format!("{program} {}", tool.diff),
-        Mode::Merge if tool.trusted => format!("{program} {}", tool.merge),
+        Mode::Merge if tool.trusted => format!("{APART} {program} {}", tool.merge),
         Mode::Merge => format!(
-            r#"before=$(git hash-object -- "$MERGED"); {program} {} && test "$(git hash-object -- "$MERGED")" != "$before""#,
+            r#"before=$(git hash-object -- "$MERGED"); {APART} {program} {} && test "$(git hash-object -- "$MERGED")" != "$before""#,
             tool.merge
         ),
     })
@@ -147,6 +148,7 @@ pub(crate) struct Call {
     pub(crate) mode: Mode,
     pub(crate) name: String,
     pub(crate) settings: Vec<String>,
+    pub(crate) own: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,6 +159,7 @@ pub(crate) enum Refusal {
 
 pub(crate) fn call(mode: Mode, pick: Option<&Pick>) -> std::result::Result<Call, Refusal> {
     let mut settings = Vec::new();
+    let own = matches!(pick, Some(Pick::Found(_)));
     let name = match pick {
         None => {
             return Err(Refusal::Choose(format!(
@@ -187,7 +190,7 @@ pub(crate) fn call(mode: Mode, pick: Option<&Pick>) -> std::result::Result<Call,
         settings.push("mergetool.keepBackup=false".to_owned());
         settings.push("mergetool.writeToTemp=true".to_owned());
     }
-    Ok(Call { mode, name, settings })
+    Ok(Call { mode, name, settings, own })
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -386,6 +389,18 @@ impl State {
         if let Some(at) = self.open.iter().position(|(open, shown)| *open == mode && shown == path) {
             self.open.remove(at);
         }
+    }
+
+    pub(crate) fn held(&self) -> Option<String> {
+        self.open.iter().find(|(open, _)| *open == Mode::Merge).map(|(_, path)| format!("Close the merge tool on {} first", named(path)))
+    }
+
+    pub(crate) fn holds(&self, action: &view::Action) -> Option<String> {
+        let moves = match action {
+            view::Action::Operation(action) => !matches!(action, crate::operation::Action::EndBisect),
+            action => crate::operation::disturbs(action),
+        };
+        if moves { self.held() } else { None }
     }
 }
 
@@ -689,6 +704,9 @@ fn open_merge(tab: &mut Tab, path: PathBuf, window: &mut Window, cx: &mut Contex
                 Ok(prepared) => prepared,
                 Err(refusal) => return not_ready(tab, Mode::Merge, &path, refusal, window, cx),
             };
+            if let Some(reason) = commands::busy(&tab.ui) {
+                return refuse(tab, reason, cx);
+            }
             if tab.ui.difftool.is_open(Mode::Merge, &path) {
                 return refuse(tab, format!("{name} is already open in the merge tool"), cx);
             }
@@ -697,7 +715,7 @@ fn open_merge(tab: &mut Tab, path: PathBuf, window: &mut Window, cx: &mut Contex
             let tool = prepared.call.name.clone();
             outside(
                 cx,
-                move || crate::conflict::merge_in_tool(&repo, &shown, &prepared.call.settings),
+                move || crate::conflict::merge_in_tool(&repo, &shown, &prepared.call),
                 move |tab, result, cx| {
                     tab.ui.difftool.close(Mode::Merge, &path);
                     cx.notify();
@@ -715,6 +733,11 @@ fn open_merge(tab: &mut Tab, path: PathBuf, window: &mut Window, cx: &mut Contex
                             Tone::Info,
                             format!("{name} is still in conflict"),
                             format!("{tool} closed without saving a merged file."),
+                        ),
+                        Ok(Tooled::Ended) => (
+                            Tone::Info,
+                            format!("{name} was not marked resolved"),
+                            format!("The operation in progress ended or moved on while {tool} was open."),
                         ),
                         Ok(Tooled::Stopped(said)) => return failed(tab, format!("{tool} did not merge {name}"), said, cx),
                         Err(error) => return failed(tab, format!("{name} did not open in the merge tool"), error, cx),
@@ -885,7 +908,7 @@ mod tests {
         let config = fs::read(f.repo.git_dir().join("config")).unwrap();
         let refs = f.git(&["for-each-ref"]);
         f.git(&["config", "--local", "mergetool.keepBackup", "true"]);
-        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &merge_call(&found).settings).unwrap();
+        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &merge_call(&found)).unwrap();
         assert_eq!(tooled, Tooled::Resolved);
         assert!(unmerged(&f, "ridge.txt").is_empty());
         assert_eq!(f.git(&["show", ":ridge.txt"]), b"agreed\n");
@@ -909,12 +932,12 @@ mod tests {
         let program = bench.script("smerge", "exit 0\n");
         let found = bench.found("smerge", &program);
         let before = unmerged(&f, "ridge.txt");
-        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &merge_call(&found).settings).unwrap();
+        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &merge_call(&found)).unwrap();
         assert_eq!(tooled, Tooled::Unchanged);
         assert_eq!(unmerged(&f, "ridge.txt"), before);
         assert_eq!(untracked(&f), "UU ridge.txt\n");
         let gone = bench.found("smerge", &bench.bin.join("missing-smerge"));
-        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &merge_call(&gone).settings).unwrap();
+        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &merge_call(&gone)).unwrap();
         match tooled {
             Tooled::Stopped(said) => assert!(said.contains("missing-smerge") && !said.contains("line "), "{said}"),
             other => panic!("A missing tool gave {other:?}"),
@@ -927,11 +950,11 @@ mod tests {
         let f = conflicted();
         let bench = Bench::new();
         let found = smerge_resolving(&bench, "agreed\\n");
-        let settings = merge_call(&found).settings;
+        let merging = merge_call(&found);
         let stale = shown(&f, "ridge.txt");
         f.git(&["checkout", "--theirs", "--", "ridge.txt"]);
         f.git(&["add", "--", "ridge.txt"]);
-        let err = crate::conflict::merge_in_tool(&f.repo, &stale, &settings).unwrap_err();
+        let err = crate::conflict::merge_in_tool(&f.repo, &stale, &merging).unwrap_err();
         assert_eq!(err, "ridge.txt is no longer in conflict.");
         f.git(&["update-index", "--unresolve", "--", "ridge.txt"]);
         let base = oid(&f, ":1:ridge.txt");
@@ -942,7 +965,7 @@ mod tests {
             child.wait().unwrap()
         });
         assert!(changed.unwrap().success());
-        let err = crate::conflict::merge_in_tool(&f.repo, &stale, &settings).unwrap_err();
+        let err = crate::conflict::merge_in_tool(&f.repo, &stale, &merging).unwrap_err();
         assert_eq!(err, "ridge.txt changed since the window showed it. Look at it again.");
         assert_eq!(bench.logged(), "");
         assert_eq!(fs::read_to_string(f.dir.join("ridge.txt")).unwrap(), "side\n");
@@ -964,11 +987,105 @@ mod tests {
         assert_eq!(picked, Some(Pick::Git("trailmerge".into())));
         let call = call(Mode::Merge, picked.as_ref()).unwrap();
         assert_eq!(call.settings, ["mergetool.keepBackup=false", "mergetool.writeToTemp=true"]);
-        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &call.settings).unwrap();
+        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &call).unwrap();
         assert_eq!(tooled, Tooled::Resolved);
         assert_eq!(f.git(&["show", ":ridge.txt"]), b"by git\n");
         assert_eq!(untracked(&f), "M  ridge.txt\n");
         assert_eq!(bench.logged(), "ridge.txt\n");
+    }
+
+    fn aborting(bench: &Bench) -> Found {
+        let body = "[ \"$1\" = mergetool ] || exit 2\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift 2;; *) shift;; esac; done\ngit merge --abort || exit 3\nprintf 'agreed\\n' > \"$out\"\n";
+        let program = bench.script("smerge", body);
+        bench.found("smerge", &program)
+    }
+
+    fn applied() -> Fixture {
+        let f = Fixture::new();
+        commit(&f, "trail.txt", "base\n", "Base");
+        write(&f, "trail.txt", "stashed\n");
+        f.git(&["stash", "push", "-q"]);
+        commit(&f, "trail.txt", "moved on\n", "Move on");
+        stops(&f, &["stash", "apply"]);
+        f
+    }
+
+    #[test]
+    fn a_merge_tool_still_open_when_the_merge_ends_stages_nothing_and_is_not_called_resolved() {
+        let f = conflicted();
+        let bench = Bench::new();
+        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &merge_call(&aborting(&bench))).unwrap();
+        assert_eq!(tooled, Tooled::Ended);
+        assert!(!f.repo.git_dir().join("MERGE_HEAD").exists());
+        assert_eq!(f.git(&["show", ":ridge.txt"]), b"main\n");
+        assert_eq!(fs::read_to_string(f.dir.join("ridge.txt")).unwrap(), "agreed\n");
+        assert_eq!(untracked(&f), " M ridge.txt\n");
+
+        let f = conflicted();
+        let program = bench.script("trail-merge", "git merge --abort || exit 3\nprintf 'by git\\n' > \"$1\"\n");
+        f.git(&["config", "--local", "merge.tool", "trailmerge"]);
+        f.git(&["config", "--local", "mergetool.trailmerge.cmd", &format!("{} \"$MERGED\"", keys::quoted(&program.to_string_lossy()))]);
+        f.git(&["config", "--local", "mergetool.trailmerge.trustExitCode", "true"]);
+        let git_s = call(Mode::Merge, Some(&Pick::Git("trailmerge".into()))).unwrap();
+        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "ridge.txt"), &git_s).unwrap();
+        assert_eq!(tooled, Tooled::Ended);
+        assert!(!f.repo.git_dir().join("MERGE_HEAD").exists());
+    }
+
+    #[test]
+    fn a_merge_tool_that_settles_the_last_conflict_of_an_applied_stash_is_called_resolved() {
+        let f = applied();
+        let bench = Bench::new();
+        let found = smerge_resolving(&bench, "agreed\n");
+        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "trail.txt"), &merge_call(&found)).unwrap();
+        assert_eq!(tooled, Tooled::Resolved);
+        assert_eq!(f.git(&["show", ":trail.txt"]), b"agreed\n");
+        assert!(snapshot(&f.repo).unwrap().is_none());
+
+        let f = applied();
+        let program = bench.script("trail-merge", "printf 'by git\\n' > \"$1\"\n");
+        f.git(&["config", "--local", "merge.tool", "trailmerge"]);
+        f.git(&["config", "--local", "mergetool.trailmerge.cmd", &format!("{} \"$MERGED\"", keys::quoted(&program.to_string_lossy()))]);
+        f.git(&["config", "--local", "mergetool.trailmerge.trustExitCode", "true"]);
+        let git_s = call(Mode::Merge, Some(&Pick::Git("trailmerge".into()))).unwrap();
+        let tooled = crate::conflict::merge_in_tool(&f.repo, &shown(&f, "trail.txt"), &git_s).unwrap();
+        assert_eq!(tooled, Tooled::Resolved);
+        assert_eq!(f.git(&["show", ":trail.txt"]), b"by git\n");
+        assert!(snapshot(&f.repo).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_open_merge_tool_holds_back_whatever_would_end_or_move_the_operation() {
+        use crate::operation::Action as O;
+        let mut state = State { diff: None, merge: None, configured: None, open: vec![(Mode::Diff, "camp.txt".into())], ticket: 0 };
+        assert_eq!(state.held(), None);
+        assert_eq!(state.holds(&view::Action::Operation(O::Abort)), None);
+        state.open.push((Mode::Merge, "ridge.txt".into()));
+        let held = Some("Close the merge tool on ridge.txt first".to_owned());
+        assert_eq!(state.held(), held);
+        for action in [
+            view::Action::Operation(O::Abort),
+            view::Action::Operation(O::Continue),
+            view::Action::Operation(O::Skip),
+            view::Action::Operation(O::KeepEmpty),
+            view::Action::Commit,
+            view::Action::Sync(crate::sync::Action::Pull),
+            view::Action::Refs(crate::refs::Action::Switch("topic".into())),
+            view::Action::Stash(crate::stash::Action::Save),
+        ] {
+            assert_eq!(state.holds(&action), held, "{action:?}");
+        }
+        for action in [
+            view::Action::Operation(O::EndBisect),
+            view::Action::Refresh,
+            view::Action::DiffTool(Action::Merge("camp.txt".into())),
+            view::Action::Select(Selection::Changes),
+            view::Action::Merge(crate::merge::Action::Open("camp.txt".into())),
+        ] {
+            assert_eq!(state.holds(&action), None, "{action:?}");
+        }
+        state.close(Mode::Merge, Path::new("ridge.txt"));
+        assert_eq!(state.held(), None);
     }
 
     fn sides_logged(bench: &Bench) -> Found {
@@ -1097,18 +1214,18 @@ mod tests {
         );
         let merge = call(Mode::Merge, Some(&Pick::Found(found))).unwrap();
         assert_eq!(merge.settings[0], "merge.tool=fastkraken-smerge");
-        assert!(merge.settings[1].starts_with(r#"mergetool.fastkraken-smerge.cmd=before=$(git hash-object -- "$MERGED"); '/Applications/Sublime Merge.app/"#));
+        assert!(merge.settings[1].starts_with(r#"mergetool.fastkraken-smerge.cmd=before=$(git hash-object -- "$MERGED"); /usr/bin/env -u GIT_INDEX_FILE '/Applications/Sublime Merge.app/"#));
         assert_eq!(&merge.settings[2..], ["mergetool.fastkraken-smerge.trustExitCode=true", "mergetool.keepBackup=false", "mergetool.writeToTemp=true"]);
         let kaleidoscope = Found { tool: &tool("kaleidoscope").unwrap().known, how: How::Program("/usr/local/bin/ksdiff".into()) };
         assert_eq!(
             runs(Mode::Merge, &kaleidoscope).unwrap(),
-            r#"/usr/local/bin/ksdiff --merge --output "$MERGED" --base "$BASE" -- "$LOCAL" --snapshot "$REMOTE" --snapshot"#
+            r#"/usr/bin/env -u GIT_INDEX_FILE /usr/local/bin/ksdiff --merge --output "$MERGED" --base "$BASE" -- "$LOCAL" --snapshot "$REMOTE" --snapshot"#
         );
         assert!(matches!(call(Mode::Diff, None), Err(Refusal::Choose(_))));
         assert_eq!(call(Mode::Merge, Some(&Pick::Unset)), Err(Refusal::Choose("Git has no merge tool set.".into())));
         assert!(matches!(call(Mode::Merge, Some(&Pick::Git("vimdiff3".into()))), Err(Refusal::Choose(_))));
         assert_eq!(call(Mode::Diff, Some(&Pick::Gone(&tool("p4merge").unwrap().known))), Err(Refusal::Failed("P4Merge is no longer installed.".into())));
-        assert_eq!(call(Mode::Diff, Some(&Pick::Git("meld".into()))).unwrap(), Call { mode: Mode::Diff, name: "meld".into(), settings: Vec::new() });
+        assert_eq!(call(Mode::Diff, Some(&Pick::Git("meld".into()))).unwrap(), Call { mode: Mode::Diff, name: "meld".into(), settings: Vec::new(), own: false });
     }
 
     #[test]

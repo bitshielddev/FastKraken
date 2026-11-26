@@ -1629,7 +1629,8 @@ impl Tab {
             return;
         }
         if !self.ui.prompt.open() && !self.ui.publish.open() && !chrome {
-            if let Err(reason) = operation::allows(self.ui.operation.kind(), &action) {
+            let refused = operation::allows(self.ui.operation.kind(), &action).map_err(str::to_owned).err();
+            if let Some(reason) = refused.or_else(|| self.ui.difftool.holds(&action)) {
                 self.ui.menu = None;
                 self.ui.notices.show(notice::Notice::new(Tone::Info, reason, ""));
                 cx.notify();

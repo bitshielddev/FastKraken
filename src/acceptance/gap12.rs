@@ -1546,6 +1546,18 @@ impl Replay<'_> {
         if disabled.as_deref() != Some("ridge.txt is already open in the merge tool") {
             return Err(format!("While the tool is open, the row reads disabled {disabled:?}").into());
         }
+        let held = "Close the merge tool on ridge.txt first";
+        let abort = self.tab.read_with(self.cx, |tab, cx| {
+            commands::listed(&tab.ui, &Target::Repo, &["repo.abort-operation"], cx).into_iter().map(|entry| entry.disabled).collect::<Vec<_>>()
+        })?;
+        if abort != [Some(held.to_owned())] {
+            return Err(format!("While the tool is open, Abort merge… reads disabled {abort:?}").into());
+        }
+        self.action(Action::Operation(crate::operation::Action::Abort))?;
+        let asked = self.tab.read_with(self.cx, |tab, _| (tab.ui.prompt.open(), tab.ui.notices.items().iter().any(|n| n.title == held)))?;
+        if asked != (false, true) {
+            return Err(format!("Abort while the tool is open gave a prompt and the notice {asked:?}").into());
+        }
         self.until("ridge.txt moved to Resolved", |tab| {
             !tab.ui.difftool.is_open(Mode::Merge, Path::new("ridge.txt"))
                 && tab.ui.operation.resolved().iter().any(|path| path == Path::new("ridge.txt"))

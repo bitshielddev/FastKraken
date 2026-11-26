@@ -376,7 +376,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
             return Availability::Hidden;
         }
         if ui.operation.continue_label().is_some() {
-            return Availability::unless(busy(ui).or_else(|| dialog(ui)).or_else(|| ui.operation.blocked()));
+            return Availability::unless(busy(ui).or_else(|| dialog(ui)).or_else(|| ui.operation.blocked()).or_else(|| ui.difftool.held()));
         }
         if ui.can_commit(cx) {
             return Availability::Enabled;

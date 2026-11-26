@@ -28,7 +28,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
     fn during(ui: &Ui, target: &crate::commands::Target, applies: impl FnOnce(&Snapshot) -> bool) -> Availability {
         match ui.operation.snapshot() {
             Some(snapshot) if on_repo(ui, target) && ui.operation.active() && applies(snapshot) => {
-                Availability::unless(busy(ui))
+                Availability::unless(busy(ui).or_else(|| ui.difftool.held()))
             }
             _ => Availability::Hidden,
         }
@@ -262,6 +262,10 @@ pub(crate) struct Id {
 }
 
 impl Id {
+    pub(crate) fn kind(&self) -> Kind {
+        self.kind
+    }
+
     #[cfg(test)]
     pub(crate) fn blank() -> Self {
         Self { kind: Kind::Merge, markers: Vec::new(), head: None, branch: None }
@@ -1186,10 +1190,14 @@ pub(crate) fn squash_resolved(squashed: &Picking, branch: &str, staged: bool) ->
 }
 
 pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::Result<(), &'static str> {
+    match kind.filter(|kind| kind.holds()) {
+        Some(kind) if disturbs(action) => Err(kind.refusal()),
+        _ => Ok(()),
+    }
+}
+
+pub(crate) fn disturbs(action: &view::Action) -> bool {
     use view::Action as A;
-    let Some(kind) = kind.filter(|kind| kind.holds()) else {
-        return Ok(());
-    };
     let allowed = match action {
         A::Open | A::Refresh | A::Operation(_) | A::Merge(_) | A::Conflict(_) | A::Prompt(_) => true,
         A::Select(_) | A::Compare(_) | A::Inspect(_) | A::Search(_) | A::Reveal(_) | A::Containing(_) | A::GraphView(_) | A::Pin(_) | A::Highlight(_) | A::Changes(_) | A::Columns(_) | A::Sidebar(_) | A::More | A::OpenDiff | A::CloseDiff | A::DiffMode(_) => true,
@@ -1306,7 +1314,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::Recover(_)
         | A::Address(_) => false,
     };
-    if allowed { Ok(()) } else { Err(kind.refusal()) }
+    !allowed
 }
 
 #[derive(Clone, Debug)]
@@ -1397,6 +1405,11 @@ fn abort_spec(shown: &Snapshot) -> prompt::Spec {
 pub(crate) fn confirm(tab: &mut Tab, ask: Ask, _: prompt::Answer, cx: &mut Context<Tab>) {
     match ask {
         Ask::Abort(shown) => {
+            if let Some(reason) = tab.ui.difftool.held() {
+                tab.ui.notices.show(Notice::new(Tone::Info, reason, ""));
+                cx.notify();
+                return;
+            }
             let (kept, stopped) = kept();
             tab.run_operation_or(
                 cx,
@@ -1581,7 +1594,12 @@ pub(crate) fn banner<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .grow(),
         )
         .when_some(action, |d, (id, label, action, danger)| {
-            let button = kit::btn(id, label).small().enabled(!ui.busy());
+            let held = danger.then(|| ui.difftool.held()).flatten();
+            let button = kit::btn(id, label).small().enabled(!ui.busy() && held.is_none());
+            let button = match held {
+                Some(reason) => button.tip(reason),
+                None => button,
+            };
             d.child(if danger { button.danger() } else { button }.on(action, cx))
         })
 }
@@ -1621,7 +1639,12 @@ fn mark_all_button<T: Desk>(ui: &Ui, cx: &Context<T>) -> Option<gpui::Stateful<D
 pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context<T>) -> Div {
     let ui = app.ui();
     let state = &ui.operation;
-    let ready = !ui.busy();
+    let held = ui.difftool.held();
+    let ready = !ui.busy() && held.is_none();
+    let tipped = |button: kit::Btn| match &held {
+        Some(reason) => button.tip(reason.clone()),
+        None => button,
+    };
     let snapshot = state.snapshot();
     let kind = state.kind();
     let heading = |title: &'static str, count: usize| {
@@ -1674,10 +1697,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
             .child(text)
     };
     let abort = state.abort_label().map(|label| {
-        kit::btn("abort-operation-panel", label)
-            .danger()
-            .wide()
-            .enabled(ready)
+        tipped(kit::btn("abort-operation-panel", label).danger().wide().enabled(ready))
             .on(view::Action::Operation(Action::Abort), cx)
     });
     let footer = match (kind, snapshot) {
@@ -1707,17 +1727,12 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
                     CONFLICT,
                 ))
                 .child(
-                    kit::btn("skip-commit", "Skip commit")
-                        .primary()
-                        .wide()
-                        .enabled(ready)
+                    tipped(kit::btn("skip-commit", "Skip commit").primary().wide().enabled(ready))
                         .on(view::Action::Operation(Action::Skip), cx),
                 )
                 .when(snapshot.message.is_some() && !snapshot.uncommitted, |d| {
                     d.child(
-                        kit::btn("keep-empty", "Keep as an empty commit")
-                            .wide()
-                            .enabled(ready)
+                        tipped(kit::btn("keep-empty", "Keep as an empty commit").wide().enabled(ready))
                             .on(view::Action::Operation(Action::KeepEmpty), cx),
                     )
                 })
@@ -1726,7 +1741,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
         (Some(kind), snapshot) => {
             let left = conflicted.len();
             let label = state.continue_label().unwrap_or("Continue");
-            let blocked = state.blocked();
+            let blocked = state.blocked().or_else(|| held.clone());
             let can_skip = snapshot.is_some_and(|s| s.can_skip);
             let uncommitted = snapshot.is_some_and(|s| s.uncommitted);
             footer
@@ -1765,9 +1780,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
                         .when(can_skip, |d| {
                             d.child(
                                 div().flex_1().child(
-                                    kit::btn("skip-commit", "Skip commit")
-                                        .wide()
-                                        .enabled(ready)
+                                    tipped(kit::btn("skip-commit", "Skip commit").wide().enabled(ready))
                                         .on(view::Action::Operation(Action::Skip), cx),
                                 ),
                             )

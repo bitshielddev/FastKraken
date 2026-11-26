@@ -110,7 +110,7 @@ pub(crate) fn networking(ui: &Ui) -> Option<String> {
 }
 
 pub(crate) fn operating(ui: &Ui) -> Option<String> {
-    ui.operation.refusal()
+    ui.operation.refusal().or_else(|| ui.difftool.held())
 }
 
 pub(crate) fn commit(target: &Target) -> Option<&str> {

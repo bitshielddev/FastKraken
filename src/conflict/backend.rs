@@ -44,7 +44,15 @@ pub(crate) fn named(path: &Path) -> String {
 }
 
 fn entries(repo: &Repository, which: &str, path: &Path) -> Result<Entries> {
-    let records = checked(repo.read_command().args(["ls-files", which, "-z", "--"]).arg(path))?;
+    entries_in(repo, None, which, path)
+}
+
+fn entries_in(repo: &Repository, index: Option<&Path>, which: &str, path: &Path) -> Result<Entries> {
+    let mut command = repo.read_command();
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let records = checked(command.args(["ls-files", which, "-z", "--"]).arg(path))?;
     Ok(operation::parse_stages(&records)?.remove(path).unwrap_or_default())
 }
 
@@ -227,14 +235,30 @@ pub(crate) enum Tooled {
     Resolved,
     Unchanged,
     Stopped(String),
+    Ended,
 }
 
-pub(crate) fn merge_in_tool(repo: &Repository, shown: &Shown, settings: &[String]) -> Result<Tooled> {
+pub(crate) fn merge_in_tool(repo: &Repository, shown: &Shown, call: &crate::difftool::Call) -> Result<Tooled> {
     expect(repo, shown)?;
-    let mut command = crate::difftool::command_with(repo, settings);
+    let scratch = call.own.then(tempfile::tempdir).transpose().map_err(|e| format!("Prepare the merge tool: {e}"))?;
+    let apart = scratch.as_ref().map(|dir| dir.path().join("index"));
+    let mut command = crate::difftool::command_with(repo, &call.settings);
+    if let Some(index) = &apart {
+        fs::copy(repo.git_dir().join("index"), index).map_err(|e| format!("Prepare the merge tool: {e}"))?;
+        command.env("GIT_INDEX_FILE", index);
+    }
     command.args(["mergetool", "--no-prompt", "--"]).arg(&shown.path);
     let output = crate::repository::run(&mut command).map_err(|e| format!("Run bundled Git: {e}"))?;
-    if is_none(&entries(repo, "--unmerged", &shown.path)?) {
+    let resolved = is_none(&entries_in(repo, apart.as_deref(), "--unmerged", &shown.path)?);
+    let by_tool = apart.is_none() && resolved && shown.id.kind() == operation::Kind::Applied;
+    if !by_tool && repo.expect_operation(&shown.id).is_err() {
+        return Ok(Tooled::Ended);
+    }
+    if resolved {
+        if apart.is_some() {
+            add(repo, &shown.path)?;
+            settled(repo, &shown.path)?;
+        }
         return Ok(Tooled::Resolved);
     }
     Ok(match crate::difftool::told(&output) {
