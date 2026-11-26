@@ -788,6 +788,7 @@ pub(crate) fn placeholder_text(ui: &Ui, renamed: bool) -> Option<String> {
         PatchState::Loading => "Loading diff…".to_owned(),
         PatchState::Text | PatchState::Truncated => return None,
         PatchState::Binary { old, new } => diff_doc::binary_text(*old, *new),
+        PatchState::Lfs { old, new } => crate::lfs::summary(old.as_ref(), new.as_ref()),
         PatchState::ModeOnly { old, new } => diff_doc::mode_only_text(*old, *new),
         PatchState::Unreadable(reason) => format!("This diff could not be shown. {reason}"),
         PatchState::Empty(Blank::EmptyFile) => diff_doc::EMPTY_FILE.to_owned(),

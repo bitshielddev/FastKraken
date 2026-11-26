@@ -270,9 +270,11 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
                     state.coauthors = details.coauthors;
                     state.body = details.body;
                     state.stats = details.stats;
+                    let paths = details.files.iter().map(|file| file.path.clone()).collect();
                     state.files.set(details.files);
                     tab.ui.diff_title = details.subject.clone();
                     state.subject = Some(details.subject.clone());
+                    crate::lfs::listed(tab, crate::lfs::Source::Tree(selected_oid.clone()), paths, cx);
                     let body = tab.ui.inspection.body.clone();
                     show_message(tab, &details.subject, &body, cx);
                     open_waiting(tab, cx);
@@ -623,6 +625,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             let state = &ui.inspection;
             let cursor = ui.navigate.file_cursor(ui);
             let mode = ui.file_list.mode;
+            let lfs_tree = state.oid.clone().map(crate::lfs::Source::Tree);
             range
                 .filter_map(|at| {
                     let (i, depth) = match rows.get(at)? {
@@ -653,6 +656,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                 file.from.as_deref(),
                                 mode,
                             ))
+                            .when(lfs_tree.as_ref().is_some_and(|tree| ui.lfs.marked(tree, &file.path)), |d| d.child(crate::lfs::badge()))
                             .when_some(stat, |d, (added, deleted)| {
                                 d.child(
                                     div()

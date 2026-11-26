@@ -624,6 +624,16 @@ fn words(cause: &Cause, host: &str, remote: &str, about: &About) -> (String, Str
             format!("Git could not find {program}, which signs your commits. {ON_THE_PATH}"),
             retry(),
         ),
+        Cause::NotFound { hook, command: Some(command) } if command == "git-lfs" => (
+            format!("{} could not find Git LFS", hook.as_deref().unwrap_or("Git")),
+            format!("{} {ON_THE_PATH}", crate::lfs::NOT_INSTALLED),
+            std::iter::once((
+                SharedString::from(crate::lfs::INSTALL_LABEL),
+                view::Action::Handoff(crate::handoff::Action::OpenUrl(crate::lfs::INSTALL_PAGE.to_owned())),
+            ))
+            .chain(retry())
+            .collect(),
+        ),
         Cause::NotFound { hook, command: Some(command) } => (
             format!("{} could not find {command}", hook.as_deref().unwrap_or("Git")),
             format!("{command} is not in any folder on the PATH your login shell sets up. {ON_THE_PATH}"),
@@ -895,6 +905,7 @@ mod tests {
     const HOOK_SHEBANG: &str = "fatal: cannot exec '.git/hooks/pre-commit': No such file or directory";
     const LFS_HOOK: &str = "\nThis repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'pre-push' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks').\n\nerror: failed to push some refs to '../b.git'";
     const LFS_FILTER: &str = "git-lfs filter-process: git-lfs: command not found\nerror: could not read greeting from subprocess 'git-lfs filter-process'\nerror: initialization for subprocess 'git-lfs filter-process' failed\nfatal: x.bin: clean filter 'lfs' failed";
+    const LFS_SMUDGE: &str = "git-lfs smudge -- 'a.bin': git-lfs: command not found\nerror: external filter 'git-lfs smudge -- %f' failed 127\nerror: external filter 'git-lfs smudge -- %f' failed\nfatal: a.bin: smudge filter lfs failed";
     const SSH_COMMAND: &str = "sh: ssh-with-agent: command not found\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.";
     const GPG_MISSING: &str = "error: cannot run gpg: No such file or directory\nerror: gpg failed to sign the data:\n(no gpg output)\nfatal: failed to write commit object";
     const SSH_SIGNER_MISSING: &str = "error: cannot run nokeygen: No such file or directory\nerror: \nfatal: failed to write commit object";
@@ -965,6 +976,7 @@ mod tests {
             (HOOK_SHEBANG, Cause::NotFound { hook: Some("pre-commit".into()), command: None }),
             (LFS_HOOK, Cause::NotFound { hook: Some("pre-push".into()), command: Some("git-lfs".into()) }),
             (LFS_FILTER, Cause::NotFound { hook: None, command: Some("git-lfs".into()) }),
+            (LFS_SMUDGE, Cause::NotFound { hook: None, command: Some("git-lfs".into()) }),
             (SSH_COMMAND, Cause::NotFound { hook: None, command: Some("ssh-with-agent".into()) }),
             (NO_PUSH_DESTINATION, Cause::NoRemote),
             (NO_SUCH_REMOTE, Cause::NoRemote),
@@ -1286,8 +1298,14 @@ mod tests {
         assert!(missing.detail.starts_with("Commit failed. npx is not in any folder on the PATH your login shell sets up."), "{}", missing.detail);
         assert_eq!(offers(&missing), ["Retry"]);
         assert_eq!(missing.output.as_deref(), Some(HOOK_SH));
-        assert_eq!(shown("Push Failed", LFS_HOOK, &about("origin")).title, "pre-push could not find git-lfs");
-        assert_eq!(shown("Stage Failed", LFS_FILTER, &About::default()).title, "Git could not find git-lfs");
+        assert_eq!(shown("Push Failed", LFS_HOOK, &about("origin")).title, "pre-push could not find Git LFS");
+        let filter = shown("Stage Failed", LFS_FILTER, &About { again: Some(view::Action::StageAll), ..About::default() });
+        assert_eq!(filter.title, "Git could not find Git LFS");
+        assert!(filter.detail.contains(crate::lfs::NOT_INSTALLED), "{}", filter.detail);
+        assert_eq!(offers(&filter), [crate::lfs::INSTALL_LABEL, "Retry"]);
+        assert!(matches!(&filter.actions[0].1, view::Action::Handoff(crate::handoff::Action::OpenUrl(url)) if url == crate::lfs::INSTALL_PAGE));
+        let checkout = shown("Switch Failed", LFS_SMUDGE, &About::default());
+        assert_eq!((checkout.title.as_str(), offers(&checkout)), ("Git could not find Git LFS", vec![crate::lfs::INSTALL_LABEL.to_owned()]));
         assert_eq!(shown("Fetch Failed", SSH_COMMAND, &about("origin")).title, "Git could not find ssh-with-agent");
         assert_eq!(shown("Commit Failed", HOOK_ENV, &commit).title, "Git could not find node");
         let shebang = shown("Commit Failed", HOOK_SHEBANG, &commit);

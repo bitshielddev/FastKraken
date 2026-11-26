@@ -1226,7 +1226,8 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::MenuHover(_)
         | A::Navigate(_)
         | A::Journal(_)
-        | A::Worktree(_) => true,
+        | A::Worktree(_)
+        | A::Lfs(_) => true,
         A::Submodule(action) => matches!(
             action,
             crate::submodule::Action::Open(_)

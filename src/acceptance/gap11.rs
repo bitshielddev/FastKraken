@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     commands::{self, Availability, Target},
     commands::Side,
-    journal, notice,
+    journal, lfs, notice,
     prompt::{self, Stop},
     refs::{Section, SideRow},
     submodule, sync, worktree,
@@ -22,6 +22,8 @@ const BASE_CAMP: &str = "Base-camp";
 const BASE_ATLAS: &str = "Base-atlas";
 const BASE_MIRROR: &str = "Base-atlas-mirror.git";
 const ATLAS: &str = "vendor/atlas";
+const STUDIO: &str = "Lfs-studio";
+const COVER: &str = "art/cover.psd";
 
 fn path(path: &Path) -> Result<&str> {
     path.to_str().ok_or_else(|| format!("{} is not UTF-8", path.display()).into())
@@ -49,7 +51,8 @@ impl Replay<'_> {
         let (summit, maps) = self.a_submodule_with_new_commits(dir).await?;
         self.update_a_submodule(&summit).await?;
         self.pull_a_moved_submodule(dir, &summit, &maps).await?;
-        self.add_and_remove_a_submodule(dir).await
+        self.add_and_remove_a_submodule(dir).await?;
+        self.lfs_without_the_helper(dir).await
     }
 
     async fn until_tab_count(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
@@ -1193,6 +1196,114 @@ impl Replay<'_> {
             return Err(format!("Undo after removing a submodule reads {undo:?}").into());
         }
         git_is(&atlas, &["rev-list", "--count", "HEAD"], "1\n")?;
+        self.pass();
+        Ok(())
+    }
+
+    fn lfs_strips(&mut self) -> Result<(bool, bool)> {
+        Ok(self.tab.update(self.cx, |tab, _, cx| (crate::lfs::strip(&*tab, cx).is_some(), crate::submodule::strip(&*tab, cx).is_some()))?)
+    }
+
+    async fn lfs_without_the_helper(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1109");
+        let pointer = |digit: char, size: u64| {
+            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {size}\n", digit.to_string().repeat(64))
+        };
+        let root = init(dir, STUDIO)?;
+        fs::write(root.join(".gitattributes"), "*.psd filter=lfs diff=lfs merge=lfs -text\n")?;
+        fs::write(root.join("readme.txt"), "Studio notes\n")?;
+        fs::create_dir(root.join("art"))?;
+        fs::write(root.join(COVER), pointer('a', 12_400_000))?;
+        git(&root, &["add", "--", ".gitattributes", "readme.txt", COVER])?;
+        git(&root, &["commit", "-qm", "Add the cover"])?;
+        let first = oid(&root, "HEAD")?;
+        git(&root, &["branch", "proof"])?;
+        git(&root, &["switch", "-q", "proof"])?;
+        record(&root, COVER, &pointer('d', 14_000_000), "Proof the cover")?;
+        git(&root, &["switch", "-q", "main"])?;
+        fs::write(root.join(COVER), pointer('c', 13_100_000))?;
+
+        self.open(&root)?;
+        self.until("Lfs-studio open with the cover changed", |tab| {
+            tab.ui.repo == STUDIO && tab.ui.history.len() == 2 && files(tab, &[], &[COVER]) && tab.ui.head.as_deref() == Some(first.as_str())
+        })
+        .await?;
+        self.until("the missing helper found out", |tab| tab.ui.lfs.used && tab.ui.lfs.helper.is_some()).await?;
+        let state = self.tab.read_with(self.cx, |tab, _| {
+            let lfs = &tab.ui.lfs;
+            (lfs.helper.clone(), lfs.strip_shown(), lfs.strip_text(), lfs.marked(&lfs::Source::Working, Path::new(COVER)))
+        })?;
+        let text = "This repository stores large files with Git LFS, which is not installed on this Mac. Those files will appear as small text pointers.";
+        if state != (Some(None), true, text.to_owned(), true) {
+            return Err(format!("Without the helper, the LFS state reads {state:?}").into());
+        }
+        if self.lfs_strips()? != (true, false) {
+            return Err(format!("The strips drawn are {:?}", self.lfs_strips()?).into());
+        }
+
+        self.action(Action::Select(file(COVER, false)))?;
+        self.until("the cover's pointer diff", |tab| !tab.ui.loading_diff() && tab.diff.is_some()).await?;
+        let shown = self.tab.read_with(self.cx, |tab, _| (view::diff_placeholder(&tab.ui, false), tab.ui.diff.lines.len()))?;
+        let sizes = format!("LFS object · 12.4 MB → 13.1 MB\nsha256 {} → {}", "a".repeat(12), "c".repeat(12));
+        if shown != (Some(sizes.clone()), 0) {
+            return Err(format!("The cover's diff reads {shown:?}").into());
+        }
+
+        self.select_commit(&first).await?;
+        self.open_file(COVER).await?;
+        self.until("the cover marked in the commit's files", |tab| tab.ui.lfs.marked(&lfs::Source::Tree(first.clone()), Path::new(COVER))).await?;
+        let shown = self.tab.read_with(self.cx, |tab, _| {
+            (view::diff_placeholder(&tab.ui, false), tab.ui.lfs.marked(&lfs::Source::Tree(first.clone()), Path::new("readme.txt")))
+        })?;
+        let added = format!("LFS object added · 12.4 MB\nsha256 {}", "a".repeat(12));
+        if shown != (Some(added), false) {
+            return Err(format!("The cover in the first commit reads {shown:?}").into());
+        }
+
+        let opened = crate::handoff::opened().len();
+        self.action(Action::Handoff(crate::handoff::Action::OpenUrl(lfs::INSTALL_PAGE.to_owned())))?;
+        if crate::handoff::opened()[opened..] != [lfs::INSTALL_PAGE.to_owned()] {
+            return Err(format!("The installation page opened {:?}", crate::handoff::opened()).into());
+        }
+        self.action(Action::Lfs(lfs::Action::CheckAgain))?;
+        self.until_said("Git LFS is still not found. Install it, or add its folder to PATH in your shell's login files, then check again.").await?;
+        if self.lfs_strips()? != (true, false) {
+            return Err("Checking again took the strip away".into());
+        }
+        self.action(Action::Lfs(lfs::Action::Dismiss))?;
+        if self.lfs_strips()? != (false, false) {
+            return Err("Dismissing left the strip".into());
+        }
+        fs::write(root.join("readme.txt"), "Studio notes, revised\n")?;
+        self.until("the revised notes listed", |tab| files(tab, &[], &[COVER, "readme.txt"])).await?;
+        self.action(Action::Refresh)?;
+        self.until("the refresh settled", |tab| files(tab, &[], &[COVER, "readme.txt"]) && tab.ui.lfs.used).await?;
+        if self.lfs_strips()? != (false, false) {
+            return Err("The strip came back after a refresh".into());
+        }
+
+        git(&root, &["checkout", "-q", "--", COVER, "readme.txt"])?;
+        self.until("the changes gone", |tab| tab.ui.files.is_empty()).await?;
+        for (key, value) in [
+            ("filter.lfs.process", "git-lfs filter-process"),
+            ("filter.lfs.smudge", "git-lfs smudge -- %f"),
+            ("filter.lfs.clean", "git-lfs clean -- %f"),
+            ("filter.lfs.required", "true"),
+        ] {
+            git(&root, &["config", "--local", key, value])?;
+        }
+        self.ref_action(refs::Action::Switch("proof".into()))?;
+        self.until("the checkout's failure explained", |tab| {
+            !tab.ui.busy() && tab.ui.notices.newest().is_some_and(|notice| notice.title == "Git could not find Git LFS")
+        })
+        .await?;
+        let said = self.said()?.ok_or("The failure went away")?;
+        let output = self.tab.read_with(self.cx, |tab, _| tab.ui.notices.newest().and_then(|notice| notice.output.clone()))?.unwrap_or_default();
+        if !said.2.contains(lfs::NOT_INSTALLED) || said.3 != [lfs::INSTALL_LABEL, "Retry"] || !output.contains("git-lfs: command not found") {
+            return Err(format!("The failed checkout says {said:?} with {output:?}").into());
+        }
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{first}\n"))?;
         self.pass();
         Ok(())
     }

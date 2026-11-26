@@ -1434,7 +1434,9 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
             }
             match result {
                 Ok(files) => {
+                    let paths = files.iter().map(|file| file.path.clone()).collect();
                     tab.ui.stash.files.set(files);
+                    crate::lfs::listed(tab, crate::lfs::Source::Tree(selected.clone()), paths, cx);
                     if let Some(path) = tab.ui.stash.opening.take() {
                         open_file(tab, path, cx);
                     }
@@ -1888,6 +1890,7 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 return Vec::new();
             };
             let mode = app.ui().file_list.mode;
+            let lfs_tree = Some(crate::lfs::Source::Tree(stash.clone()));
             range
                 .filter_map(|at| {
                     let ui = app.ui();
@@ -1932,6 +1935,7 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                 file.from.as_deref(),
                                 mode,
                             ))
+                            .when(lfs_tree.as_ref().is_some_and(|tree| ui.lfs.marked(tree, &file.path)), |d| d.child(crate::lfs::badge()))
                             .into_any_element(),
                     )
                 })

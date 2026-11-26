@@ -483,10 +483,14 @@ fn load(tab: &mut Tab, cx: &mut Context<Tab>) {
             match result {
                 Ok((start, files)) => {
                     state.fork = since_fork.then_some(start);
+                    let paths = files.iter().map(|file| file.path.clone()).collect();
                     state.files.set(files);
                     if state.path.as_ref().is_some_and(|path| !state.files.iter().any(|file| &file.path == path)) {
                         state.path = None;
                         tab.ui.diff_open = false;
+                    }
+                    if let Some(source) = crate::lfs::compared_source(&tab.ui) {
+                        crate::lfs::listed(tab, source, paths, cx);
                     }
                     if let Some(path) = opening {
                         open_file(tab, path, cx);
@@ -809,6 +813,7 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             let state = &ui.compare;
             let mode = ui.file_list.mode;
             let side = Which::Compare.side(ui);
+            let lfs_source = crate::lfs::compared_source(ui);
             range
                 .filter_map(|at| {
                     let (i, depth) = match rows.get(at)? {
@@ -826,6 +831,7 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             .pr_3()
                             .gap_2()
                             .child(file_list::label(("compared-file-label", i), file.status, &file.path, file.from.as_deref(), mode))
+                            .when(lfs_source.as_ref().is_some_and(|source| ui.lfs.marked(source, &file.path)), |d| d.child(crate::lfs::badge()))
                             .on_click(cx.listener(move |app, _, w, cx| {
                                 app.dispatch(view::Action::Compare(Action::OpenFile(path.clone())), w, cx)
                             }))

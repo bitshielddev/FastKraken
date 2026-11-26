@@ -46,6 +46,7 @@ pub(crate) enum PatchState {
     Text,
     Empty(Blank),
     Binary { old: Blob, new: Blob },
+    Lfs { old: Option<crate::lfs::Pointer>, new: Option<crate::lfs::Pointer> },
     ModeOnly { old: u32, new: u32 },
     Truncated,
     Unreadable(String),
@@ -456,6 +457,18 @@ impl DiffDoc {
 
     pub(crate) fn text(&self, line: &Line) -> &str {
         &self.text[line.text.clone()]
+    }
+
+    pub(crate) fn replace_with(&mut self, state: PatchState) {
+        self.lines.clear();
+        self.hunks.clear();
+        self.text.clear();
+        self.stageable = false;
+        self.shortened = false;
+        for file in &mut self.files {
+            file.rows = 0..0;
+        }
+        self.state = state;
     }
 
     pub(crate) fn code(&self, line: &Line) -> &str {

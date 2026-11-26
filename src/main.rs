@@ -50,6 +50,7 @@ mod inspection;
 mod jobs;
 mod journal;
 mod kit;
+mod lfs;
 mod line_patch;
 mod lines;
 mod merge;
@@ -549,6 +550,7 @@ impl Tab {
                         blame::status_changed(tab, cx);
                         browse::status_changed(tab, cx);
                         submodule::status_changed(tab, cx);
+                        lfs::status_changed(tab, cx);
                         if let Some(Selection::File { path, staged }) = tab.ui.selection.clone() {
                             if tab
                                 .ui
@@ -759,7 +761,7 @@ impl Tab {
                     };
                     (repo.object_sizes(&blobs).unwrap_or_default(), working_size)
                 };
-                let doc = diff_doc::DiffDoc::build(&diff_doc::Source {
+                let mut doc = diff_doc::DiffDoc::build(&diff_doc::Source {
                     text: &diff.text,
                     stageable: diff.hunks_stageable() && matches!(selection, Selection::File { .. }),
                     truncated: diff.truncated,
@@ -772,7 +774,10 @@ impl Tab {
                     let working = file_view::working_root(&doc, &repo.root);
                     (doc, image, working)
                 } else {
-                    let image = image_diff::wanted(&doc, &selection, &repo.root);
+                    let image = match lfs::recognise(&repo, &mut doc, &selection) {
+                        Some(image) => image,
+                        None => image_diff::wanted(&doc, &selection, &repo.root),
+                    };
                     (doc, image, syntax::working_root(&repo, &selection))
                 };
                 let layout = DiffLayout::new(&doc, tab_width);
@@ -1709,6 +1714,7 @@ impl Tab {
             Action::Journal(action) => journal::dispatch(self, action, window, cx),
             Action::Worktree(action) => worktree::dispatch(self, action, window, cx),
             Action::Submodule(action) => submodule::dispatch(self, action, cx),
+            Action::Lfs(action) => lfs::dispatch(self, action, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
             Action::Rewrite(action) => rewrite::dispatch(self, action, window, cx),

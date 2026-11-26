@@ -603,6 +603,7 @@ pub enum Action {
     Journal(crate::journal::Action),
     Worktree(crate::worktree::Action),
     Submodule(crate::submodule::Action),
+    Lfs(crate::lfs::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
     Rewrite(crate::rewrite::Action),
@@ -792,6 +793,7 @@ pub struct Ui {
     pub(crate) journal: crate::journal::State,
     pub(crate) worktree: crate::worktree::State,
     pub(crate) submodule: crate::submodule::State,
+    pub(crate) lfs: crate::lfs::State,
     pub(crate) rebase_editor: crate::rebase_editor::State,
     pub(crate) chrome_drawn: bool,
 }
@@ -894,6 +896,7 @@ impl Ui {
             journal: Default::default(),
             worktree: Default::default(),
             submodule: Default::default(),
+            lfs: Default::default(),
             rebase_editor: Default::default(),
             chrome_drawn: false,
             diff_layout: DiffLayout::default(),
@@ -2757,6 +2760,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             }),
                         )
                         .child(label)
+                        .when(ui.lfs.marked(&crate::lfs::Source::Working, &f.path), |d| d.child(crate::lfs::badge()))
                         .children(f.submodule.map(|flags| crate::submodule::row_marks(flags, f.staged)))
                         .child(actions)
                         .into_any_element()
@@ -3438,6 +3442,7 @@ pub fn render<T: Desk>(
                 .flex_col()
                 .when(ui.operation.kind().is_some(), |d| d.child(crate::operation::banner(app, cx)))
                 .children(crate::submodule::strip(app, cx))
+                .children(crate::lfs::strip(app, cx))
                 .child(columns),
         )
     };
