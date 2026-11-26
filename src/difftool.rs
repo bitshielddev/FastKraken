@@ -229,6 +229,7 @@ pub(crate) enum Sides {
     Unstaged,
     Staged,
     Commit(String),
+    Stash(String),
     Between { from: Rev, to: Rev, since_fork: bool },
 }
 
@@ -248,11 +249,27 @@ fn parent_of(repo: &Repository, oid: &str) -> Result<String> {
     }
 }
 
-pub(crate) fn ends(repo: &Repository, sides: &Sides) -> Result<Vec<String>> {
+fn holds(repo: &Repository, spec: String) -> Result<bool> {
+    let output = repository::run(repo.read_command().args(["rev-parse", "--verify", "--quiet", "--end-of-options"]).arg(spec))
+        .map_err(|e| format!("Run bundled Git: {e}"))?;
+    Ok(output.status.success())
+}
+
+fn stash_ends(repo: &Repository, oid: &str, path: &Path) -> Result<Vec<String>> {
+    let base = parent_of(repo, oid)?;
+    let name = path.to_string_lossy();
+    if !holds(repo, format!("{oid}:{name}"))? && holds(repo, format!("{oid}^3:{name}"))? {
+        return Ok(vec![crate::compare::empty_tree_like(oid), format!("{oid}^3")]);
+    }
+    Ok(vec![base, oid.to_owned()])
+}
+
+pub(crate) fn ends(repo: &Repository, sides: &Sides, path: &Path) -> Result<Vec<String>> {
     Ok(match sides {
         Sides::Unstaged => Vec::new(),
         Sides::Staged => vec!["--cached".to_owned()],
         Sides::Commit(oid) => vec![parent_of(repo, oid)?, oid.clone()],
+        Sides::Stash(oid) => stash_ends(repo, oid, path)?,
         Sides::Between { from, to, since_fork } => {
             let (from, to) = repo.compared_ends(from, to, *since_fork)?;
             std::iter::once(from).chain(to).collect()
@@ -264,9 +281,9 @@ fn named(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn changed(repo: &Repository, ends: &[String], path: &Path) -> Result<bool> {
+fn changed(repo: &Repository, ends: &[String], paths: &[&Path]) -> Result<bool> {
     let output = repository::run(
-        repo.read_command().args(["diff", "--quiet", "--no-ext-diff", "--no-textconv"]).args(ends).arg("--").arg(path),
+        repo.read_command().args(["diff", "--quiet", "--no-ext-diff", "--no-textconv"]).args(ends).arg("--").args(paths),
     )
     .map_err(|e| format!("Run bundled Git: {e}"))?;
     match output.status.code() {
@@ -302,13 +319,21 @@ pub(crate) fn command_with(repo: &Repository, settings: &[String]) -> Command {
     command
 }
 
-pub(crate) fn diff(repo: &Repository, call: &Call, ends: &[String], path: &Path) -> Result<()> {
+pub(crate) fn diff(repo: &Repository, call: &Call, ends: &[String], from: Option<&Path>, path: &Path) -> Result<()> {
     validate_path(path)?;
-    if !changed(repo, ends, path)? {
+    if let Some(from) = from {
+        validate_path(from)?;
+    }
+    let paths: Vec<&Path> = from.into_iter().chain([path]).collect();
+    if !changed(repo, ends, &paths)? {
         return Err(format!("{} has no changes to compare any more.", named(path)));
     }
     let mut command = command_with(repo, &call.settings);
-    command.args(["difftool", "--no-prompt", "--trust-exit-code"]).args(ends).arg("--").arg(path);
+    command.args(["difftool", "--no-prompt", "--trust-exit-code"]);
+    if from.is_some() {
+        command.arg("--find-renames");
+    }
+    command.args(ends).arg("--").args(&paths);
     let output = repository::run(&mut command).map_err(|e| format!("Run bundled Git: {e}"))?;
     if output.status.success() {
         Ok(())
@@ -319,7 +344,7 @@ pub(crate) fn diff(repo: &Repository, call: &Call, ends: &[String], path: &Path)
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
-    Diff { path: PathBuf, sides: Sides },
+    Diff { path: PathBuf, from: Option<PathBuf>, sides: Sides },
     Merge(PathBuf),
     Choose(Mode, String),
 }
@@ -427,7 +452,8 @@ fn aim(ui: &Ui, target: &Target) -> Option<(Mode, std::result::Result<Action, St
                     }
                     if staged { Sides::Staged } else { Sides::Unstaged }
                 }
-                Side::Commit(oid) | Side::Stash(oid) => Sides::Commit(oid.clone()),
+                Side::Commit(oid) => Sides::Commit(oid.clone()),
+                Side::Stash(oid) => Sides::Stash(oid.clone()),
                 Side::Compare(to) => match &ui.selection {
                     Some(Selection::Compare { from, to: shown, since_fork }) if shown == to => {
                         Sides::Between { from: from.clone(), to: to.clone(), since_fork: *since_fork }
@@ -435,7 +461,14 @@ fn aim(ui: &Ui, target: &Target) -> Option<(Mode, std::result::Result<Action, St
                     _ => return None,
                 },
             };
-            Some((Mode::Diff, Ok(Action::Diff { path: path.clone(), sides })))
+            let from = match side {
+                Side::Unstaged => view::renamed_row_origin(&ui.files, path, false),
+                Side::Staged => view::renamed_row_origin(&ui.files, path, true),
+                Side::Commit(oid) => ui.inspection.from(oid, path),
+                Side::Stash(oid) => ui.stash.from(oid, path),
+                Side::Compare(_) => ui.compare.from(path),
+            };
+            Some((Mode::Diff, Ok(Action::Diff { path: path.clone(), from, sides })))
         }
         _ => None,
     }
@@ -545,7 +578,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             });
             cx.notify();
         }
-        Action::Diff { path, sides } => open_diff(tab, path, sides, window, cx),
+        Action::Diff { path, from, sides } => open_diff(tab, path, from, sides, window, cx),
         Action::Merge(path) => open_merge(tab, path, window, cx),
     }
 }
@@ -555,13 +588,13 @@ fn prepare(
     mode: Mode,
     chosen: Option<&str>,
     found: &Detected,
-    sides: Option<&Sides>,
+    sides: Option<(&Sides, &Path)>,
 ) -> std::result::Result<Prepared, Refusal> {
     let read = configured(Some(repo)).map_err(Refusal::Failed)?;
     let picked = pick(chosen, &found.comparers, read.of(mode));
     let call = call(mode, picked.as_ref())?;
     let ends = match sides {
-        Some(sides) => ends(repo, sides).map_err(Refusal::Failed)?,
+        Some((sides, path)) => ends(repo, sides, path).map_err(Refusal::Failed)?,
         None => Vec::new(),
     };
     Ok(Prepared { call, ends })
@@ -580,9 +613,9 @@ fn not_ready(tab: &mut Tab, mode: Mode, path: &Path, refusal: Refusal, window: &
     }
 }
 
-fn open_diff(tab: &mut Tab, path: PathBuf, sides: Sides, window: &mut Window, cx: &mut Context<Tab>) {
+fn open_diff(tab: &mut Tab, path: PathBuf, from: Option<PathBuf>, sides: Sides, window: &mut Window, cx: &mut Context<Tab>) {
     let Some(repo) = tab.repo.clone() else { return };
-    if let Err(reason) = validate_path(&path) {
+    if let Err(reason) = validate_path(&path).and_then(|()| from.as_deref().map_or(Ok(()), validate_path)) {
         return refuse(tab, reason, cx);
     }
     let chosen = tab.ui.difftool.chosen(Mode::Diff).map(str::to_owned);
@@ -591,7 +624,10 @@ fn open_diff(tab: &mut Tab, path: PathBuf, sides: Sides, window: &mut Window, cx
     later(
         window,
         cx,
-        move || prepare(&repo, Mode::Diff, chosen.as_deref(), &found, Some(&sides)).map(|prepared| (repo, prepared)),
+        {
+            let path = path.clone();
+            move || prepare(&repo, Mode::Diff, chosen.as_deref(), &found, Some((&sides, &path))).map(|prepared| (repo, prepared))
+        },
         move |tab, prepared, window, cx| {
             if tab.epoch != epoch {
                 return;
@@ -606,7 +642,7 @@ fn open_diff(tab: &mut Tab, path: PathBuf, sides: Sides, window: &mut Window, cx
             let shown = path.clone();
             outside(
                 cx,
-                move || diff(&repo, &prepared.call, &prepared.ends, &shown),
+                move || diff(&repo, &prepared.call, &prepared.ends, from.as_deref(), &shown),
                 move |tab, result, cx| {
                     tab.ui.difftool.close(Mode::Diff, &path);
                     cx.notify();
@@ -964,8 +1000,8 @@ mod tests {
             Sides::Commit(root.clone()),
             Sides::Between { from: Rev::Commit(root.clone()), to: Rev::WorkingTree, since_fork: false },
         ] {
-            let ends = ends(&f.repo, &sides).unwrap();
-            diff(&f.repo, &diff_call, &ends, ridge).unwrap();
+            let ends = ends(&f.repo, &sides, ridge).unwrap();
+            diff(&f.repo, &diff_call, &ends, None, ridge).unwrap();
         }
         let sides = fs::read_to_string(bench.bin.join("../sides.log")).unwrap();
         assert_eq!(sides, "staged|working\nthree|staged\none|two\n|one\none|working\n");
@@ -977,6 +1013,36 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_file_and_a_stashed_new_file_are_compared_with_what_they_came_from() {
+        let f = Fixture::new();
+        let lines = "one\ntwo\nthree\nfour\nfive\nsix\n";
+        commit(&f, "ridge.txt", lines, "One");
+        f.git(&["mv", "--", "ridge.txt", "summit trail.txt"]);
+        write(&f, "summit trail.txt", "one\ntwo\nthree\nfour\nfive\nseven\n");
+        f.git(&["add", "--", "summit trail.txt"]);
+        let bench = Bench::new();
+        let found = sides_logged(&bench);
+        let diff_call = call(Mode::Diff, Some(&Pick::Found(found))).unwrap();
+        let moved = (Some(Path::new("ridge.txt")), Path::new("summit trail.txt"));
+        diff(&f.repo, &diff_call, &ends(&f.repo, &Sides::Staged, moved.1).unwrap(), moved.0, moved.1).unwrap();
+        let renamed = commit(&f, "camp.txt", "tents\n", "Move up the ridge");
+        diff(&f.repo, &diff_call, &ends(&f.repo, &Sides::Commit(renamed), moved.1).unwrap(), moved.0, moved.1).unwrap();
+        write(&f, "camp.txt", "tarps\n");
+        write(&f, "lantern.txt", "lit\n");
+        f.git(&["stash", "push", "--include-untracked", "-q"]);
+        let stash = oid(&f, "stash@{0}");
+        for path in ["camp.txt", "lantern.txt"] {
+            let path = Path::new(path);
+            diff(&f.repo, &diff_call, &ends(&f.repo, &Sides::Stash(stash.clone()), path).unwrap(), None, path).unwrap();
+        }
+        let sides = fs::read_to_string(bench.bin.join("../sides.log")).unwrap();
+        let six = lines.trim_end();
+        let seven = "one\ntwo\nthree\nfour\nfive\nseven";
+        assert_eq!(sides, format!("{six}|{seven}\n{six}|{seven}\ntents|tarps\n|lit\n"));
+        assert_eq!(untracked(&f), "");
+    }
+
+    #[test]
     fn a_diff_with_nothing_left_to_compare_is_refused_without_starting_the_tool() {
         let f = Fixture::new();
         commit(&f, "ridge.txt", "one\n", "One");
@@ -985,15 +1051,16 @@ mod tests {
         let found = sides_logged(&bench);
         let diff_call = call(Mode::Diff, Some(&Pick::Found(found))).unwrap();
         f.git(&["add", "--", "ridge.txt"]);
-        let err = diff(&f.repo, &diff_call, &[], Path::new("ridge.txt")).unwrap_err();
+        let err = diff(&f.repo, &diff_call, &[], None, Path::new("ridge.txt")).unwrap_err();
         assert_eq!(err, "ridge.txt has no changes to compare any more.");
         assert_eq!(bench.logged(), "");
-        assert!(diff(&f.repo, &diff_call, &[], Path::new("../ridge.txt")).is_err());
+        assert!(diff(&f.repo, &diff_call, &[], None, Path::new("../ridge.txt")).is_err());
+        assert!(diff(&f.repo, &diff_call, &[], Some(Path::new("../ridge.txt")), Path::new("ridge.txt")).is_err());
         let gone = Sides::Commit("0".repeat(40));
-        assert_eq!(ends(&f.repo, &gone), Err("That commit is no longer in this repository.".to_owned()));
+        assert_eq!(ends(&f.repo, &gone, Path::new("ridge.txt")), Err("That commit is no longer in this repository.".to_owned()));
         let failing = bench.script("failing-smerge", "echo 'no window for you' >&2\nexit 3\n");
         let failing = call(Mode::Diff, Some(&Pick::Found(bench.found("smerge", &failing)))).unwrap();
-        let err = diff(&f.repo, &failing, &["--cached".to_owned()], Path::new("ridge.txt")).unwrap_err();
+        let err = diff(&f.repo, &failing, &["--cached".to_owned()], None, Path::new("ridge.txt")).unwrap_err();
         assert!(err.contains("no window for you"), "{err}");
         assert_eq!(untracked(&f), "M  ridge.txt\n");
     }
