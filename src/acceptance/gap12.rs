@@ -198,7 +198,11 @@ impl Replay<'_> {
             }
         }
         let opened = crate::handoff::opened().len();
-        self.action(Action::Handoff(crate::handoff::Action::OpenUrl(INSTALL.into())))?;
+        let choose = self.tab.read_with(self.cx, |tab, _| match tab.ui.cloning.listing() {
+            Listing::Ready(account) => Some(crate::clone::choose(account)),
+            _ => None,
+        })?;
+        self.action(choose.ok_or("The GitHub list has no Choose repositories… link")?)?;
         self.opened_after(opened, INSTALL).await?;
         if self.filter_list("summit")? != ["cedar/summit-trail", "fern/summit-trail"] {
             return Err("Filtering by summit does not leave the two summit trails".into());
@@ -291,6 +295,17 @@ impl Replay<'_> {
         self.key("cmd-w")?;
         self.until_tab_total("one tab again", 1, 0).await?;
         self.until("Badge-trail in front", |tab| tab.ui.repo == BADGE_TRAIL).await?;
+        self.action(Action::Clone(C::Open))?;
+        if self.tab.read_with(self.cx, |tab, _| tab.ui.cloning.listing() != &Listing::Idle)? {
+            return Err("Opening the clone dialog again still shows the earlier GitHub list".into());
+        }
+        let asked = hosting.asked().len();
+        self.action(Action::Clone(C::Source(Source::GitHub)))?;
+        self.until("the GitHub list read again", |tab| matches!(tab.ui.cloning.listing(), Listing::Ready(_))).await?;
+        if !hosting.asked()[asked..].iter().any(|ask| ask.path == "/user") {
+            return Err("The GitHub tab did not read the list again".into());
+        }
+        self.action(Action::Clone(C::Close))?;
         fs::write(&global, kept)?;
         self.pass();
         Ok(())

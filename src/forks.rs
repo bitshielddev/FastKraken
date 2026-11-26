@@ -396,6 +396,8 @@ mod tests {
         let before = f.git(&["config", "--local", "--list"]);
         let result = connect(&f.repo, "origin");
         assert!(matches!(result, Ok(None) | Err(_)), "{:?}", result.as_ref().map(|c| c.is_some()));
+        crate::auth::configure("unconnected-client", "fastkraken-unconnected").unwrap();
+        assert!(matches!(connect(&f.repo, "origin"), Ok(None)));
         assert_eq!(f.git(&["config", "--local", "--list"]), before);
         assert_eq!(fork_page("cedar/summit-trail"), "https://github.com/cedar/summit-trail/fork");
         assert_eq!(address_of("fern/summit-trail"), "https://github.com/fern/summit-trail.git");

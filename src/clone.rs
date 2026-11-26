@@ -472,6 +472,8 @@ fn show(tab: &mut Tab, request: Option<Request>, window: &mut Window, cx: &mut C
     let state = &mut tab.ui.cloning;
     state.open = true;
     state.source = Source::Address;
+    state.ticket += 1;
+    state.listing = Listing::Idle;
     state.picked = request.account.map(|account| (request.address.clone(), account));
     state.parent = request.parent;
     state.derived = String::new();
@@ -801,7 +803,9 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
         .when(source == Source::Address, |d| {
             d.child(div().on_key_down(submit(cx)).child(kit::field("Repository address", state.address.clone(), address.map(Into::into))))
         })
-        .when(source == Source::GitHub, |d| d.child(github(app, &request, cx)))
+        .when(source == Source::GitHub, |d| {
+            d.child(github(app, &request, cx)).when(!request.address.is_empty(), |d| d.child(kit::muted(format!("Address: {}", request.address))))
+        })
         .child(kit::field("Clone into", parent, None))
         .child(div().on_key_down(submit(cx)).child(kit::field("Folder name", state.name.clone(), name.map(Into::into))))
         .child(full.text_size(px(TEXT_SMALL)))
@@ -826,6 +830,10 @@ fn pick_first<T: Desk>(cx: &mut Context<T>) -> impl Fn(&KeyDownEvent, &mut Windo
             cx.stop_propagation();
         }
     })
+}
+
+pub(crate) fn choose(account: &Account) -> view::Action {
+    view::Action::Handoff(crate::handoff::Action::OpenUrl(account.install.clone()))
 }
 
 pub(crate) fn pushed(repository: &Listed, now: i64) -> Option<String> {
@@ -916,9 +924,8 @@ fn github<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::Div
                     .items_center()
                     .gap_2()
                     .child(kit::muted(LISTED_NOTE).flex_1().min_w_0())
-                    .child(kit::link("clone-github-choose", CHOOSE, view::Action::Handoff(crate::handoff::Action::OpenUrl(account.install.clone())), cx)),
+                    .child(kit::link("clone-github-choose", CHOOSE, choose(account), cx)),
             )
-            .when(request.account.is_some(), |d| d.child(kit::muted(format!("Address: {}", request.address))))
         }
     }
 }
