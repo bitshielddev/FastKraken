@@ -14,13 +14,15 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     os::unix::ffi::OsStrExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 pub(crate) const HIDDEN: &str = "--exclude=refs/fastkraken/*";
 pub(crate) const UNDECORATED: &str = "--decorate-refs-exclude=refs/fastkraken/*";
-const PRIVATE: &str = "refs/fastkraken/undo/";
+const UNDO: &str = "refs/fastkraken/undo/";
+pub(crate) const MAIN_WORKTREE: &str = "main";
+const LINKED: &str = "worktrees/";
 pub(crate) const LIMIT: usize = 50;
 const NOTHING_TO_UNDO: &str = "Nothing to undo";
 const NOTHING_TO_REDO: &str = "Nothing to redo";
@@ -507,15 +509,43 @@ pub(crate) fn watched(
     (result, Some(watched))
 }
 
-fn private(id: u64, index: usize) -> String {
-    format!("{PRIVATE}{id}/{index}")
+pub(crate) fn space(repo: &Repository) -> String {
+    space_of(repo.git_dir(), repo.common_dir())
+}
+
+fn space_of(git_dir: &Path, common: &Path) -> String {
+    if git_dir == common {
+        return MAIN_WORKTREE.to_owned();
+    }
+    let linked = git_dir.parent() == Some(common.join("worktrees").as_path());
+    match git_dir.file_name().and_then(OsStr::to_str) {
+        Some(name) if linked && plain_component(name) => format!("{LINKED}{name}"),
+        _ => format!("other/{:016x}", crate::instance::fnv(git_dir.as_os_str().as_bytes())),
+    }
+}
+
+fn plain_component(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.ends_with(".lock")
+        && !name.contains("..")
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+fn root(repo: &Repository) -> String {
+    format!("{UNDO}{}/", space(repo))
+}
+
+fn private(root: &str, id: u64, index: usize) -> String {
+    format!("{root}{id}/{index}")
 }
 
 pub(crate) fn keep(repo: &Repository, id: u64, oids: &[String]) -> Result<(), String> {
+    let root = root(repo);
     let mut input = Vec::new();
     for (index, oid) in oids.iter().enumerate() {
         validate_oid(oid)?;
-        input.extend_from_slice(format!("update {} {oid}\n", private(id, index)).as_bytes());
+        input.extend_from_slice(format!("update {} {oid}\n", private(&root, id, index)).as_bytes());
     }
     if input.is_empty() {
         return Ok(());
@@ -523,13 +553,24 @@ pub(crate) fn keep(repo: &Repository, id: u64, oids: &[String]) -> Result<(), St
     crate::operation::with_input(repo.command().args(["update-ref", "--stdin"]), input).map(|_| ())
 }
 
-pub(crate) fn held(repo: &Repository) -> Result<Vec<(u64, String)>, String> {
-    let listed = checked(repo.read_command().args(["for-each-ref", "--format=%(refname)", PRIVATE]))?;
+fn every_private(repo: &Repository) -> Result<Vec<(String, String)>, String> {
+    let listed = checked(repo.read_command().args(["for-each-ref", "--format=%(refname)%00%(objectname)", UNDO]))?;
     Ok(String::from_utf8_lossy(&listed)
         .lines()
-        .filter_map(|name| {
-            let id = name.strip_prefix(PRIVATE)?.split('/').next()?.parse().ok()?;
-            Some((id, name.to_owned()))
+        .filter_map(|line| {
+            let (name, oid) = line.split_once('\0')?;
+            Some((name.to_owned(), oid.to_owned()))
+        })
+        .collect())
+}
+
+pub(crate) fn held(repo: &Repository) -> Result<Vec<(u64, String)>, String> {
+    let root = root(repo);
+    Ok(every_private(repo)?
+        .into_iter()
+        .filter_map(|(name, _)| {
+            let id = name.strip_prefix(root.as_str())?.split('/').next()?.parse().ok()?;
+            Some((id, name))
         })
         .collect())
 }
@@ -554,8 +595,43 @@ pub(crate) fn release(repo: &Repository, ids: &[u64]) -> Result<(), String> {
     delete_held(repo, |id| ids.contains(&id))
 }
 
-pub(crate) fn sweep(repo: &Repository, named: &BTreeSet<u64>) -> Result<(), String> {
-    delete_held(repo, |id| !named.contains(&id))
+pub(crate) fn sweep(repo: &Repository, named: &BTreeSet<u64>) -> Result<Vec<String>, String> {
+    let space = space(repo);
+    let root = format!("{UNDO}{space}/");
+    let worktrees = repo.common_dir().join("worktrees");
+    let mut input = Vec::new();
+    let mut gone = Vec::new();
+    for (name, oid) in every_private(repo)? {
+        let Some(rest) = name.strip_prefix(UNDO) else { continue };
+        let first = rest.split('/').next().unwrap_or_default();
+        if let Some(own) = name.strip_prefix(root.as_str()) {
+            let id = own.split('/').next().and_then(|id| id.parse::<u64>().ok());
+            if id.is_none_or(|id| !named.contains(&id)) {
+                input.extend_from_slice(format!("delete {name}\n").as_bytes());
+            }
+        } else if let Ok(id) = first.parse::<u64>() {
+            if space != MAIN_WORKTREE {
+                continue;
+            }
+            if named.contains(&id) && validate_oid(&oid).is_ok() {
+                input.extend_from_slice(format!("update {root}{rest} {oid}\n").as_bytes());
+            }
+            input.extend_from_slice(format!("delete {name}\n").as_bytes());
+        } else if let Some(linked) = rest.strip_prefix(LINKED) {
+            let worktree = linked.split('/').next().unwrap_or_default();
+            if !worktree.is_empty() && !worktrees.join(worktree).is_dir() {
+                input.extend_from_slice(format!("delete {name}\n").as_bytes());
+                let left = format!("{LINKED}{worktree}");
+                if !gone.contains(&left) {
+                    gone.push(left);
+                }
+            }
+        }
+    }
+    if !input.is_empty() {
+        crate::operation::with_input(repo.command().args(["update-ref", "--stdin"]), input)?;
+    }
+    Ok(gone)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -789,19 +865,67 @@ pub(crate) fn refuse(tab: &mut Tab, title: String, reason: &str, cx: &mut Contex
 fn save(tab: &Tab, cx: &mut App) {
     let Some(repo) = &tab.repo else { return };
     let common = repo.common_dir().to_owned();
+    let space = space(repo);
     let stored = tab.ui.journal.stored();
-    crate::settings::Memory::update(cx, |memory| memory.change_repo(&common, |view| view.journal = stored));
+    crate::settings::Memory::update(cx, |memory| {
+        memory.change_repo(&common, |view| {
+            if space == MAIN_WORKTREE {
+                view.journal = None;
+            }
+            match stored {
+                Some(stored) => view.journals.insert(space, stored),
+                None => view.journals.remove(&space),
+            };
+        })
+    });
+}
+
+pub(crate) fn stored_for(view: &crate::settings::RepoView, space: &str) -> Option<Stored> {
+    view.journals.get(space).cloned().or_else(|| (space == MAIN_WORKTREE).then(|| view.journal.clone()).flatten())
 }
 
 pub(crate) fn restore(tab: &mut Tab, cx: &mut Context<Tab>) {
     let Some(repo) = tab.repo.clone() else { return };
-    let stored = crate::settings::memory(cx)
-        .and_then(|memory| memory.repo(repo.common_dir()))
-        .and_then(|view| view.journal.clone())
-        .unwrap_or_default();
+    let space = space(&repo);
+    let view = crate::settings::memory(cx).and_then(|memory| memory.repo(repo.common_dir()));
+    let legacy = view.is_some_and(|view| space == MAIN_WORKTREE && view.journal.is_some());
+    let stored = view.and_then(|view| stored_for(view, &space)).unwrap_or_default();
     tab.ui.journal = State::from_stored(stored);
     let named = tab.ui.journal.named();
-    Tab::work(cx, move || sweep(&repo, &named), |_, _, _| {});
+    let epoch = tab.epoch;
+    let id = tab.ui.jobs.start_write("Tidying the undo history…", crate::jobs::Link::new(false), None);
+    Tab::work(
+        cx,
+        move || sweep(&repo, &named),
+        move |tab, swept, cx| {
+            if tab.epoch != epoch {
+                return;
+            }
+            if tab.ui.jobs.write.as_ref().is_some_and(|job| job.id == id) {
+                tab.ui.jobs.end_write();
+            }
+            match swept {
+                Ok(gone) if legacy || !gone.is_empty() => {
+                    if let Some(repo) = &tab.repo {
+                        let common = repo.common_dir().to_owned();
+                        crate::settings::Memory::update(cx, |memory| {
+                            memory.change_repo(&common, |view| view.journals.retain(|space, _| !gone.contains(space)))
+                        });
+                    }
+                    if legacy {
+                        save(tab, cx);
+                    }
+                }
+                _ => {}
+            }
+            if std::mem::take(&mut tab.status_dirty) {
+                tab.load_status(cx);
+            }
+            crate::operation::refresh(tab, cx);
+            tab.resume(cx);
+            cx.notify();
+        },
+    );
 }
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<Tab>) {
@@ -1065,11 +1189,34 @@ fn create(repo: &Repository, reference: &str, oid: &str, upstream: &Option<Upstr
     Ok(())
 }
 
+fn in_another_worktree(repo: &Repository, reference: &str) -> Result<(), Failure> {
+    if branch_name(reference).is_none() {
+        return Ok(());
+    }
+    let listed = checked(repo.read_command().args(["for-each-ref", "--format=%(refname)%00%(worktreepath)", "--"]).arg(reference))?;
+    let elsewhere = listed.split(|&b| b == b'\n').find_map(|line| {
+        let at = line.iter().position(|&b| b == 0)?;
+        let path = &line[at + 1..];
+        (&line[..at] == reference.as_bytes() && !path.is_empty()).then(|| PathBuf::from(OsStr::from_bytes(path)))
+    });
+    match elsewhere {
+        Some(path) if !crate::repository::same_place(&path, &repo.root) => {
+            let folder = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+            Err(Failure::from(format!(
+                "{} is checked out in worktree {folder}, so it cannot be changed from here. Open that worktree to change it there.",
+                shown_ref(reference)
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn delete(repo: &Repository, reference: &str, oid: &str, may_be_current: bool) -> Result<(), Failure> {
     validate_oid(oid)?;
     if !may_be_current && head_place(repo)? == Some(Place::Branch(reference.to_owned())) {
         return Err(Failure::from(format!("{} is checked out, so it cannot be removed.", shown_ref(reference))));
     }
+    in_another_worktree(repo, reference)?;
     checked(repo.command().args(["update-ref", "-d", "--"]).args([reference, oid]))?;
     forget_upstream(repo, reference);
     Ok(())
@@ -1082,6 +1229,7 @@ fn move_to(repo: &Repository, reference: &str, from: &str, to: &str, mode: Mode)
     if checked_out {
         checked(repo.command().args(["reset", "--quiet", mode.flag(), to, "--"]))?;
     } else {
+        in_another_worktree(repo, reference)?;
         checked(repo.command().args(["update-ref", "-m", "FastKraken: undo", "--"]).args([reference, to, from]))?;
     }
     Ok(())
@@ -1471,7 +1619,8 @@ pub(crate) mod tests {
         });
         assert_eq!(entry.title, "Delete branch ridge");
         let held: Vec<String> = held(&f.repo).unwrap().into_iter().map(|(_, name)| name).collect();
-        assert_eq!(held, [format!("{PRIVATE}{}/0", entry.id)]);
+        assert_eq!(held, [private(&root(&f.repo), entry.id, 0)]);
+        assert!(held[0].starts_with("refs/fastkraken/undo/main/"), "{held:?}");
         assert_eq!(oid(&f, &held[0]), tip);
         journal.undo(&f).unwrap();
         assert_eq!(snapshot(&f), before);
@@ -1690,7 +1839,7 @@ pub(crate) mod tests {
         log.arg(&kept).arg("--max-count=1");
         let decorated = checked(&mut log).unwrap();
         assert!(!String::from_utf8_lossy(&decorated).contains("fastkraken"));
-        assert_eq!(held(&f.repo).unwrap(), [(7, format!("{PRIVATE}7/0"))]);
+        assert_eq!(held(&f.repo).unwrap(), [(7, "refs/fastkraken/undo/main/7/0".to_owned())]);
     }
 
     #[test]
@@ -1724,8 +1873,8 @@ pub(crate) mod tests {
         release(&f.repo, &state.released).unwrap();
         let ids: BTreeSet<u64> = held(&f.repo).unwrap().into_iter().map(|(id, _)| id).collect();
         assert!(!ids.contains(&0) && ids.contains(&1) && !ids.contains(&entry.id));
-        sweep(&f.repo, &BTreeSet::from([2])).unwrap();
-        assert_eq!(held(&f.repo).unwrap(), [(2, format!("{PRIVATE}2/0"))]);
+        assert!(sweep(&f.repo, &BTreeSet::from([2])).unwrap().is_empty());
+        assert_eq!(held(&f.repo).unwrap(), [(2, private(&root(&f.repo), 2, 0))]);
     }
 
     #[test]
@@ -1782,5 +1931,142 @@ pub(crate) mod tests {
         let state = State::from_stored(back);
         assert_eq!(state.next, 5);
         assert_eq!(state.named(), BTreeSet::from([4]));
+    }
+
+    fn private_refs(f: &Fixture) -> Vec<String> {
+        String::from_utf8(f.git(&["for-each-ref", "--format=%(refname) %(objectname)", UNDO])).unwrap().lines().map(str::to_owned).collect()
+    }
+
+    fn linked_worktree(f: &Fixture, folder: &str, branch: &str) -> (PathBuf, Repository) {
+        let path = f.dir.join(folder);
+        f.git(&["worktree", "add", "-q", "-b", branch, path.to_str().unwrap()]);
+        let repo = f.open(&path);
+        (path, repo)
+    }
+
+    fn deleted_in(repo: &Repository, state: &mut State, branch: &str) -> Entry {
+        let watch = state.watch(true);
+        let (result, seen) = watched(repo, Some(watch), || {
+            checked(repo.command().args(["branch", "-q", "-D", branch]))?;
+            Ok(Outcome::default())
+        });
+        result.unwrap();
+        state.settle(seen.unwrap()).cloned().unwrap()
+    }
+
+    #[test]
+    fn two_worktrees_keep_their_own_undo_refs_and_each_sweep_spares_the_other() {
+        let f = base();
+        let (_, linked) = linked_worktree(&f, "ridge-tree", "ridge");
+        assert_eq!(space(&f.repo), MAIN_WORKTREE);
+        assert_eq!(space(&linked), "worktrees/ridge-tree");
+        let lake = commit(&f, "lake.txt", "Lake\n", "Map the lake");
+        f.git(&["branch", "lake"]);
+        f.git(&["reset", "-q", "--hard", "HEAD^"]);
+        checked(linked.command().args(["branch", "pond", "main"])).unwrap();
+        let pond = oid(&f, "pond");
+        let (mut here, mut there) = (State::default(), State::default());
+        let main_entry = deleted_in(&f.repo, &mut here, "lake");
+        let linked_entry = deleted_in(&linked, &mut there, "pond");
+        assert_eq!((main_entry.id, linked_entry.id), (0, 0));
+        assert_eq!(
+            private_refs(&f),
+            [format!("refs/fastkraken/undo/main/0/0 {lake}"), format!("refs/fastkraken/undo/worktrees/ridge-tree/0/0 {pond}")]
+        );
+        assert_eq!(held(&linked).unwrap(), [(0, "refs/fastkraken/undo/worktrees/ridge-tree/0/0".to_owned())]);
+        assert!(sweep(&linked, &there.named()).unwrap().is_empty());
+        assert!(sweep(&f.repo, &here.named()).unwrap().is_empty());
+        assert_eq!(private_refs(&f).len(), 2);
+        replay(&linked, &linked_entry, Way::Undo).unwrap();
+        replay(&f.repo, &main_entry, Way::Undo).unwrap();
+        assert_eq!((oid(&f, "lake"), oid(&f, "pond")), (lake, pond));
+        assert!(sweep(&linked, &BTreeSet::new()).unwrap().is_empty());
+        assert_eq!(private_refs(&f), [format!("refs/fastkraken/undo/main/0/0 {}", oid(&f, "lake"))]);
+    }
+
+    #[test]
+    fn a_removed_worktree_loses_its_undo_refs_at_the_next_sweep() {
+        let f = base();
+        let (path, linked) = linked_worktree(&f, "ridge-tree", "ridge");
+        let tip = oid(&f, "HEAD");
+        keep(&linked, 3, &[tip.clone()]).unwrap();
+        keep(&f.repo, 3, &[tip.clone()]).unwrap();
+        assert_eq!(sweep(&f.repo, &BTreeSet::from([3])).unwrap(), Vec::<String>::new());
+        assert_eq!(private_refs(&f).len(), 2);
+        f.git(&["worktree", "remove", "--force", path.to_str().unwrap()]);
+        assert_eq!(sweep(&f.repo, &BTreeSet::from([3])).unwrap(), ["worktrees/ridge-tree"]);
+        assert_eq!(private_refs(&f), [format!("refs/fastkraken/undo/main/3/0 {tip}")]);
+    }
+
+    #[test]
+    fn undo_refs_from_before_worktrees_were_kept_apart_move_to_the_main_worktree() {
+        let f = base();
+        let (_, linked) = linked_worktree(&f, "ridge-tree", "ridge");
+        let tip = oid(&f, "HEAD");
+        for name in ["refs/fastkraken/undo/3/0", "refs/fastkraken/undo/3/1", "refs/fastkraken/undo/4/0"] {
+            f.git(&["update-ref", name, &tip]);
+        }
+        assert!(sweep(&linked, &BTreeSet::new()).unwrap().is_empty());
+        assert_eq!(private_refs(&f).len(), 3);
+        assert!(held(&f.repo).unwrap().is_empty());
+        assert!(sweep(&f.repo, &BTreeSet::from([3])).unwrap().is_empty());
+        assert_eq!(
+            private_refs(&f),
+            [format!("refs/fastkraken/undo/main/3/0 {tip}"), format!("refs/fastkraken/undo/main/3/1 {tip}")]
+        );
+        let entry = Entry { id: 3, title: "Commit".into(), changes: Vec::new(), at: 0, head: None, was: None };
+        let legacy = Stored { undo: vec![entry], redo: Vec::new(), next: 4 };
+        let mut view = crate::settings::RepoView { journal: Some(legacy.clone()), ..Default::default() };
+        assert_eq!(stored_for(&view, MAIN_WORKTREE), Some(legacy.clone()));
+        assert_eq!(stored_for(&view, "worktrees/ridge-tree"), None);
+        view.journals.insert(MAIN_WORKTREE.to_owned(), Stored::default());
+        assert_eq!(stored_for(&view, MAIN_WORKTREE), Some(Stored::default()));
+        let text = serde_json::to_string(&view).unwrap();
+        let back: crate::settings::RepoView = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.journals, view.journals);
+    }
+
+    #[test]
+    fn a_worktree_folder_with_an_unusual_name_gets_a_hashed_namespace() {
+        let common = Path::new("/trail/.git");
+        assert_eq!(space_of(common, common), "main");
+        assert_eq!(space_of(Path::new("/trail/.git/worktrees/ridge-2"), common), "worktrees/ridge-2");
+        let odd = space_of(Path::new("/trail/.git/worktrees/ridge tree"), common);
+        assert!(odd.starts_with("other/") && odd.len() == "other/".len() + 16, "{odd}");
+        assert_ne!(odd, space_of(Path::new("/trail/.git/worktrees/ridge  tree"), common));
+        assert!(space_of(Path::new("/elsewhere/gitdir"), common).starts_with("other/"));
+        assert!(!plain_component("x.lock") && !plain_component(".hidden") && !plain_component("a..b") && plain_component("a.b_c-d"));
+    }
+
+    #[test]
+    fn undo_will_not_move_or_delete_a_branch_checked_out_in_another_worktree() {
+        let f = base();
+        let start = oid(&f, "HEAD");
+        f.git(&["branch", "ridge"]);
+        let tip = commit(&f, "camp.txt", "Camp\n", "Pitch the camp");
+        let mut journal = Journal::new();
+        journal.run(&f, Report::default(), |f| {
+            f.git(&["branch", "late"]);
+        });
+        let moved = journal.run(&f, Report::default(), |f| {
+            f.git(&["branch", "-f", "ridge", "main"]);
+        });
+        assert_eq!(moved.changes, [Change::MoveBranch { reference: "refs/heads/ridge".into(), before: start.clone(), after: tip.clone(), mode: Mode::Keep }]);
+        let path = f.dir.join("ridge-tree");
+        f.git(&["worktree", "add", "-q", path.to_str().unwrap(), "ridge"]);
+        let refused = journal.undo(&f).unwrap_err();
+        assert_eq!(
+            refused.text,
+            "ridge is checked out in worktree ridge-tree, so it cannot be changed from here. Open that worktree to change it there."
+        );
+        assert_eq!(oid(&f, "ridge"), tip);
+        f.git(&["worktree", "remove", "--force", path.to_str().unwrap()]);
+        journal.undo(&f).unwrap();
+        assert_eq!(oid(&f, "ridge"), start);
+        let late = f.dir.join("late-tree");
+        f.git(&["worktree", "add", "-q", late.to_str().unwrap(), "late"]);
+        let refused = journal.undo(&f).unwrap_err();
+        assert!(refused.text.starts_with("late is checked out in worktree late-tree"), "{}", refused.text);
+        assert_eq!(oid(&f, "late"), tip);
     }
 }

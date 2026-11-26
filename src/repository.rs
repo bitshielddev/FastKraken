@@ -1471,6 +1471,10 @@ pub(crate) fn paired_status(code: &[u8]) -> bool {
 pub(crate) fn raw_path(bytes: &[u8]) -> PathBuf {
     PathBuf::from(OsString::from_vec(bytes.to_owned()))
 }
+
+pub(crate) fn same_place(left: &Path, right: &Path) -> bool {
+    left == right || matches!((std::fs::canonicalize(left), std::fs::canonicalize(right)), (Ok(left), Ok(right)) if left == right)
+}
 fn without_final_newline(bytes: &[u8]) -> &[u8] {
     bytes.strip_suffix(b"\n").unwrap_or(bytes)
 }

@@ -41,7 +41,7 @@ pub(crate) fn socket(state: &Path) -> PathBuf {
     env::temp_dir().join(format!("fastkraken-{user}-{:016x}", fnv(state.as_os_str().as_bytes()))).join("open")
 }
 
-fn fnv(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3))
 }
 
