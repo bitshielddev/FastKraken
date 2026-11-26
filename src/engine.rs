@@ -76,9 +76,30 @@ impl Proxy {
                 "system" => "Set by http.proxy in this Mac's system Git settings.".to_owned(),
                 other => format!("Set by http.proxy ({other})."),
             };
-            return Some((value.clone(), from));
+            return Some((masked(value), from));
         }
-        self.environment.as_ref().map(|(name, value)| (value.clone(), format!("Set by {name} in FastKraken's environment.")))
+        self.environment.as_ref().map(|(name, value)| (masked(value), format!("Set by {name} in FastKraken's environment.")))
+    }
+}
+
+pub(crate) fn masked(proxy: &str) -> String {
+    let (kind, rest) = match proxy.find("://") {
+        Some(at) => proxy.split_at(at + 3),
+        None => ("", proxy),
+    };
+    match rest.rsplit_once('@').and_then(|(user, place)| user.split_once(':').map(|(name, _)| (name, place))) {
+        Some((name, place)) => format!("{kind}{name}:{}@{place}", crate::activity::MASK),
+        None => proxy.to_owned(),
+    }
+}
+
+pub(crate) fn to_save(typed: &str, seen: Option<&str>) -> Result<Option<String>> {
+    if let Some(seen) = seen.filter(|seen| *seen != typed && masked(seen) == typed) {
+        return Ok(Some(seen.to_owned()));
+    }
+    match proxy_problem(typed) {
+        Some(problem) => Err(problem),
+        None => Ok((!typed.is_empty()).then(|| typed.to_owned())),
     }
 }
 
@@ -408,8 +429,8 @@ pub(crate) fn read(tab: &mut Tab, cx: &mut Context<Tab>) {
         if state.ticket != ticket {
             return;
         }
-        let before = state.seen_proxy().flatten().unwrap_or_default();
-        let after = looked.proxy.as_ref().ok().and_then(|proxy| proxy.global.clone()).unwrap_or_default();
+        let before = state.seen_proxy().flatten().map_or_else(String::new, |seen| masked(&seen));
+        let after = looked.proxy.as_ref().ok().and_then(|proxy| proxy.global.as_deref().map(masked)).unwrap_or_default();
         state.looked = Some(looked);
         state.answered = ticket;
         let field = state.proxy.clone();
@@ -525,22 +546,25 @@ fn save_proxy(tab: &mut Tab, cx: &mut Context<Tab>) {
         return;
     }
     let typed = state.proxy.read(cx).text().trim().to_owned();
-    if let Some(problem) = proxy_problem(&typed) {
-        state.proxy_problem = Some(problem);
-        return;
-    }
-    let Some(seen) = state.seen_proxy() else {
+    let seen = state.seen_proxy();
+    let value = match to_save(&typed, seen.clone().flatten().as_deref()) {
+        Ok(value) => value,
+        Err(problem) => {
+            state.proxy_problem = Some(problem);
+            return;
+        }
+    };
+    let Some(seen) = seen else {
         state.proxy_problem = Some("Wait for Preferences to read the proxy first.".to_owned());
         return;
     };
-    let value = (!typed.is_empty()).then_some(typed);
     state.saving = true;
     state.proxy_problem = None;
     Tab::work(cx, move || set_proxy(seen, value), move |tab, result, cx| {
         tab.ui.engine.saving = false;
         match result {
             Ok(Some(value)) => {
-                tab.ui.notices.show(Notice::new(Tone::Success, "Proxy saved", format!("Git uses {value} for every repository.")));
+                tab.ui.notices.show(Notice::new(Tone::Success, "Proxy saved", format!("Git uses {} for every repository.", masked(&value))));
             }
             Ok(None) => {
                 tab.ui.notices.show(Notice::new(Tone::Success, "Proxy removed", "Your Git settings no longer name a proxy."));
@@ -826,6 +850,44 @@ mod tests {
         assert_eq!(emptied.configured, Some(("local".to_owned(), String::new())));
         assert_eq!(emptied.environment, Some(("https_proxy", "http://lower.invalid:8080".to_owned())));
         assert_eq!(emptied.used(), None);
+    }
+
+    #[test]
+    fn a_proxy_password_is_shown_masked_and_saving_the_masked_field_keeps_it() {
+        assert_eq!(masked("http://scout:lantern-word@proxy.invalid:3128"), "http://scout:•••@proxy.invalid:3128");
+        assert_eq!(masked("scout:lantern-word@proxy.invalid:3128"), "scout:•••@proxy.invalid:3128");
+        assert_eq!(masked("socks5h://scout:lan@tern:word@proxy.invalid:1080"), "socks5h://scout:•••@proxy.invalid:1080");
+        for plain in ["http://proxy.invalid:3128", "http://scout@proxy.invalid:3128", "proxy.invalid", ""] {
+            assert_eq!(masked(plain), plain);
+        }
+        let fixture = Fixture::new();
+        let global = fixture.dir.join("global-config");
+        let secret = "http://scout:lantern-word@proxy.invalid:3128";
+        fs::write(&global, format!("[http]\n\tproxy = {secret}\n")).unwrap();
+        let _global = GlobalConfig::set(&global);
+        let before = fs::read_to_string(&global).unwrap();
+        let read = read_proxy(Some(&fixture.repo), |_| None, None).unwrap();
+        assert_eq!(read.global.as_deref(), Some(secret));
+        assert_eq!(read.used(), Some(("http://scout:•••@proxy.invalid:3128".to_owned(), "Set by http.proxy in your Git settings for every repository.".to_owned())));
+        let environment = |name: &str| (name == "HTTPS_PROXY").then(|| "http://ranger:lantern-word@env.invalid:8080".to_owned());
+        let from_environment = Proxy { configured: None, global: None, environment: environment_proxy(environment), mac: MacProxy::Direct };
+        assert_eq!(from_environment.used(), Some(("http://ranger:•••@env.invalid:8080".to_owned(), "Set by HTTPS_PROXY in FastKraken's environment.".to_owned())));
+
+        let shown = masked(secret);
+        assert_eq!(to_save(&shown, Some(secret)), Ok(Some(secret.to_owned())));
+        assert_eq!(set_proxy(Some(secret.to_owned()), Some(secret.to_owned())).unwrap().as_deref(), Some(secret));
+        assert_eq!(fs::read_to_string(&global).unwrap(), before);
+        let refused = "Leave the password out: Git keeps its settings as plain text. Git asks for it when the proxy wants one.".to_owned();
+        assert_eq!(to_save(secret, Some(secret)), Err(refused.clone()));
+        assert_eq!(to_save("http://scout:•••@other.invalid:3128", Some(secret)), Err(refused.clone()));
+        assert_eq!(to_save(&shown, None), Err(refused));
+        assert_eq!(to_save("http://other.invalid:3128", Some(secret)), Ok(Some("http://other.invalid:3128".to_owned())));
+        assert_eq!(to_save("http://proxy.invalid:3128", Some("http://proxy.invalid:3128")), Ok(Some("http://proxy.invalid:3128".to_owned())));
+        assert_eq!(to_save("", Some(secret)), Ok(None));
+        assert!(
+            crate::activity::entries().iter().all(|entry| !entry.command_line().contains("lantern-word") && !entry.output().contains("lantern-word")),
+            "The activity log kept the proxy password"
+        );
     }
 
     #[test]

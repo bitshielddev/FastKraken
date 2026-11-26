@@ -1837,6 +1837,20 @@ impl Replay<'_> {
             return Err(format!("Use it wrote {:?}", proxy_of(&global)?).into());
         }
         self.looked_again("the macOS proxy in use", |looked| looked.proxy.as_ref().is_ok_and(|proxy| proxy.global.as_deref() == Some("http://corp.invalid:8443"))).await?;
+        let secret = "http://scout:lantern-word@corp.invalid:8443";
+        git(Path::new("/"), &["config", "--file", global.to_str().ok_or("The sandbox path is not UTF-8")?, "http.proxy", secret])?;
+        let looked = self.looked_again("the proxy with a password read", move |looked| looked.proxy.as_ref().is_ok_and(|proxy| proxy.global.as_deref() == Some(secret))).await?;
+        let shown = "http://scout:•••@corp.invalid:8443";
+        let used = looked.proxy.as_ref().ok().and_then(|proxy| proxy.used()).map(|(value, _)| value);
+        let field = self.tab.read_with(self.cx, |tab, cx| tab.ui.engine.proxy.read(cx).text().to_owned())?;
+        if used.as_deref() != Some(shown) || field != shown {
+            return Err(format!("A proxy with a password shows as {used:?}, and the field holds {field:?}").into());
+        }
+        self.proxy_saved().await?;
+        let (detail, _) = self.noticed("Proxy saved").await?;
+        if detail != format!("Git uses {shown} for every repository.") || proxy_of(&global)?.as_deref() != Some(secret) {
+            return Err(format!("Saving the masked proxy says {detail:?} and left {:?}", proxy_of(&global)?).into());
+        }
         self.type_proxy("")?;
         self.proxy_saved().await?;
         let (detail, _) = self.noticed("Proxy removed").await?;
