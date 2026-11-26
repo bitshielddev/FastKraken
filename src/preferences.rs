@@ -669,6 +669,14 @@ fn repository<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
         .child(kit::muted("Chosen for this repository alone, as the Pull and Merge menus’ Set as default marks are."))
         .child(setting("What the Pull button does", Some("The pull menu still offers the others.".into()), pull))
         .child(setting("How merges run", Some("Merge menus still offer the others.".into()), merges))
+        .child(tick(
+            "preferences-update-submodules",
+            ui.submodule.automatic,
+            "Update submodules automatically",
+            "After a pull or checkout, submodules that are not at the commits the branch expects are updated without asking. This can download their commits.",
+            view::Action::Submodule(crate::submodule::Action::ToggleAutomatic),
+            cx,
+        ))
 }
 
 pub(crate) fn radio(on: bool) -> Div {

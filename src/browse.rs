@@ -662,7 +662,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
                 match kind {
                     Kind::Folder => toggle(tab, path, cx),
                     Kind::File | Kind::Link => choose(tab, path, cx),
-                    Kind::Module => {}
+                    Kind::Module => tab.dispatch(view::Action::Submodule(crate::submodule::Action::Open(path)), window, cx),
                 }
             }
         }
@@ -1077,7 +1077,7 @@ fn entry_row<T: Desk>(index: usize, row: &Row, chosen: bool, at: bool, cx: &mut 
             };
             let (shown, kind_of, ignored_too) = (path.clone(), *kind, *ignored);
             let tip = move || match kind_of {
-                Kind::Module => format!("{}\n{MODULE}", shown.display()),
+                Kind::Module => format!("{}\n{MODULE}\nDouble-click to open it in a new tab.", shown.display()),
                 Kind::Link => format!("{}\nA symbolic link", shown.display()),
                 _ if ignored_too => format!("{}\nIgnored", shown.display()),
                 _ => shown.to_string_lossy().into_owned(),
@@ -1126,6 +1126,14 @@ fn entry_row<T: Desk>(index: usize, row: &Row, chosen: bool, at: bool, cx: &mut 
                 })
                 .when_some(action, |d, action| {
                     d.on_click(cx.listener(move |app, _, w, cx| app.dispatch(view::Action::Browse(action.clone()), w, cx)))
+                })
+                .when(*kind == Kind::Module, |d| {
+                    let opened = path.clone();
+                    d.on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
+                        if event.click_count() > 1 {
+                            app.dispatch(view::Action::Submodule(crate::submodule::Action::Open(opened.clone())), w, cx)
+                        }
+                    }))
                 })
                 .into_any_element()
         }

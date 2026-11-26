@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn the_editor_line_is_offered_only_while_the_working_tree_has_the_same_lines() {
-        let row = |staged| view::FileRow { path: "trail.txt".into(), staged, status: "M", from: None };
+        let row = |staged| view::FileRow { path: "trail.txt".into(), staged, status: "M", from: None, submodule: None };
         let selected = |staged| Some(Selection::File { path: "trail.txt".into(), staged });
         assert_eq!(editor_line(&selected(false), &[row(false)], 2), Some(2));
         assert_eq!(editor_line(&selected(true), &[row(true)], 2), Some(2));

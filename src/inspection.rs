@@ -840,12 +840,14 @@ mod tests {
                 ChangedFile {
                     status: "Modified",
                     path: notes.to_owned(),
-                    from: None
+                    from: None,
+                    submodule: None
                 },
                 ChangedFile {
                     status: "Modified",
                     path: other.to_owned(),
-                    from: None
+                    from: None,
+                    submodule: None
                 }
             ]
         );
@@ -869,7 +871,8 @@ mod tests {
             [ChangedFile {
                 status: "Added",
                 path: notes.to_owned(),
-                from: None
+                from: None,
+                submodule: None
             }]
         );
     }
@@ -895,7 +898,8 @@ mod tests {
             [ChangedFile {
                 status: "Added",
                 path: incoming.to_owned(),
-                from: None
+                from: None,
+                submodule: None
             }]
         );
         assert!(
@@ -936,8 +940,8 @@ mod tests {
         assert_eq!(
             details.files,
             [
-                ChangedFile { status: "Renamed", path: new.to_owned(), from: Some("notes.txt".into()) },
-                ChangedFile { status: "Modified", path: "other.txt".into(), from: None },
+                ChangedFile { status: "Renamed", path: new.to_owned(), from: Some("notes.txt".into()), submodule: None },
+                ChangedFile { status: "Modified", path: "other.txt".into(), from: None, submodule: None },
             ]
         );
         assert_eq!(details.stats.get(new), Some(&(1, 1)));

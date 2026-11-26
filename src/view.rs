@@ -145,6 +145,7 @@ pub struct FileRow {
     pub staged: bool,
     pub status: &'static str,
     pub from: Option<PathBuf>,
+    pub submodule: Option<crate::repository::Gitlink>,
 }
 
 #[derive(Clone, Debug)]
@@ -596,6 +597,7 @@ pub enum Action {
     Discard(crate::discard::Action),
     Journal(crate::journal::Action),
     Worktree(crate::worktree::Action),
+    Submodule(crate::submodule::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
     Rewrite(crate::rewrite::Action),
@@ -784,6 +786,7 @@ pub struct Ui {
     pub(crate) forecast: crate::forecast::State,
     pub(crate) journal: crate::journal::State,
     pub(crate) worktree: crate::worktree::State,
+    pub(crate) submodule: crate::submodule::State,
     pub(crate) rebase_editor: crate::rebase_editor::State,
     pub(crate) chrome_drawn: bool,
 }
@@ -885,6 +888,7 @@ impl Ui {
             forecast: Default::default(),
             journal: Default::default(),
             worktree: Default::default(),
+            submodule: Default::default(),
             rebase_editor: Default::default(),
             chrome_drawn: false,
             diff_layout: DiffLayout::default(),
@@ -2690,8 +2694,10 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             d.invisible().group_hover("file-row", |s| s.visible())
                         })
                         .when(editable && !f.staged, |d| {
-                            d.child(kit::icon_btn(("discard", index), "undo", discard_tip, discard_action, cx))
-                                .child(kit::icon_btn(("stage", index), "plus", stage_tip, stage_action, cx))
+                            d.when(f.submodule.is_none(), |d| {
+                                d.child(kit::icon_btn(("discard", index), "undo", discard_tip, discard_action, cx))
+                            })
+                            .child(kit::icon_btn(("stage", index), "plus", stage_tip, stage_action, cx))
                         })
                         .when(editable && f.staged, |d| {
                             d.child(kit::icon_btn(("unstage", index), "minus", unstage_tip, unstage_action, cx))
@@ -2746,6 +2752,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             }),
                         )
                         .child(label)
+                        .children(f.submodule.map(|flags| crate::submodule::row_marks(flags, f.staged)))
                         .child(actions)
                         .into_any_element()
                 })
@@ -3425,6 +3432,7 @@ pub fn render<T: Desk>(
                 .flex()
                 .flex_col()
                 .when(ui.operation.kind().is_some(), |d| d.child(crate::operation::banner(app, cx)))
+                .children(crate::submodule::strip(app, cx))
                 .child(columns),
         )
     };
@@ -3470,6 +3478,7 @@ mod tests {
             staged,
             status,
             from: from.map(PathBuf::from),
+            submodule: None,
         };
         let files = [
             row("new.txt", true, crate::repository::RENAMED, Some("old.txt")),

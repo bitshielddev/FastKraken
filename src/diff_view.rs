@@ -429,7 +429,8 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
     };
     let editable = ui.can_edit_index();
     let picture = crate::image_diff::showing(ui);
-    let texts = picture.is_none();
+    let module = crate::submodule::showing(ui);
+    let texts = picture.is_none() && module.is_none();
     let blaming = crate::blame::showing(ui);
     let browsing = crate::browse::showing_file(ui);
     let header = if blaming {
@@ -480,14 +481,15 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                     path,
                     staged: false,
                 } => d
-                    .child(crate::stash::file_button(app, cx))
-                    .child(
-                        kit::btn("discard-file", "Discard…")
-                            .small()
-                            .danger()
-                            .enabled(editable)
-                            .on(Action::AskDiscard(Discard::File(path)), cx),
-                    )
+                    .when(module.is_none(), |d| {
+                        d.child(crate::stash::file_button(app, cx)).child(
+                            kit::btn("discard-file", "Discard…")
+                                .small()
+                                .danger()
+                                .enabled(editable)
+                                .on(Action::AskDiscard(Discard::File(path)), cx),
+                        )
+                    })
                     .child(
                         kit::btn("stage-file", "Stage file")
                             .small()
@@ -504,11 +506,11 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                     ),
                 _ => d,
             })
-            .when_some(edit_button(ui, cx), |d, button| d.child(button))
+            .when_some(edit_button(ui, cx).filter(|_| module.is_none()), |d, button| d.child(button))
             .when_some(crate::stash::restore_button(ui, cx), |d, button| d.child(button))
-            .when(crate::file_history::offered_here(ui), |d| d.child(crate::file_history::button(ui, cx)))
-            .when(crate::blame::offered_here(ui), |d| d.child(crate::blame::button(ui, cx)))
-            .when(crate::file_view::offered(ui), |d| d.child(crate::file_view::toggle(ui, cx)))
+            .when(module.is_none() && crate::file_history::offered_here(ui), |d| d.child(crate::file_history::button(ui, cx)))
+            .when(module.is_none() && crate::blame::offered_here(ui), |d| d.child(crate::blame::button(ui, cx)))
+            .when(module.is_none() && crate::file_view::offered(ui), |d| d.child(crate::file_view::toggle(ui, cx)))
             .when(crate::image_diff::offers_toggle(ui), |d| d.child(crate::image_diff::toggle(ui, cx)))
             .when(texts && !file_view && !doc.lines.is_empty(), |d| {
                 d.child(mode_control(mode, cx))
@@ -678,6 +680,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         .children(bars)
         .when(texts, |d| d.children(crate::lines::bar(ui, cx)))
         .children(picture.map(crate::image_diff::view))
+        .children(module.map(|panel| crate::submodule::panel(ui, panel, cx)))
         .children(placeholder)
         .when(showing, |d| {
             let sideways = if split {

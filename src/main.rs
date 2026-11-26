@@ -84,6 +84,7 @@ mod sidebar;
 mod start;
 mod stash;
 mod storage;
+mod submodule;
 mod sync;
 mod syntax;
 mod tabs;
@@ -311,6 +312,7 @@ impl Tab {
                 sync::restore(tab, configured, cx);
                 merge::restore(tab, cx);
                 commit_options::restore(tab, cx);
+                submodule::restore(tab, cx);
                 commit_options::load_template(tab, cx);
                 refs::refresh(tab, cx);
                 worktree::refresh(tab, cx);
@@ -537,6 +539,7 @@ impl Tab {
                                         staged,
                                         status: file.status,
                                         from: file.from,
+                                        submodule: file.submodule,
                                     })
                                 })
                                 .collect(),
@@ -545,6 +548,7 @@ impl Tab {
                         compare::status_changed(tab, cx);
                         blame::status_changed(tab, cx);
                         browse::status_changed(tab, cx);
+                        submodule::status_changed(tab, cx);
                         if let Some(Selection::File { path, staged }) = tab.ui.selection.clone() {
                             if tab
                                 .ui
@@ -645,6 +649,7 @@ impl Tab {
             self.ui.picked = None;
         }
         self.ui.selection = Some(selection.clone());
+        submodule::selected(self, &selection, cx);
         stash::selected(
             self,
             match &selection {
@@ -1703,6 +1708,7 @@ impl Tab {
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Journal(action) => journal::dispatch(self, action, window, cx),
             Action::Worktree(action) => worktree::dispatch(self, action, window, cx),
+            Action::Submodule(action) => submodule::dispatch(self, action, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
             Action::Rewrite(action) => rewrite::dispatch(self, action, window, cx),
@@ -1865,6 +1871,7 @@ impl Tab {
                     self.mutate(cx, move |repo| repo.unstage_hunk(&diff, index));
                 }
             }
+            Action::StagePath(path) if submodule::explains_staging(&self.ui, &path) => submodule::stage(self, path, cx),
             Action::StagePath(path) => self.mutate(cx, move |repo| repo.stage_file(&path)),
             Action::UnstagePath(path) => {
                 self.mutate(cx, move |repo| repo.unstage_file(&path))
@@ -1882,7 +1889,11 @@ impl Tab {
                     staged: false,
                 }) = self.ui.selection.clone()
                 {
-                    self.mutate(cx, move |repo| repo.stage_file(&path));
+                    if submodule::explains_staging(&self.ui, &path) {
+                        submodule::stage(self, path, cx);
+                    } else {
+                        self.mutate(cx, move |repo| repo.stage_file(&path));
+                    }
                 }
             }
             Action::ToggleAmend => self.toggle_amend(cx),

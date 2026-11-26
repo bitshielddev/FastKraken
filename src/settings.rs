@@ -177,6 +177,8 @@ pub(crate) struct RepoView {
     pub(crate) journal: Option<crate::journal::Stored>,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) journals: std::collections::BTreeMap<String, crate::journal::Stored>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) update_submodules: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -280,6 +282,7 @@ impl Memory {
             || view.graph.is_some()
             || view.journal.is_some()
             || !view.journals.is_empty()
+            || view.update_submodules.is_some()
         {
             self.repositories.push(view);
         }

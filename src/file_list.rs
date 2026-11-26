@@ -1173,7 +1173,7 @@ mod tests {
     }
 
     fn reloaded(rows: &[(&str, &'static str)]) -> Vec<crate::repository::ChangedFile> {
-        rows.iter().map(|(path, status)| crate::repository::ChangedFile { path: PathBuf::from(path), status, from: None }).collect()
+        rows.iter().map(|(path, status)| crate::repository::ChangedFile { path: PathBuf::from(path), status, from: None, submodule: None }).collect()
     }
 
     fn read(cache: &Cache, files: &Files<crate::repository::ChangedFile>, folds: u64, shape: &Shape, built: &std::cell::Cell<usize>) -> (Vec<String>, usize) {

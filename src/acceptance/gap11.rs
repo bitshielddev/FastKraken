@@ -1,10 +1,11 @@
 use super::*;
 use crate::{
     commands::{self, Availability, Target},
-    journal,
+    commands::Side,
+    journal, notice,
     prompt::{self, Stop},
     refs::{Section, SideRow},
-    worktree,
+    submodule, sync, worktree,
 };
 
 const MAIN_TREE: &str = "Worktree-trail";
@@ -14,9 +15,21 @@ const CAMP_TREE: &str = "Camp-trail";
 const LAKE_TREE: &str = "Camp-trail-lake";
 const MAIN_TREE_MEADOW: &str = "Camp-trail-meadow";
 const FORD_TREE: &str = "Camp-trail-ford";
+const SUMMIT: &str = "Summit-trail";
+const SUMMIT_MAPS: &str = "Summit-maps";
+const SUMMIT_PEER: &str = "Summit-peer";
 
 fn path(path: &Path) -> Result<&str> {
     path.to_str().ok_or_else(|| format!("{} is not UTF-8", path.display()).into())
+}
+
+fn scripted(root: &Path, args: &[&str]) -> Result<String> {
+    let mut command = repository::bundled_command(root)?;
+    let output = repository::with_system_tools(&mut command).args(args).output()?;
+    if !output.status.success() {
+        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8(output.stdout)?)
 }
 
 fn private_refs(root: &Path, space: &str) -> Result<String> {
@@ -28,7 +41,10 @@ impl Replay<'_> {
         let (root, ridge) = self.list_a_linked_worktree(dir).await?;
         self.refuse_a_branch_in_use(dir, &root, &ridge).await?;
         let camp = self.create_and_remove_a_worktree(dir).await?;
-        self.remove_a_dirty_worktree(dir, &camp).await
+        self.remove_a_dirty_worktree(dir, &camp).await?;
+        let (summit, maps) = self.a_submodule_with_new_commits(dir).await?;
+        self.update_a_submodule(&summit).await?;
+        self.pull_a_moved_submodule(dir, &summit, &maps).await
     }
 
     async fn until_tab_count(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
@@ -610,6 +626,322 @@ impl Replay<'_> {
         git_is(root, &["rev-parse", "ford"], &format!("{}\n", oid(root, "lake")?))?;
         git_is(root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
         git_is(root, &["status", "--porcelain=v1"], "")?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn a_submodule_with_new_commits(&mut self, dir: &Path) -> Result<(PathBuf, PathBuf)> {
+        self.start("GAP1105");
+        let config = global_config(dir);
+        let mut text = fs::read_to_string(&config).unwrap_or_default();
+        text.push_str("[protocol \"file\"]\n\tallow = always\n");
+        fs::write(&config, text)?;
+        let maps = init(dir, SUMMIT_MAPS)?;
+        record(&maps, "map.txt", "Ridge map\n", "Draw the ridge map")?;
+        let root = init(dir, SUMMIT)?;
+        record(&root, "trail.txt", TRAIL, "Start the summit trail")?;
+        scripted(&root, &["submodule", "add", "-q", path(&maps)?, "maps"])?;
+        git(&root, &["commit", "-qm", "Add the maps"])?;
+        let inside = root.join("maps");
+        Self::configure(&inside)?;
+        let start = Self::recorded(&root)?;
+        record(&inside, "camp.txt", "Camp\n", "Mark the camp")?;
+        record(&inside, "lake.txt", "Lake\n", "Mark the lake")?;
+        let checked = oid(&inside, "HEAD")?;
+        self.open(&root)?;
+        self.until("Summit-trail open with its submodule moved", |tab| {
+            tab.ui.repo == SUMMIT
+                && tab.ui.files.len() == 1
+                && tab.ui.files[0].path == Path::new("maps")
+                && !tab.ui.files[0].staged
+                && tab.ui.files[0].submodule.is_some_and(|flags| flags.moved && !flags.modified && !flags.untracked)
+                && tab.ui.submodule.list.len() == 1
+                && tab.ui.submodule.list[0].checked_out.is_some()
+        })
+        .await?;
+        let shown = self.tab.read_with(self.cx, |tab, _| {
+            let flags = tab.ui.files[0].submodule.unwrap_or_default();
+            let module = tab.ui.submodule.list[0].clone();
+            let section = tab.ui.refs.rows.iter().any(|row| matches!(row, SideRow::Header { section: Section::Submodules, count: 1, .. }))
+                && tab.ui.refs.rows.iter().any(|row| matches!(row, SideRow::Submodule(0)));
+            (submodule::describe(flags, false), submodule::state_text(&tab.ui, &module), module, section)
+        })?;
+        if shown.0 != "new commits" || shown.1 != "New commits" || !shown.3 {
+            return Err(format!("The submodule row says {:?}, its sidebar row {:?}, section shown {}", shown.0, shown.1, shown.3).into());
+        }
+        if shown.2.recorded.as_deref() != Some(start.as_str()) || shown.2.checked_out.as_deref() != Some(checked.as_str()) || !shown.2.populated {
+            return Err(format!("The submodule is listed as {:?}", shown.2).into());
+        }
+        let file_target = Target::File { path: "maps".into(), side: Side::Unstaged };
+        let rows = self.menu_rows(&file_target)?;
+        let wanted = [
+            ("submodule.open", "Open submodule".to_owned(), None),
+            ("submodule.update", "Update to the recorded commit".to_owned(), None),
+        ];
+        if !wanted.iter().all(|row| rows.contains(row)) {
+            return Err(format!("The submodule row's menu reads {rows:?}").into());
+        }
+
+        self.action(Action::Select(file("maps", false)))?;
+        self.until("the submodule panel read", |tab| {
+            view::centre(&tab.ui) == view::Centre::Diff
+                && submodule::showing(&tab.ui).is_some()
+                && submodule::loaded(&tab.ui).is_some_and(|details| details.ahead_count == 2)
+        })
+        .await?;
+        let read = self.tab.read_with(self.cx, |tab, _| submodule::loaded(&tab.ui).cloned())?.ok_or("The panel has no details")?;
+        let subjects: Vec<String> = read.ahead.iter().filter_map(|commit| commit.subject.clone()).collect();
+        let logged = git(&inside, &["log", "--format=%s", &format!("{start}..HEAD")])?;
+        let logged: Vec<String> = logged.lines().map(str::to_owned).collect();
+        if read.from.as_ref().map(|commit| commit.oid.as_str()) != Some(start.as_str())
+            || read.to.as_ref().map(|commit| commit.oid.as_str()) != Some(checked.as_str())
+            || subjects != logged
+            || logged != ["Mark the lake", "Mark the camp"]
+            || read.behind_count != 0
+            || submodule::ahead_title(&read) != "2 commits checked out that this repository does not record"
+        {
+            return Err(format!("The submodule panel reads {read:?}; Git logs {logged:?}").into());
+        }
+
+        fs::write(inside.join("map.txt"), "Ridge map, redrawn\n")?;
+        self.until("the submodule's modified content seen", |tab| {
+            tab.ui.files.iter().any(|row| row.path == Path::new("maps") && row.submodule.is_some_and(|flags| flags.moved && flags.modified))
+                && submodule::loaded(&tab.ui).is_some_and(|details| details.changes == Some(1))
+        })
+        .await?;
+        let summary = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.files.iter().find(|row| !row.staged).and_then(|row| row.submodule).map(|flags| submodule::describe(flags, false))
+        })?;
+        if summary.as_deref() != Some("new commits, modified content") {
+            return Err(format!("The dirty submodule row says {summary:?}").into());
+        }
+        self.action(Action::StagePath("maps".into()))?;
+        self.until_said("Staged the new commit of submodule maps").await?;
+        let said = self.said()?.ok_or("No notice after staging the submodule")?;
+        if said.2 != "Only its commit is recorded, not the uncommitted changes inside it. Commit those in the submodule first if they belong with it."
+            || said.3 != ["Open submodule"]
+        {
+            return Err(format!("Staging the dirty submodule said {said:?}").into());
+        }
+        if Self::recorded(&root)? != checked {
+            return Err("Staging did not record the submodule's checked-out commit".into());
+        }
+        git_is(&inside, &["status", "--porcelain=v1"], " M map.txt\n")?;
+        self.until("the staged submodule listed", |tab| {
+            tab.ui.files.iter().any(|row| row.staged && row.path == Path::new("maps") && row.submodule.is_some())
+                && tab.ui.files.iter().any(|row| !row.staged && row.submodule.is_some_and(|flags| flags.modified && !flags.moved))
+        })
+        .await?;
+        self.action(Action::Select(file("maps", true)))?;
+        self.until("the staged submodule's panel", |tab| {
+            submodule::loaded(&tab.ui).is_some_and(|details| details.staged && details.ahead_count == 2)
+        })
+        .await?;
+        self.action(Action::UnstagePath("maps".into()))?;
+        self.until("the submodule unstaged", |tab| tab.ui.files.iter().all(|row| !row.staged)).await?;
+        if Self::recorded(&root)? != start {
+            return Err("Unstaging did not restore the recorded commit".into());
+        }
+        git(&inside, &["checkout", "--", "map.txt"])?;
+        self.until("the submodule clean inside again", |tab| {
+            tab.ui.files.len() == 1 && tab.ui.files[0].submodule.is_some_and(|flags| flags.moved && !flags.modified)
+        })
+        .await?;
+
+        self.action(Action::Submodule(submodule::Action::Open("maps".into())))?;
+        self.until_tab_count("the submodule in a second tab", 2, 1).await?;
+        self.until("the submodule open", |tab| tab.ui.repo == "maps" && tab.ui.history.len() == 3).await?;
+        self.key("cmd-w")?;
+        self.until_tab_count("one tab again", 1, 0).await?;
+        self.until("Summit-trail in front", |tab| tab.ui.repo == SUMMIT).await?;
+        self.pass();
+        Ok((root, maps))
+    }
+
+    fn configure(root: &Path) -> Result<()> {
+        for (key, value) in [
+            ("user.name", "Cedar Contributor"),
+            ("user.email", "cedar@example.invalid"),
+            ("core.hooksPath", "/dev/null"),
+            ("commit.gpgSign", "false"),
+        ] {
+            git(root, &["config", "--local", key, value])?;
+        }
+        Ok(())
+    }
+
+    fn recorded(root: &Path) -> Result<String> {
+        let listed = git(root, &["ls-files", "--stage", "--", "maps"])?;
+        let mut fields = listed.split_whitespace();
+        match (fields.next(), fields.next()) {
+            (Some("160000"), Some(oid)) => Ok(oid.to_owned()),
+            _ => Err(format!("Git's index lists maps as {listed:?}").into()),
+        }
+    }
+
+    async fn update_a_submodule(&mut self, root: &Path) -> Result<()> {
+        self.start("GAP1106");
+        let inside = root.join("maps");
+        let recorded = Self::recorded(root)?;
+        let ahead = oid(&inside, "HEAD")?;
+        let refs = git(root, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags"])?;
+        let head = oid(root, "HEAD")?;
+        self.action(Action::Select(file("maps", false)))?;
+        self.until("the moved submodule's panel", |tab| submodule::loaded(&tab.ui).is_some_and(|details| details.ahead_count == 2)).await?;
+        self.action(Action::Submodule(submodule::Action::Update("maps".into())))?;
+        let offers = self.until_said("Updated submodule maps").await?;
+        let said = self.said()?.ok_or("No notice after the update")?;
+        let detail = format!(
+            "It is at {}, the commit this repository records. It was at {}.",
+            notice::short(&recorded),
+            notice::short(&ahead)
+        );
+        if said.2 != detail || !offers.is_empty() {
+            return Err(format!("Updating the submodule said {said:?}").into());
+        }
+        git_is(&inside, &["rev-parse", "HEAD"], &format!("{recorded}\n"))?;
+        if Self::recorded(root)? != recorded || oid(root, "HEAD")? != head {
+            return Err("Updating the submodule changed the repository's index or HEAD".into());
+        }
+        git_is(root, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags"], &refs)?;
+        git_is(&inside, &["cat-file", "-t", &ahead], "commit\n")?;
+        git_is(root, &["status", "--porcelain=v1"], "")?;
+        self.until("the submodule row gone and the sidebar in sync", |tab| {
+            tab.ui.files.is_empty()
+                && tab.ui.submodule.list.first().is_some_and(|module| module.in_sync() && submodule::state_text(&tab.ui, module) == "In sync")
+        })
+        .await?;
+        let target = Target::Submodule("maps".into());
+        let rows = self.menu_rows(&target)?;
+        if !rows.contains(&("submodule.update", "Update to the recorded commit".to_owned(), Some("It is at the recorded commit".to_owned()))) {
+            return Err(format!("The in-sync submodule's menu reads {rows:?}").into());
+        }
+
+        scripted(root, &["submodule", "deinit", "-q", "-f", "maps"])?;
+        self.action(Action::Refresh)?;
+        self.until("the submodule listed as not initialised", |tab| {
+            tab.ui.submodule.list.first().is_some_and(|module| !module.populated && submodule::state_text(&tab.ui, module) == "Not initialised")
+        })
+        .await?;
+        let rows = self.menu_rows(&target)?;
+        let wanted = [
+            ("submodule.update", "Initialise".to_owned(), None),
+            ("submodule.open", "Open submodule".to_owned(), Some("It is not initialised yet".to_owned())),
+        ];
+        if !wanted.iter().all(|row| rows.contains(row)) {
+            return Err(format!("The uninitialised submodule's menu reads {rows:?}").into());
+        }
+        if inside.join("map.txt").exists() {
+            return Err("Deinitialising left the submodule's files".into());
+        }
+        self.choose(&target, "submodule.update")?;
+        self.until_said("Initialised submodule maps").await?;
+        git_is(&inside, &["rev-parse", "HEAD"], &format!("{recorded}\n"))?;
+        if fs::read_to_string(inside.join("map.txt"))? != "Ridge map\n" {
+            return Err("Initialising did not check out the submodule's files".into());
+        }
+        self.until("the submodule in sync again", |tab| {
+            tab.ui.files.is_empty() && tab.ui.submodule.list.first().is_some_and(submodule::Module::in_sync)
+        })
+        .await?;
+        self.pass();
+        Ok(())
+    }
+
+    fn move_pointer(dir: &Path, maps: &Path, peer: &Path, subject: &str) -> Result<String> {
+        let name = format!("{}.txt", subject.to_lowercase().replace(' ', "-"));
+        record(maps, &name, &format!("{subject}\n"), subject)?;
+        let tip = oid(maps, "HEAD")?;
+        if !peer.exists() {
+            git(dir, &["clone", "-q", path(&dir.join("Summit-trail.git"))?, path(peer)?])?;
+            Self::configure(peer)?;
+        }
+        git(peer, &["pull", "-q", "--ff-only"])?;
+        git(peer, &["update-index", "--cacheinfo", &format!("160000,{tip},maps")])?;
+        git(peer, &["commit", "-qm", &format!("Move the maps to {}", subject.to_lowercase())])?;
+        git(peer, &["push", "-q", "origin", "main"])?;
+        Ok(tip)
+    }
+
+    async fn pull_a_moved_submodule(&mut self, dir: &Path, root: &Path, maps: &Path) -> Result<()> {
+        self.start("GAP1107");
+        let inside = root.join("maps");
+        let bare = dir.join("Summit-trail.git");
+        git(dir, &["init", "-q", "--bare", "-b", "main", path(&bare)?])?;
+        git(root, &["remote", "add", "origin", path(&bare)?])?;
+        git(root, &["push", "-q", "-u", "origin", "main"])?;
+        git(root, &["branch", "before-the-pass"])?;
+        self.action(Action::Refresh)?;
+        self.until("Summit-trail tracking origin/main", |tab| tab.ui.upstream.as_deref() == Some("origin/main")).await?;
+        let peer = dir.join(SUMMIT_PEER);
+        let before = oid(&inside, "HEAD")?;
+        let tip = Self::move_pointer(dir, maps, &peer, "Mark the pass")?;
+        let pulled = oid(&peer, "HEAD")?;
+        let pulled_for = pulled.clone();
+        self.action(Action::Sync(sync::Action::Pull))?;
+        self.until("the strip after the pull", move |tab| {
+            tab.ui.head.as_deref() == Some(pulled_for.as_str()) && tab.ui.submodule.behind == [PathBuf::from("maps")]
+        })
+        .await?;
+        if Self::recorded(root)? != tip {
+            return Err("The pull did not move the recorded submodule commit".into());
+        }
+        git_is(&inside, &["rev-parse", "HEAD"], &format!("{before}\n"))?;
+        if submodule::strip_text(1) != "1 submodule is not at the commit this branch expects." {
+            return Err(format!("The strip reads {:?}", submodule::strip_text(1)).into());
+        }
+        let section = Target::Section(Section::Submodules);
+        let rows = self.menu_rows(&section)?;
+        if !rows.contains(&("submodule.update-all", "Update submodules".to_owned(), None)) {
+            return Err(format!("The Submodules section menu reads {rows:?}").into());
+        }
+        self.action(Action::Submodule(submodule::Action::UpdateAll))?;
+        self.until_said("Updated submodule maps").await?;
+        self.until("the strip gone", |tab| tab.ui.submodule.behind.is_empty() && tab.ui.files.is_empty()).await?;
+        git_is(&inside, &["rev-parse", "HEAD"], &format!("{tip}\n"))?;
+        git_is(root, &["rev-parse", "HEAD"], &format!("{pulled}\n"))?;
+
+        self.action(Action::Submodule(submodule::Action::ToggleAutomatic))?;
+        let remembered = self.tab.read_with(self.cx, |tab, cx| {
+            let common = tab.repo.as_ref().map(|repo| repo.common_dir().to_owned());
+            let stored = common.and_then(|common| settings::memory(cx).and_then(|memory| memory.repo(&common)).and_then(|view| view.update_submodules));
+            (tab.ui.submodule.automatic, stored)
+        })?;
+        if remembered != (true, Some(true)) {
+            return Err(format!("Turning on automatic updates gives {remembered:?}").into());
+        }
+        let next = Self::move_pointer(dir, maps, &peer, "Mark the summit")?;
+        let pulled = oid(&peer, "HEAD")?;
+        let pulled_for = pulled.clone();
+        self.action(Action::Sync(sync::Action::Pull))?;
+        let wanted = next.clone();
+        self.until("the submodule updated without asking", move |tab| {
+            tab.ui.head.as_deref() == Some(pulled_for.as_str())
+                && tab.ui.submodule.behind.is_empty()
+                && tab.ui.submodule.list.first().is_some_and(|module| module.in_sync() && module.recorded.as_deref() == Some(wanted.as_str()))
+                && tab.ui.notices.newest().is_some_and(|notice| notice.title == "Updated submodule maps")
+        })
+        .await?;
+        git_is(&inside, &["rev-parse", "HEAD"], &format!("{next}\n"))?;
+        git_is(root, &["status", "--porcelain=v1"], "")?;
+        self.action(Action::Submodule(submodule::Action::ToggleAutomatic))?;
+        let off = self.tab.read_with(self.cx, |tab, _| tab.ui.submodule.automatic)?;
+        if off {
+            return Err("Automatic submodule updates stayed on".into());
+        }
+
+        self.action(Action::Refs(refs::Action::Switch("before-the-pass".into())))?;
+        self.until("the strip after switching to an older pointer", |tab| {
+            tab.ui.branch == "before-the-pass" && tab.ui.submodule.behind == [PathBuf::from("maps")]
+        })
+        .await?;
+        git_is(&inside, &["rev-parse", "HEAD"], &format!("{next}\n"))?;
+        if Self::recorded(root)? == next {
+            return Err("The older branch records the newest maps commit".into());
+        }
+        self.action(Action::Submodule(submodule::Action::Dismiss))?;
+        self.until("the strip dismissed", |tab| tab.ui.submodule.behind.is_empty()).await?;
+        git_is(&inside, &["rev-parse", "HEAD"], &format!("{next}\n"))?;
         self.pass();
         Ok(())
     }

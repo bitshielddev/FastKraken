@@ -230,6 +230,7 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
         }
         "pull" => Some(Action::Sync(sync::Action::ToggleOptions)),
         "fetch" => Some(Action::Sync(sync::Action::FetchAll)),
+        "switch" => Some(Action::Refs(refs::Action::Switch(argument.into()))),
         "push" => Some(Action::Sync(sync::Action::Push)),
         "activity" => {
             tab.dispatch(Action::Activity(crate::activity::Action::Toggle), window, cx);

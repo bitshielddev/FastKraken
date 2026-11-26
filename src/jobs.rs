@@ -296,6 +296,7 @@ pub(crate) enum Kind {
     Pull,
     Publish,
     Clone,
+    Submodules,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -325,6 +326,10 @@ impl Spec {
 
     pub(crate) fn publish() -> Self {
         Self::of(Kind::Publish, None, true)
+    }
+
+    pub(crate) fn submodules() -> Self {
+        Self::of(Kind::Submodules, None, true)
     }
 
     pub(crate) fn clone_from(host: Option<String>) -> Self {
@@ -413,6 +418,7 @@ impl State {
                 Kind::Push => "A push is already running",
                 Kind::Pull => "A pull is already running",
                 Kind::Clone => "A clone is already running",
+                Kind::Submodules => "Submodules are being updated",
                 Kind::Publish | Kind::Write => "Wait for publishing to finish",
             }
             .to_owned(),
@@ -448,6 +454,7 @@ pub(crate) fn cancelled(spec: &Spec) -> Notice {
         .sticky(),
         Kind::Pull => Notice::new(Tone::Info, "Pull cancelled", "Nothing was changed locally."),
         Kind::Clone => Notice::new(Tone::Info, "Clone cancelled", "Nothing it cloned was kept."),
+        Kind::Submodules => Notice::new(Tone::Info, "Submodule update cancelled", "Submodules that were already updated stay updated."),
         Kind::Publish | Kind::Write => Notice::new(Tone::Info, "Cancelled", ""),
     }
 }

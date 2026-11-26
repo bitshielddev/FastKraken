@@ -28,6 +28,7 @@ pub(crate) fn title(section: Section) -> &'static str {
         Section::Tags => "Tags",
         Section::Stashes => "Stashes",
         Section::Worktrees => "Worktrees",
+        Section::Submodules => "Submodules",
     }
 }
 
@@ -38,6 +39,7 @@ pub(crate) fn repo_rows(section: Section) -> &'static [&'static str] {
         Section::Tags => &["repo.new-tag"],
         Section::Stashes => &["repo.stash"],
         Section::Worktrees => &["worktree.new", "worktree.prune"],
+        Section::Submodules => &["submodule.update-all"],
     }
 }
 

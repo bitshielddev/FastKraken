@@ -190,6 +190,7 @@ pub enum Section {
     Tags,
     Stashes,
     Worktrees,
+    Submodules,
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +261,7 @@ pub(crate) enum SideRow {
     },
     Stash(usize),
     Worktree(usize),
+    Submodule(usize),
     Note,
 }
 
@@ -991,6 +993,10 @@ pub(crate) fn activate_row(tab: &mut Tab, index: usize, window: &mut Window, cx:
             },
             None => return,
         },
+        Some(SideRow::Submodule(index)) => match tab.ui.submodule.list.get(*index) {
+            Some(module) => view::Action::Submodule(crate::submodule::Action::Open(module.path.clone())),
+            None => return,
+        },
         Some(SideRow::Note) => view::Action::Publish(crate::publish::Action::Publish),
         None => return,
     };
@@ -1003,7 +1009,7 @@ fn kind_of(section: Section) -> Option<Kind> {
         Section::Branches => Some(Kind::Branch),
         Section::Remotes => Some(Kind::Remote),
         Section::Tags => Some(Kind::Tag),
-        Section::Stashes | Section::Worktrees => None,
+        Section::Stashes | Section::Worktrees | Section::Submodules => None,
     }
 }
 
@@ -1051,6 +1057,7 @@ pub(crate) fn rebuild_rows(ui: &mut view::Ui, cx: &App) {
         (Section::Branches, Some(Kind::Branch)),
         (Section::Remotes, Some(Kind::Remote)),
         (Section::Worktrees, None),
+        (Section::Submodules, None),
         (Section::Tags, Some(Kind::Tag)),
         (Section::Stashes, None),
     ] {
@@ -1071,6 +1078,20 @@ pub(crate) fn rebuild_rows(ui: &mut view::Ui, cx: &App) {
                         || worktree.name().to_lowercase().contains(&filter)
                         || worktree.on().to_lowercase().contains(&filter))
                     .then_some(SideRow::Worktree(i))
+                }));
+            }
+            continue;
+        }
+        if section == Section::Submodules {
+            let listed = &ui.submodule.list;
+            if listed.is_empty() {
+                continue;
+            }
+            rows.push(SideRow::Header { section, count: listed.len(), open });
+            if open {
+                rows.extend((0..listed.len()).filter_map(|i| {
+                    let module = &listed[i];
+                    (filter.is_empty() || module.shown().to_lowercase().contains(&filter)).then_some(SideRow::Submodule(i))
                 }));
             }
             continue;
@@ -1273,6 +1294,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 Section::Tags => "Tags",
                                 Section::Stashes => "Stashes",
                                 Section::Worktrees => "Worktrees",
+                                Section::Submodules => "Submodules",
                             };
                             let add = match section {
                                 Section::Branches => Some("New branch"),
@@ -1654,6 +1676,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .into_any_element()
                         }
                         SideRow::Worktree(index) => crate::worktree::side_row(ui, *index, i, pointed == Some(i), cx),
+                        SideRow::Submodule(index) => crate::submodule::side_row(ui, *index, i, pointed == Some(i), cx),
                         SideRow::Note => div()
                             .id(("side-note", i))
                             .h(px(TREE_ROW))

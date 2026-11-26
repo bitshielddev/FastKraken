@@ -2133,7 +2133,8 @@ mod tests {
             [ChangedFile {
                 path: path.into(),
                 status: "Modified",
-                from: None
+                from: None,
+                submodule: None
             }]
         );
         assert_eq!(f.git(&["show", "stash^2:other"]), b"base\n");
@@ -2712,7 +2713,7 @@ mod tests {
         let stash = f.repo.stashes().unwrap()[0].oid.clone();
         assert_eq!(
             f.repo.stash_files(&stash).unwrap(),
-            [ChangedFile { path: "new.txt".into(), status: "Renamed", from: Some("old.txt".into()) }]
+            [ChangedFile { path: "new.txt".into(), status: "Renamed", from: Some("old.txt".into()), submodule: None }]
         );
         assert_eq!(f.git(&["diff", "--cached", "--name-only", "-z"]), b"other.txt\0");
         assert_eq!(fs::read(f.dir.join("old.txt")).unwrap(), b"one\ntwo\nthree\nfour\n");
@@ -2731,7 +2732,7 @@ mod tests {
         let stash = f.repo.stashes().unwrap()[0].oid.clone();
         assert_eq!(
             f.repo.stash_files(&stash).unwrap(),
-            [ChangedFile { path: "moved.txt".into(), status: "Renamed", from: Some("old.txt".into()) }]
+            [ChangedFile { path: "moved.txt".into(), status: "Renamed", from: Some("old.txt".into()), submodule: None }]
         );
     }
 

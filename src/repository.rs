@@ -174,6 +174,26 @@ pub struct ChangedFile {
     pub path: PathBuf,
     pub status: &'static str,
     pub from: Option<PathBuf>,
+    pub submodule: Option<Gitlink>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Gitlink {
+    pub moved: bool,
+    pub modified: bool,
+    pub untracked: bool,
+}
+
+fn gitlink(field: &[u8]) -> Result<Option<Gitlink>> {
+    match field {
+        [b'N', ..] => Ok(None),
+        [b'S', commit, modified, untracked] => Ok(Some(Gitlink {
+            moved: *commit == b'C',
+            modified: *modified == b'M',
+            untracked: *untracked == b'U',
+        })),
+        _ => Err("Invalid Git status record".into()),
+    }
 }
 
 pub(crate) const RENAMED: &str = "Renamed";
@@ -753,6 +773,7 @@ impl Repository {
                     path: raw_path(path),
                     status: status_label(b'?'),
                     from: None,
+                    submodule: None,
                 });
             } else if matches!(entry.first(), Some(b'1' | b'2' | b'u')) {
                 unmerged |= entry[0] == b'u';
@@ -773,6 +794,7 @@ impl Repository {
                     _ => None,
                 };
                 let paired = |code: u8| from.clone().filter(|_| matches!(code, b'R' | b'C'));
+                let inside = gitlink(fields[2])?;
                 result.changed_paths += 1;
                 let label = |code| {
                     if entry[0] == b'u' {
@@ -786,6 +808,7 @@ impl Repository {
                         path: path.clone(),
                         status: label(fields[1][0]),
                         from: paired(fields[1][0]),
+                        submodule: inside.map(|_| Gitlink { moved: true, ..Gitlink::default() }),
                     });
                 }
                 if fields[1][1] != b'.' {
@@ -793,6 +816,7 @@ impl Repository {
                         path,
                         status: label(fields[1][1]),
                         from: paired(fields[1][1]),
+                        submodule: inside,
                     });
                 }
             }
@@ -1445,7 +1469,7 @@ pub(crate) fn parse_changed_files(paths: &[u8]) -> Result<Vec<ChangedFile>> {
             })?;
             let mut path = || records.next().map(raw_path).ok_or("Missing changed path");
             let from = if paired_status(code) { Some(path()?) } else { None };
-            files.push(ChangedFile { status, path: path()?, from });
+            files.push(ChangedFile { status, path: path()?, from, submodule: None });
         }
     }
     Ok(files)
@@ -1478,6 +1502,24 @@ pub(crate) fn same_place(left: &Path, right: &Path) -> bool {
 fn without_final_newline(bytes: &[u8]) -> &[u8] {
     bytes.strip_suffix(b"\n").unwrap_or(bytes)
 }
+pub(crate) fn with_system_tools(command: &mut Command) -> &mut Command {
+    let search = command
+        .get_envs()
+        .find(|(name, _)| *name == "PATH")
+        .and_then(|(_, value)| value.map(OsStr::to_owned))
+        .unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = env::split_paths(&search).collect();
+    for system in ["/usr/bin", "/bin"] {
+        if !dirs.iter().any(|dir| dir == Path::new(system)) {
+            dirs.push(PathBuf::from(system));
+        }
+    }
+    if let Ok(joined) = env::join_paths(dirs) {
+        command.env("PATH", joined);
+    }
+    command
+}
+
 pub(crate) fn checked(command: &mut Command) -> Result<Vec<u8>> {
     successful(run(command).map_err(|e| format!("Run bundled Git: {e}"))?)
 }
@@ -1912,6 +1954,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn git_scripts_find_the_system_tools_even_on_an_empty_search_path() {
+        let mut bare = Command::new("/usr/bin/true");
+        bare.env("PATH", "/opt/fastkraken/git/bin");
+        with_system_tools(&mut bare);
+        let search = |command: &Command| command.get_envs().find(|(name, _)| *name == "PATH").and_then(|(_, value)| value.map(OsStr::to_owned));
+        assert_eq!(search(&bare), Some(OsString::from("/opt/fastkraken/git/bin:/usr/bin:/bin")));
+        let mut kept = Command::new("/usr/bin/true");
+        kept.env("PATH", "/bin:/opt/homebrew/bin:/usr/bin");
+        with_system_tools(&mut kept);
+        assert_eq!(search(&kept), Some(OsString::from("/bin:/opt/homebrew/bin:/usr/bin")));
+        let f = Fixture::new();
+        let mut script = f.repo.command();
+        script.env("PATH", "/nowhere");
+        let output = with_system_tools(&mut script).args(["submodule", "status"]).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
     fn amend_message_and_index_preserve_commit_parents_and_unstaged_edits() {
         let f = Fixture::new();
         let path = f.dir.join("notes");
@@ -1971,7 +2031,8 @@ pub(crate) mod tests {
             [ChangedFile {
                 path: name.into(),
                 status: "Untracked",
-                from: None
+                from: None,
+                submodule: None
             }]
         );
         assert!(f.repo.history(0, 10).unwrap().is_empty());
@@ -2003,7 +2064,8 @@ pub(crate) mod tests {
             [ChangedFile {
                 path: name.into(),
                 status: "Modified",
-                from: None
+                from: None,
+                submodule: None
             }]
         );
         assert_eq!(status.unstaged, status.staged);
@@ -2795,6 +2857,7 @@ pub(crate) mod tests {
                 path: "maps/trail é.txt".into(),
                 status: RENAMED,
                 from: Some("trail map.txt".into()),
+                submodule: None,
             }]
         );
         assert!(status.unstaged.is_empty());
@@ -2810,7 +2873,7 @@ pub(crate) mod tests {
         assert_eq!(status.staged[0].from.as_deref(), Some(Path::new("trail map.txt")));
         assert_eq!(
             status.unstaged,
-            [ChangedFile { path: "maps/trail é.txt".into(), status: "Modified", from: None }]
+            [ChangedFile { path: "maps/trail é.txt".into(), status: "Modified", from: None, submodule: None }]
         );
         assert_eq!(changed_lines(&f.repo.file_diff(Path::new("maps/trail é.txt"), false).unwrap()), ["-nine", "+NINE"]);
     }
@@ -2827,8 +2890,8 @@ pub(crate) mod tests {
         assert_eq!(
             status.unstaged,
             [
-                ChangedFile { path: "old.txt".into(), status: "Deleted", from: None },
-                ChangedFile { path: "new.txt".into(), status: "Untracked", from: None },
+                ChangedFile { path: "old.txt".into(), status: "Deleted", from: None, submodule: None },
+                ChangedFile { path: "new.txt".into(), status: "Untracked", from: None, submodule: None },
             ]
         );
         f.repo.stage_files(&["new.txt".into(), "old.txt".into()]).unwrap();
@@ -2899,14 +2962,14 @@ pub(crate) mod tests {
         let status = f.repo.status().unwrap();
         assert_eq!(
             status.unstaged,
-            [ChangedFile { path: "new.txt".into(), status: RENAMED, from: Some("old.txt".into()) }]
+            [ChangedFile { path: "new.txt".into(), status: RENAMED, from: Some("old.txt".into()), submodule: None }]
         );
         f.repo.stage_file(Path::new("new.txt")).unwrap();
         let status = f.repo.status().unwrap();
         assert!(status.unstaged.is_empty());
         assert_eq!(
             status.staged,
-            [ChangedFile { path: "new.txt".into(), status: RENAMED, from: Some("old.txt".into()) }]
+            [ChangedFile { path: "new.txt".into(), status: RENAMED, from: Some("old.txt".into()), submodule: None }]
         );
     }
 
@@ -2925,7 +2988,7 @@ pub(crate) mod tests {
         f.repo.stage_hunk(&diff, 0).unwrap();
         assert_eq!(f.git(&["show", ":other.txt"]), lines.replace("line 2\n", "line two\n").into_bytes());
         let staged = f.repo.status().unwrap().staged;
-        assert_eq!(staged, [ChangedFile { path: "other.txt".into(), status: "Modified", from: None }]);
+        assert_eq!(staged, [ChangedFile { path: "other.txt".into(), status: "Modified", from: None, submodule: None }]);
     }
 
     fn picks(diff: &Diff, wanted: &[&str]) -> Vec<(usize, usize)> {
@@ -3249,6 +3312,7 @@ pub(crate) mod tests {
             path: "copy.txt".into(),
             status: "Copied",
             from: Some("source.txt".into()),
+            submodule: None,
         }));
         let diff = f.repo.file_diff(Path::new("copy.txt"), true).unwrap();
         assert!(diff.stageable());
@@ -3263,9 +3327,9 @@ pub(crate) mod tests {
         assert_eq!(
             files,
             [
-                ChangedFile { path: "new name.txt".into(), status: RENAMED, from: Some("old name.txt".into()) },
-                ChangedFile { path: "kept.txt".into(), status: "Modified", from: None },
-                ChangedFile { path: "b.txt".into(), status: "Copied", from: Some("a.txt".into()) },
+                ChangedFile { path: "new name.txt".into(), status: RENAMED, from: Some("old name.txt".into()), submodule: None },
+                ChangedFile { path: "kept.txt".into(), status: "Modified", from: None, submodule: None },
+                ChangedFile { path: "b.txt".into(), status: "Copied", from: Some("a.txt".into()), submodule: None },
             ]
         );
         assert!(parse_changed_files(b"R085\0only.txt\0").is_err());

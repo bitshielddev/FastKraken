@@ -40,6 +40,12 @@ fn other_worktree(relative: &Path) -> bool {
     parts.len() <= 1 || (parts.len() == 2 && ["HEAD", "locked", "gitdir"].iter().any(|name| parts[1].as_os_str() == *name))
 }
 
+fn inside_module(relative: &Path) -> bool {
+    relative.starts_with("modules")
+        && (relative.file_name().is_some_and(|name| name == "HEAD" || name == "packed-refs")
+            || relative.components().any(|part| part.as_os_str() == "refs"))
+}
+
 fn changed_path(path: &Path, metadata: &[PathBuf]) -> u8 {
     for dir in metadata {
         if let Ok(relative) = path.strip_prefix(dir) {
@@ -55,6 +61,9 @@ fn changed_path(path: &Path, metadata: &[PathBuf]) -> u8 {
                 || other_worktree(relative)
             {
                 return WORK | REFS;
+            }
+            if inside_module(relative) {
+                return WORK;
             }
             return 0;
         }
@@ -143,6 +152,18 @@ mod tests {
             0
         );
         assert_eq!(changed_path(Path::new("/working/notes.txt"), &roots), WORK);
+    }
+
+    #[test]
+    fn a_submodule_moving_or_committing_reloads_the_status_but_its_objects_do_not() {
+        let common = PathBuf::from("/fixture/.git");
+        let roots = vec![common.clone()];
+        for moved in ["modules/maps/HEAD", "modules/maps/refs/heads/main", "modules/maps/packed-refs", "modules/maps/modules/inner/HEAD"] {
+            assert_eq!(changed_path(&common.join(moved), &roots), WORK, "{moved}");
+        }
+        for quiet in ["modules/maps/objects/ab/cdef", "modules/maps/index.lock", "modules/maps/FETCH_HEAD", "modules/maps/config"] {
+            assert_eq!(changed_path(&common.join(quiet), &roots), 0, "{quiet}");
+        }
     }
 
     #[test]
