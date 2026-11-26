@@ -818,7 +818,7 @@ pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     let on = mode.on();
     let switch = if on { Action::Disable } else { Action::Enable };
     let count = state.rows.len();
-    let height = px(count.clamp(1, TREE_ROWS_SHOWN) as f32 * TREE_ROW);
+    let height = whole_px(TREE_ROW) * count.clamp(1, TREE_ROWS_SHOWN) as f32;
     let enabled = refusal.is_none();
     let list = uniform_list(
         "sparse-folders",

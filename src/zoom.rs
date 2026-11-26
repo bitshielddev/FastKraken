@@ -14,6 +14,7 @@ pub(crate) const ACTUAL: u16 = 100;
 const SMALLEST: u16 = STEPS[0];
 const LARGEST: u16 = STEPS[STEPS.len() - 1];
 const TRAFFIC_LIGHTS: f32 = 14.;
+const OPENING: (f32, f32) = (1180., 760.);
 
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
@@ -88,6 +89,10 @@ pub(crate) fn min_window_size(cx: &App) -> Size<Pixels> {
     let width = screen.map_or(width, |screen| width.min(f32::from(screen.width).max(settings::MIN_WINDOW.0)));
     let height = screen.map_or(height, |screen| height.min(f32::from(screen.height).max(settings::MIN_WINDOW.1)));
     Size::new(gpui::px(width), gpui::px(height))
+}
+
+pub(crate) fn opening_size(least: Size<Pixels>) -> Size<Pixels> {
+    Size::new(least.width.max(gpui::px(OPENING.0)), least.height.max(gpui::px(OPENING.1)))
 }
 
 pub(crate) fn traffic_lights_top() -> f32 {
@@ -222,6 +227,14 @@ mod tests {
         assert_eq!(refusal(90, &Action::Out), None);
         assert_eq!(refusal(110, &Action::Actual), None);
         assert_eq!(refusal(150, &Action::Set(150)), None);
+    }
+
+    #[test]
+    fn a_new_window_opens_no_smaller_than_its_zoomed_minimum() {
+        let size = |width: f32, height: f32| Size::new(gpui::px(width), gpui::px(height));
+        assert_eq!(opening_size(size(860., 520.)), size(1180., 760.));
+        assert_eq!(opening_size(size(1204., 728.)), size(1204., 760.));
+        assert_eq!(opening_size(size(1290., 780.)), size(1290., 780.));
     }
 
     #[test]

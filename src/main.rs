@@ -114,7 +114,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, AppContext, Application, Bounds, Context, Focusable, IntoElement, PathPromptOptions, Render, Window,
-    WindowBounds, WindowOptions, px, size,
+    WindowBounds, WindowOptions, px,
 };
 use repository::{Diff, Repository};
 use view::{
@@ -2120,9 +2120,10 @@ fn main() {
         })
         .detach();
         cx.on_window_closed(|cx| if cx.windows().is_empty() { cx.quit(); }).detach();
+        let least = zoom::min_window_size(cx);
         let (display_id, window_bounds) = match settings::placement(cx) {
             Some((display, bounds)) => (Some(display), bounds),
-            None => (None, WindowBounds::Windowed(Bounds::centered(None, size(px(1180.), px(760.)), cx))),
+            None => (None, WindowBounds::Windowed(Bounds::centered(None, zoom::opening_size(least), cx))),
         };
         let options = WindowOptions { window_bounds: Some(window_bounds), display_id,
             show: !offscreen, focus: !offscreen,
@@ -2131,7 +2132,7 @@ fn main() {
                 appears_transparent: true,
                 traffic_light_position: Some(gpui::point(px(14.), px(zoom::traffic_lights_top()))),
             }),
-            window_min_size: Some(zoom::min_window_size(cx)),
+            window_min_size: Some(least),
             ..Default::default() };
         let handle=cx.open_window(options, move |window, cx| cx.new(|cx| {
             let bench = benchmark.then(|| perf::Run::new(started, fixture, offscreen, hold));
