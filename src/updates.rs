@@ -45,7 +45,8 @@ fn available(_: &Ui, target: &Target, cx: &App) -> Availability {
     if *target != Target::Repo {
         return Availability::Hidden;
     }
-    Availability::unless(checking(cx).then(|| "FastKraken is already checking for updates".to_owned()))
+    let by_hand = cx.try_global::<Updates>().is_some_and(|updates| updates.by_hand);
+    Availability::unless((by_hand && checking(cx)).then(|| "FastKraken is already checking for updates".to_owned()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,6 +183,7 @@ pub(crate) fn notice(answer: &Answer, current: Version, asked: bool) -> Option<N
 #[derive(Default)]
 struct Updates {
     checking: Arc<AtomicBool>,
+    by_hand: bool,
     tried: Option<i64>,
     announced: Option<Version>,
 }
@@ -216,11 +218,14 @@ pub(crate) fn check(tab: &mut Tab, asked: bool, cx: &mut Context<Tab>) {
     let flag = cx.default_global::<Updates>().checking.clone();
     if flag.swap(true, Ordering::SeqCst) {
         if asked {
+            cx.global_mut::<Updates>().by_hand = true;
             tab.ui.notices.show(Notice::new(Tone::Info, "FastKraken is already checking for updates", ""));
         }
         return;
     }
-    cx.global_mut::<Updates>().tried = Some(view::now());
+    let updates = cx.global_mut::<Updates>();
+    updates.tried = Some(view::now());
+    updates.by_hand = asked;
     let progress = asked.then(|| tab.ui.notices.progress(CHECKING));
     let work = move || {
         let answer = ask();
@@ -231,6 +236,7 @@ pub(crate) fn check(tab: &mut Tab, asked: bool, cx: &mut Context<Tab>) {
 }
 
 fn answered(tab: &mut Tab, answer: Answer, asked: bool, progress: Option<u64>, cx: &mut Context<Tab>) {
+    let asked = std::mem::take(&mut cx.default_global::<Updates>().by_hand) || asked;
     if answer.is_ok() {
         Memory::update(cx, |memory| memory.updates_checked = Some(view::now()));
     }
