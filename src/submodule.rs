@@ -508,7 +508,7 @@ pub(crate) fn path_problem(text: &str, ui: &Ui) -> Option<String> {
 fn module_dir(repo: &Repository, name: &str) -> Option<PathBuf> {
     let relative = Path::new(name);
     validate_path(relative).ok()?;
-    Some(repo.common_dir().join("modules").join(relative))
+    Some(repo.git_dir().join("modules").join(relative))
 }
 
 fn tracked(repo: &Repository, path: &Path) -> Result<bool, String> {
@@ -582,12 +582,19 @@ fn unpushed(repo: &Repository, module: &Module) -> Result<usize, String> {
     Ok(String::from_utf8_lossy(&output).trim().parse().unwrap_or(0))
 }
 
-fn used_elsewhere(repo: &Repository, path: &Path) -> Option<String> {
+fn linked_data(folder: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(folder.join(".git")).ok()?;
+    let target = text.strip_prefix("gitdir: ")?.trim_end_matches(['\n', '\r']);
+    fs::canonicalize(folder.join(target)).ok()
+}
+
+fn used_elsewhere(repo: &Repository, path: &Path, data: Option<&Path>) -> Option<String> {
+    let data = fs::canonicalize(data?).ok()?;
     let listed = crate::worktree::list(repo).ok()?;
     listed
         .iter()
         .filter(|worktree| !worktree.current && worktree.prunable.is_none())
-        .find(|worktree| fs::symlink_metadata(worktree.path.join(path).join(".git")).is_ok())
+        .find(|worktree| linked_data(&worktree.path.join(path)).is_some_and(|linked| linked == data))
         .map(crate::worktree::Worktree::name)
 }
 
@@ -598,7 +605,7 @@ pub(crate) fn removal(repo: &Repository, expected: &Module) -> Result<Removal, S
     }
     let changes = if found.populated { crate::worktree::uncommitted(repo, &repo.root.join(&found.path))? } else { 0 };
     let unpushed = unpushed(repo, &found)?;
-    let kept_for = used_elsewhere(repo, &found.path);
+    let kept_for = used_elsewhere(repo, &found.path, module_dir(repo, &found.name).as_deref());
     Ok(Removal { module: found, changes, unpushed, kept_for })
 }
 
@@ -612,7 +619,7 @@ fn gitmodules_changed(repo: &Repository) -> Result<bool, String> {
 }
 
 fn delete_data(repo: &Repository, dir: &Path) -> Result<(), String> {
-    let modules = repo.common_dir().join("modules");
+    let modules = repo.git_dir().join("modules");
     let meta = match fs::symlink_metadata(dir) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(format!("{} cannot be read: {error}", dir.display())),
@@ -2086,22 +2093,39 @@ mod tests {
     }
 
     #[test]
-    fn removing_keeps_the_git_data_another_worktree_still_uses() {
+    fn each_worktree_removes_only_its_own_submodule_data_and_keeps_data_another_one_points_at() {
         let n = nest();
         let f = &n.f;
+        let main_data = f.repo.common_dir().join("modules/maps");
         let other = f.dir.with_extension("other");
+        let shared = f.dir.with_extension("shared");
         f.git(&["worktree", "add", "-q", "--detach", other.to_str().unwrap()]);
+        f.git(&["worktree", "add", "-q", "--detach", shared.to_str().unwrap()]);
         let opened = f.open(&other);
         checked(with_system_tools(&mut opened.command()).args(["submodule", "update", "--init", "-q"])).unwrap();
+        let other_data = opened.git_dir().join("modules/maps");
+        assert!(other_data.is_dir() && main_data.is_dir());
+        fs::create_dir_all(shared.join("maps")).unwrap();
+        fs::write(shared.join("maps/.git"), format!("gitdir: {}\n", main_data.display())).unwrap();
         let module = list(&f.repo).unwrap().remove(0);
+        let name = shared.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(removal(&f.repo, &module).unwrap().kept_for.as_deref(), Some(name.as_str()));
+        fs::remove_file(shared.join("maps/.git")).unwrap();
         let prepared = removal(&f.repo, &module).unwrap();
-        let name = other.file_name().unwrap().to_string_lossy().into_owned();
-        assert_eq!(prepared.kept_for.as_deref(), Some(name.as_str()));
+        assert_eq!(prepared.kept_for, None);
         let outcome = remove(&f.repo, &prepared).unwrap();
-        assert!(outcome.detail.starts_with(&format!("Its folder is deleted. Its Git data is kept, because worktree {name} still uses it.")));
-        assert!(f.repo.common_dir().join("modules/maps").is_dir());
+        assert!(outcome.detail.starts_with("Its folder and its Git data are deleted."), "{}", outcome.detail);
+        assert!(!main_data.exists());
+        assert!(other_data.is_dir());
         assert!(other.join("maps/map.txt").is_file());
+        let module = list(&opened).unwrap().remove(0);
+        let prepared = removal(&opened, &module).unwrap();
+        assert_eq!(prepared.kept_for, None);
+        remove(&opened, &prepared).unwrap();
+        assert!(!other_data.exists());
+        assert!(!other.join("maps").exists());
         let _ = fs::remove_dir_all(&other);
+        let _ = fs::remove_dir_all(&shared);
     }
 
     #[test]
