@@ -3,6 +3,8 @@ use crate::{
     commands::{Availability, Command, Group, Side, Target, busy, networking, on_repo, operating},
     jobs,
     notice::{self, Notice, Outcome},
+    prompt::{self, Answer, Field, Spec},
+    remotes,
     repository::{Gitlink, Repository, checked, git_error, raw_path, run, validate_oid, validate_path, with_system_tools},
     settings::{self, Memory},
     theme::*,
@@ -10,7 +12,8 @@ use crate::{
 };
 use gpui::{AnyElement, ClickEvent, Context, Div, FontWeight, MouseButton, MouseDownEvent, div, prelude::*, px, rgb};
 use std::{
-    path::{Path, PathBuf},
+    fs,
+    path::{Component, Path, PathBuf},
     process::Command as Process,
 };
 
@@ -20,6 +23,7 @@ const LISTED: usize = 20;
 pub(crate) struct Module {
     pub(crate) path: PathBuf,
     pub(crate) name: String,
+    pub(crate) url: Option<String>,
     pub(crate) recorded: Option<String>,
     pub(crate) checked_out: Option<String>,
     pub(crate) populated: bool,
@@ -68,6 +72,9 @@ pub(crate) struct State {
     pub(crate) list: Vec<Module>,
     pub(crate) behind: Vec<PathBuf>,
     pub(crate) automatic: bool,
+    pub(crate) uninitialised: Vec<PathBuf>,
+    pub(crate) offer: bool,
+    offered: bool,
     ticket: u64,
     seen: Option<String>,
     moved: Option<(String, String)>,
@@ -89,6 +96,34 @@ pub(crate) enum Action {
     UpdateAll,
     Dismiss,
     ToggleAutomatic,
+    Add,
+    ChangeAddress(PathBuf),
+    Remove(PathBuf),
+    InitialiseAll,
+    StopOffering,
+    ToggleOffer,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Addition {
+    pub(crate) address: String,
+    pub(crate) path: PathBuf,
+    pub(crate) seen: Vec<Module>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Removal {
+    pub(crate) module: Module,
+    pub(crate) changes: usize,
+    pub(crate) unpushed: usize,
+    pub(crate) kept_for: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum Ask {
+    Add { seen: Vec<Module> },
+    Address(Module),
+    Remove(Removal),
 }
 
 fn inside(repo: &Repository, path: &Path) -> Process {
@@ -101,7 +136,7 @@ fn populated(repo: &Repository, path: &Path) -> bool {
     std::fs::symlink_metadata(repo.root.join(path).join(".git")).is_ok()
 }
 
-pub(crate) fn declared(repo: &Repository) -> Result<Vec<(String, PathBuf)>, String> {
+pub(crate) fn declared(repo: &Repository) -> Result<Vec<(String, PathBuf, Option<String>)>, String> {
     let file = repo.root.join(".gitmodules");
     if !file.is_file() {
         return Ok(Vec::new());
@@ -110,7 +145,7 @@ pub(crate) fn declared(repo: &Repository) -> Result<Vec<(String, PathBuf)>, Stri
         repo.read_command()
             .args(["config", "-z", "--file"])
             .arg(&file)
-            .args(["--get-regexp", r"^submodule\..*\.path$"]),
+            .args(["--get-regexp", r"^submodule\..*\.(path|url)$"]),
     )
     .map_err(|error| format!("Run bundled Git: {error}"))?;
     match output.status.code() {
@@ -118,17 +153,26 @@ pub(crate) fn declared(repo: &Repository) -> Result<Vec<(String, PathBuf)>, Stri
         Some(1) => return Ok(Vec::new()),
         _ => return Err(git_error(&output.stderr, output.status)),
     }
-    let mut found = Vec::new();
+    let mut found: Vec<(String, PathBuf, Option<String>)> = Vec::new();
+    let mut urls: Vec<(String, String)> = Vec::new();
     for record in output.stdout.split(|&b| b == 0).filter(|record| !record.is_empty()) {
         let Some(at) = record.iter().position(|&b| b == b'\n') else { continue };
-        let Some(name) = record[..at].strip_prefix(b"submodule.").and_then(|key| key.strip_suffix(b".path")) else {
-            continue;
-        };
-        let path = raw_path(&record[at + 1..]);
-        if validate_path(&path).is_err() || found.iter().any(|(_, known): &(String, PathBuf)| *known == path) {
-            continue;
+        let Some(key) = record[..at].strip_prefix(b"submodule.") else { continue };
+        let value = &record[at + 1..];
+        if let Some(name) = key.strip_suffix(b".path") {
+            let path = raw_path(value);
+            if validate_path(&path).is_err() || found.iter().any(|(_, known, _)| *known == path) {
+                continue;
+            }
+            found.push((String::from_utf8_lossy(name).into_owned(), path, None));
+        } else if let Some(name) = key.strip_suffix(b".url") {
+            urls.push((String::from_utf8_lossy(name).into_owned(), String::from_utf8_lossy(value).into_owned()));
         }
-        found.push((String::from_utf8_lossy(name).into_owned(), path));
+    }
+    for (name, url) in urls {
+        if let Some(entry) = found.iter_mut().find(|(known, _, _)| *known == name) {
+            entry.2 = Some(url);
+        }
     }
     Ok(found)
 }
@@ -183,17 +227,17 @@ fn checked_out(repo: &Repository, path: &Path) -> Option<String> {
 
 pub(crate) fn list(repo: &Repository) -> Result<Vec<Module>, String> {
     let declared = declared(repo)?;
-    let paths: Vec<PathBuf> = declared.iter().map(|(_, path)| path.clone()).collect();
+    let paths: Vec<PathBuf> = declared.iter().map(|(_, path, _)| path.clone()).collect();
     let recorded = recorded_in_index(repo, &paths)?;
     Ok(declared
         .into_iter()
-        .filter_map(|(name, path)| {
+        .filter_map(|(name, path, url)| {
             let mut stages = recorded.iter().filter(|(listed, _, _)| *listed == path);
             let first = stages.next()?;
             let recorded = (first.2 == b'0').then(|| first.1.clone());
             let populated = populated(repo, &path);
             let checked_out = checked_out(repo, &path);
-            Some(Module { path, name, recorded, checked_out, populated })
+            Some(Module { path, name, url, recorded, checked_out, populated })
         })
         .collect())
 }
@@ -398,6 +442,271 @@ pub(crate) fn update_all(repo: &Repository, expected: &[Module]) -> Result<Outco
     Ok(Outcome::titled(title, detail))
 }
 
+const LOCAL_REFUSED: &str = "Git does not clone submodules from local folders unless your Git configuration allows it with protocol.file.allow. Use the repository's network address, or allow local folders in your own Git configuration if you trust them.";
+
+pub(crate) fn address_problem(text: &str) -> Option<String> {
+    match text.trim() {
+        "" => Some(String::new()),
+        address => remotes::validate_url(address).err(),
+    }
+}
+
+pub(crate) fn derived_path(address: &str) -> Option<PathBuf> {
+    let trimmed = address.trim().trim_end_matches('/');
+    let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed).trim_end_matches('/');
+    let last = trimmed.rsplit(['/', ':']).next()?;
+    let path = PathBuf::from(last);
+    (validate_path(&path).is_ok() && !last.eq_ignore_ascii_case(".git")).then_some(path)
+}
+
+fn names_git(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str().to_str().is_some_and(|name| name.eq_ignore_ascii_case(".git")))
+}
+
+pub(crate) fn folder_problem(path: &Path, root: &Path, listed: &[Module]) -> Option<String> {
+    if path.is_absolute() {
+        return Some("Enter a folder inside this repository, such as libs/maps.".to_owned());
+    }
+    if validate_path(path).is_err() || path.components().any(|part| !matches!(part, Component::Normal(_))) {
+        return Some("Enter the folder without . or .. in it.".to_owned());
+    }
+    if names_git(path) {
+        return Some("Choose a folder that is not named .git.".to_owned());
+    }
+    for module in listed {
+        if module.path == path {
+            return Some(format!("{} is already a submodule.", path.display()));
+        }
+        if path.starts_with(&module.path) {
+            return Some(format!("That folder is inside submodule {}.", module.shown()));
+        }
+        if module.path.starts_with(path) {
+            return Some(format!("That folder holds submodule {}.", module.shown()));
+        }
+    }
+    let full = root.join(path);
+    match fs::symlink_metadata(&full) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => Some(format!("{} cannot be read: {error}.", path.display())),
+        Ok(meta) if !meta.is_dir() => Some(format!("{} already exists and is not a folder.", path.display())),
+        Ok(_) => match fs::read_dir(&full).map(|mut entries| entries.next().is_none()) {
+            Ok(true) => None,
+            Ok(false) => Some(format!("{} already exists and is not empty.", path.display())),
+            Err(error) => Some(format!("{} cannot be read: {error}.", path.display())),
+        },
+    }
+}
+
+pub(crate) fn path_problem(text: &str, ui: &Ui) -> Option<String> {
+    let text = text.trim().trim_end_matches('/');
+    if text.is_empty() {
+        return None;
+    }
+    folder_problem(Path::new(text), &ui.root, &ui.submodule.list)
+}
+
+fn module_dir(repo: &Repository, name: &str) -> Option<PathBuf> {
+    let relative = Path::new(name);
+    validate_path(relative).ok()?;
+    Some(repo.common_dir().join("modules").join(relative))
+}
+
+fn tracked(repo: &Repository, path: &Path) -> Result<bool, String> {
+    let output = checked(repo.read_command().args(["ls-files", "-z", "--"]).arg(path))?;
+    Ok(!output.is_empty())
+}
+
+pub(crate) fn add(repo: &Repository, addition: &Addition) -> Result<Outcome, String> {
+    let Addition { address, path, seen } = addition;
+    remotes::validate_url(address)?;
+    let listed = list(repo)?;
+    if listed != *seen {
+        return Err("The submodules changed since you chose this. Reopen the action.".to_owned());
+    }
+    if let Some(problem) = folder_problem(path, &repo.root, &listed) {
+        return Err(problem);
+    }
+    let shown = path.display().to_string();
+    if tracked(repo, path)? {
+        return Err(format!("{shown} is already in this repository."));
+    }
+    if let Some(dir) = module_dir(repo, &shown).filter(|dir| fs::symlink_metadata(dir).is_ok()) {
+        return Err(format!(
+            "Git still keeps the data of an earlier submodule named {shown} in {}. Choose another folder, or delete that data first.",
+            dir.display()
+        ));
+    }
+    let mut command = repo.network_command()?;
+    with_system_tools(&mut command).args(["submodule", "add", "--progress", "--"]).arg(address).arg(path);
+    checked(&mut command).map_err(|error| if error.contains("transport 'file' not allowed") { LOCAL_REFUSED.to_owned() } else { error })?;
+    let added = fresh(repo, path)?;
+    let at = added.recorded.as_deref().map(notice::short).unwrap_or("its first commit").to_owned();
+    Ok(Outcome::titled(
+        format!("Added submodule {shown}"),
+        format!("It is at {at}, cloned from {}. It is staged with .gitmodules: commit them to record it.", remotes::shown(address)),
+    )
+    .offer("Open submodule", view::Action::Submodule(Action::Open(path.clone())))
+    .undone_as(format!("Add submodule {shown}"))
+    .not_undoable(format!("Adding submodule {shown} cannot be undone. Remove it from the Submodules section instead.")))
+}
+
+pub(crate) fn set_address(repo: &Repository, expected: &Module, address: &str) -> Result<Outcome, String> {
+    remotes::validate_url(address)?;
+    let found = fresh(repo, &expected.path)?;
+    let shown = found.shown();
+    if found.url != expected.url {
+        return Err(format!("The address of submodule {shown} changed since you chose this. Reopen the action."));
+    }
+    if found.url.as_deref() == Some(address) {
+        return Ok(Outcome::titled("Nothing changed", format!("Submodule {shown} already uses this address.")));
+    }
+    checked(with_system_tools(&mut repo.command()).args(["submodule", "--quiet", "set-url", "--"]).arg(&found.path).arg(address))?;
+    checked(with_system_tools(&mut repo.command()).args(["submodule", "--quiet", "sync", "--"]).arg(&found.path))?;
+    let now = fresh(repo, &found.path)?;
+    if now.url.as_deref() != Some(address) {
+        return Err(format!("Git did not change the address of submodule {shown}"));
+    }
+    let mut detail = format!("It fetches from {}", remotes::shown(address));
+    if found.populated {
+        detail.push_str(", and so does its checkout");
+    }
+    detail.push_str(". .gitmodules is changed: commit it to share the new address.");
+    Ok(Outcome::titled(format!("Changed the address of submodule {shown}"), detail))
+}
+
+fn unpushed(repo: &Repository, module: &Module) -> Result<usize, String> {
+    if !module.populated || module.checked_out.is_none() {
+        return Ok(0);
+    }
+    let output = checked(inside(repo, &module.path).args(["rev-list", "--count", "HEAD", "--branches", "--not", "--remotes", "--"]))?;
+    Ok(String::from_utf8_lossy(&output).trim().parse().unwrap_or(0))
+}
+
+fn used_elsewhere(repo: &Repository, path: &Path) -> Option<String> {
+    let listed = crate::worktree::list(repo).ok()?;
+    listed
+        .iter()
+        .filter(|worktree| !worktree.current && worktree.prunable.is_none())
+        .find(|worktree| fs::symlink_metadata(worktree.path.join(path).join(".git")).is_ok())
+        .map(crate::worktree::Worktree::name)
+}
+
+pub(crate) fn removal(repo: &Repository, expected: &Module) -> Result<Removal, String> {
+    let found = fresh(repo, &expected.path)?;
+    if found != *expected {
+        return Err(format!("Submodule {} changed since it was shown. Look again, then remove it.", expected.shown()));
+    }
+    let changes = if found.populated { crate::worktree::uncommitted(repo, &repo.root.join(&found.path))? } else { 0 };
+    let unpushed = unpushed(repo, &found)?;
+    let kept_for = used_elsewhere(repo, &found.path);
+    Ok(Removal { module: found, changes, unpushed, kept_for })
+}
+
+fn gitmodules_changed(repo: &Repository) -> Result<bool, String> {
+    let output = run(repo.read_command().args(["diff", "--quiet", "--", ".gitmodules"])).map_err(|error| format!("Run bundled Git: {error}"))?;
+    match output.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(git_error(&output.stderr, output.status)),
+    }
+}
+
+fn delete_data(repo: &Repository, dir: &Path) -> Result<(), String> {
+    let modules = repo.common_dir().join("modules");
+    let meta = match fs::symlink_metadata(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("{} cannot be read: {error}", dir.display())),
+        Ok(meta) => meta,
+    };
+    if !meta.is_dir() {
+        return Err(format!("{} is not a folder, so it was left alone", dir.display()));
+    }
+    let inside_modules = match (fs::canonicalize(&modules), fs::canonicalize(dir)) {
+        (Ok(base), Ok(real)) => real.starts_with(&base) && real != base,
+        _ => false,
+    };
+    if !inside_modules {
+        return Err(format!("{} is not inside {}, so it was left alone", dir.display(), modules.display()));
+    }
+    fs::remove_dir_all(dir).map_err(|error| format!("{} cannot be deleted: {error}", dir.display()))?;
+    let mut at = dir.parent();
+    while let Some(parent) = at {
+        if parent == modules || !parent.starts_with(&modules) || fs::remove_dir(parent).is_err() {
+            break;
+        }
+        at = parent.parent();
+    }
+    Ok(())
+}
+
+pub(crate) fn remove(repo: &Repository, expected: &Removal) -> Result<Outcome, String> {
+    let shown = expected.module.shown();
+    let now = removal(repo, &expected.module)?;
+    if now != *expected {
+        return Err(format!("What is inside submodule {shown} changed since you chose to remove it. Reopen the action to see it."));
+    }
+    if now.module.recorded.is_none() {
+        return Err(format!("Submodule {shown} has a conflict. Resolve it first."));
+    }
+    if gitmodules_changed(repo)? {
+        return Err("Stage or undo the changes to .gitmodules first. Removing a submodule changes that file and stages it.".to_owned());
+    }
+    let path = &now.module.path;
+    let data = module_dir(repo, &now.module.name);
+    checked(with_system_tools(&mut repo.command()).args(["--literal-pathspecs", "submodule", "--quiet", "deinit", "-f", "--"]).arg(path))?;
+    checked(repo.command().args(["--literal-pathspecs", "rm", "-q", "-f", "--"]).arg(path))
+        .map_err(|error| format!("Submodule {shown} was emptied, but Git did not remove it: {error}"))?;
+    let folder = repo.root.join(path);
+    if fs::read_dir(&folder).is_ok_and(|mut entries| entries.next().is_none()) {
+        let _ = fs::remove_dir(&folder);
+    }
+    let staged = "The removal and the change to .gitmodules are staged: commit them to record it.";
+    let detail = match (&now.kept_for, data) {
+        (Some(worktree), _) => {
+            format!("Its folder is deleted. Its Git data is kept, because worktree {worktree} still uses it. {staged}")
+        }
+        (None, Some(dir)) => {
+            delete_data(repo, &dir).map_err(|error| format!("Submodule {shown} was removed, but its Git data was not deleted: {error}"))?;
+            format!("Its folder and its Git data are deleted. {staged}")
+        }
+        (None, None) => format!("Its folder is deleted. Its Git data is left alone, because its name is not a plain folder name. {staged}"),
+    };
+    Ok(Outcome::titled(format!("Removed submodule {shown}"), detail)
+        .undone_as(format!("Remove submodule {shown}"))
+        .not_undoable(format!("Removing submodule {shown} cannot be undone.")))
+}
+
+pub(crate) fn initialise(repo: &Repository, expected: &[PathBuf]) -> Result<Outcome, String> {
+    let found = list(repo)?;
+    let waiting: Vec<&Module> = expected.iter().filter_map(|path| found.iter().find(|module| module.path == *path)).collect();
+    if waiting.len() != expected.len() || waiting.iter().any(|module| module.populated) || expected.is_empty() {
+        return Err("The submodules changed since they were shown. Look again, then initialise them.".to_owned());
+    }
+    if let Some(module) = waiting.iter().find(|module| module.recorded.is_none()) {
+        return Err(format!("Submodule {} has a conflict. Resolve it first.", module.shown()));
+    }
+    let mut command = repo.network_command()?;
+    with_system_tools(&mut command).args(["submodule", "update", "--init", "--recursive", "--progress", "--"]).args(expected);
+    checked(&mut command).map_err(|error| if error.contains("transport 'file' not allowed") { LOCAL_REFUSED.to_owned() } else { error })?;
+    let now = list(repo)?;
+    let done: Vec<String> = waiting
+        .iter()
+        .filter(|module| now.iter().any(|after| after.path == module.path && after.in_sync()))
+        .map(|module| module.shown())
+        .collect();
+    let title = match done.as_slice() {
+        [] => return Err("Git initialised no submodule".to_owned()),
+        [one] => format!("Initialised submodule {one}"),
+        many => format!("Initialised {} submodules", many.len()),
+    };
+    let mut detail = format!("Checked out at the commits this repository records: {}.", done.join(", "));
+    let left = waiting.len() - done.len();
+    if left > 0 {
+        detail.push_str(&format!(" {left} could not be initialised."));
+    }
+    Ok(Outcome::titled(title, detail))
+}
+
 pub(crate) fn describe(flags: Gitlink, staged: bool) -> String {
     if staged {
         return "new commit staged".to_owned();
@@ -499,13 +808,100 @@ pub(crate) const COMMANDS: &[Command] = &[
     )
     .words(&["submodule update", "git submodule update", "initialise submodules"])
     .icon("fetch"),
+    Command::new(
+        "submodule.add",
+        Group::Create,
+        |_, _| "Add submodule…".into(),
+        |ui, target, _| {
+            if !on_repo(ui, target) {
+                return Availability::Hidden;
+            }
+            Availability::unless(networking(ui).or_else(|| operating(ui)).or_else(|| busy(ui)))
+        },
+        |_, _| Some(view::Action::Submodule(Action::Add)),
+    )
+    .words(&["git submodule add", "new submodule", "add a repository inside"])
+    .icon("plus"),
+    Command::new(
+        "submodule.set-url",
+        Group::Manage,
+        |_, _| "Change address…".into(),
+        |ui, target, _| match target {
+            Target::Submodule(path) if ui.submodule.find(path).is_some() => {
+                Availability::unless(operating(ui).or_else(|| busy(ui)))
+            }
+            _ => Availability::Hidden,
+        },
+        |_, target| match target {
+            Target::Submodule(path) => Some(view::Action::Submodule(Action::ChangeAddress(path.clone()))),
+            _ => None,
+        },
+    )
+    .words(&["submodule url", "set-url", "edit submodule"])
+    .icon("pencil"),
+    Command::new(
+        "submodule.remove",
+        Group::Manage,
+        |_, _| "Remove submodule…".into(),
+        |ui, target, _| match target {
+            Target::Submodule(path) => match ui.submodule.find(path) {
+                None => Availability::Hidden,
+                Some(module) => Availability::unless(removal_refusal(ui, module)),
+            },
+            _ => Availability::Hidden,
+        },
+        |_, target| match target {
+            Target::Submodule(path) => Some(view::Action::Submodule(Action::Remove(path.clone()))),
+            _ => None,
+        },
+    )
+    .words(&["delete submodule", "git submodule deinit", "git rm submodule"])
+    .icon("trash")
+    .danger(),
 ];
+
+fn removal_refusal(ui: &Ui, module: &Module) -> Option<String> {
+    if module.recorded.is_none() {
+        return Some("It has a conflict. Resolve it first".to_owned());
+    }
+    operating(ui).or_else(|| networking(ui)).or_else(|| busy(ui))
+}
 
 pub(crate) fn restore(tab: &mut Tab, cx: &mut Context<Tab>) {
     let Some(repo) = &tab.repo else { return };
     let common = repo.common_dir().to_owned();
-    tab.ui.submodule.automatic =
-        settings::memory(cx).and_then(|memory| memory.repo(&common)).and_then(|view| view.update_submodules).unwrap_or(false);
+    let remembered = settings::memory(cx).and_then(|memory| memory.repo(&common));
+    tab.ui.submodule.automatic = remembered.and_then(|view| view.update_submodules).unwrap_or(false);
+    tab.ui.submodule.offer = remembered.and_then(|view| view.offer_initialise).unwrap_or(true);
+}
+
+fn remember_offer(tab: &mut Tab, on: bool, cx: &mut Context<Tab>) {
+    tab.ui.submodule.offer = on;
+    if !on {
+        tab.ui.submodule.uninitialised.clear();
+    }
+    if let Some(repo) = &tab.repo {
+        let common = repo.common_dir().to_owned();
+        Memory::update(cx, |memory| memory.change_repo(&common, |view| view.offer_initialise = (!on).then_some(false)));
+    }
+    cx.notify();
+}
+
+fn refused(tab: &mut Tab, reason: Option<String>, cx: &mut Context<Tab>) -> bool {
+    let Some(reason) = reason else { return false };
+    tab.ui.menu = None;
+    tab.ui.say(Tone::Info, reason);
+    cx.notify();
+    true
+}
+
+fn listed(tab: &mut Tab, path: &Path, cx: &mut Context<Tab>) -> Option<Module> {
+    let found = tab.ui.submodule.find(path).cloned();
+    if found.is_none() {
+        tab.ui.say(Tone::Info, "That submodule is no longer listed");
+        cx.notify();
+    }
+    found
 }
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, cx: &mut Context<Tab>) {
@@ -514,6 +910,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, cx: &mut Context<Tab>) {
         Action::Show(path) => show(tab, path, cx),
         Action::Dismiss => {
             tab.ui.submodule.behind.clear();
+            tab.ui.submodule.uninitialised.clear();
             cx.notify();
         }
         Action::ToggleAutomatic => {
@@ -554,6 +951,222 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, cx: &mut Context<Tab>) {
             );
         }
         Action::UpdateAll => update_waiting(tab, cx),
+        Action::StopOffering => remember_offer(tab, false, cx),
+        Action::ToggleOffer => {
+            let on = !tab.ui.submodule.offer;
+            remember_offer(tab, on, cx);
+        }
+        _ if tab.ui.busy() || tab.ui.dialog_open() => {
+            tab.ui.menu = None;
+            if tab.ui.busy() {
+                tab.ui.say(Tone::Info, "Wait for the current operation to finish");
+            }
+            cx.notify();
+        }
+        Action::Add => {
+            if refused(tab, networking(&tab.ui).or_else(|| operating(&tab.ui)), cx) {
+                return;
+            }
+            tab.ui.menu = None;
+            let seen = tab.ui.submodule.list.clone();
+            prompt::ask(&mut tab.ui, prompt::Kind::Submodule(Ask::Add { seen }), cx);
+        }
+        Action::ChangeAddress(path) => {
+            let Some(module) = listed(tab, &path, cx) else { return };
+            if refused(tab, operating(&tab.ui), cx) {
+                return;
+            }
+            tab.ui.menu = None;
+            prompt::ask(&mut tab.ui, prompt::Kind::Submodule(Ask::Address(module)), cx);
+        }
+        Action::Remove(path) => ask_remove(tab, path, cx),
+        Action::InitialiseAll => initialise_waiting(tab, cx),
+    }
+}
+
+fn ask_remove(tab: &mut Tab, path: PathBuf, cx: &mut Context<Tab>) {
+    let Some(module) = listed(tab, &path, cx) else { return };
+    if refused(tab, removal_refusal(&tab.ui, &module), cx) {
+        return;
+    }
+    if open_in_another_tab(tab, &module, cx) {
+        return;
+    }
+    let Some(repo) = tab.repo.clone() else { return };
+    tab.ui.menu = None;
+    let epoch = tab.epoch;
+    Tab::work(
+        cx,
+        move || removal(&repo, &module),
+        move |tab, prepared, cx| {
+            if tab.epoch != epoch || tab.ui.dialog_open() || tab.ui.busy() {
+                return;
+            }
+            match prepared {
+                Ok(removal) => prompt::ask(&mut tab.ui, prompt::Kind::Submodule(Ask::Remove(removal)), cx),
+                Err(error) => tab.error(error, cx),
+            }
+        },
+    );
+}
+
+fn open_in_another_tab(tab: &mut Tab, module: &Module, cx: &mut Context<Tab>) -> bool {
+    let full = tab.ui.root.join(&module.path);
+    if !crate::worktree::open_in_another_tab(&full, cx) {
+        return false;
+    }
+    tab.ui.notices.show(Notice::new(
+        Tone::Info,
+        format!("Submodule {} is open in another tab", module.shown()),
+        "Close that tab first, then remove the submodule.",
+    ));
+    cx.notify();
+    true
+}
+
+fn initialise_waiting(tab: &mut Tab, cx: &mut Context<Tab>) {
+    tab.ui.menu = None;
+    let expected = tab.ui.submodule.uninitialised.clone();
+    if expected.is_empty() {
+        tab.ui.say(Tone::Info, "Every submodule is initialised");
+        cx.notify();
+        return;
+    }
+    if refused(tab, networking(&tab.ui).or_else(|| operating(&tab.ui)).or_else(|| busy(&tab.ui)), cx) {
+        return;
+    }
+    tab.run_network_or(
+        cx,
+        jobs::Spec::submodules(),
+        "Initialising submodules…",
+        "Submodules initialised",
+        false,
+        move |repo| initialise(&repo, &expected),
+        |tab, cx| {
+            tab.ui.submodule.uninitialised.clear();
+            cx.notify();
+        },
+        |_, _| {},
+    );
+}
+
+pub(crate) fn describe_ask(ask: &Ask, _: &Ui) -> Spec {
+    match ask {
+        Ask::Add { .. } => {
+            let mut spec = Spec::new("Add submodule", "Add submodule")
+                .line("A submodule is another repository checked out in a folder of this one. This repository records which of its commits to use.")
+                .line("Git clones it now. The new submodule and .gitmodules are then staged for you to commit.");
+            spec.field = Some(Field {
+                label: "Address",
+                placeholder: "Repository URL or local path",
+                initial: String::new(),
+                masked: false,
+                validate: Box::new(|text, _| address_problem(text)),
+            });
+            spec.second = Some(Field {
+                label: "Folder",
+                placeholder: "Taken from the address when left empty",
+                initial: String::new(),
+                masked: false,
+                validate: Box::new(path_problem),
+            });
+            spec
+        }
+        Ask::Address(module) => {
+            let mut spec = Spec::new(format!("Change the address of submodule {}", module.shown()), "Change address")
+                .line("Git fetches the submodule's commits from this address. It is changed in .gitmodules, for you to commit, and in this repository's settings.");
+            spec.field = Some(Field {
+                label: "Address",
+                placeholder: "Repository URL or local path",
+                initial: module.url.as_deref().map(remotes::shown).unwrap_or_default(),
+                masked: false,
+                validate: Box::new(|text, _| address_problem(text)),
+            });
+            spec
+        }
+        Ask::Remove(removal) => remove_spec(removal),
+    }
+}
+
+fn uncommitted_changes(count: usize) -> String {
+    match count {
+        1 => "1 uncommitted change".to_owned(),
+        n => format!("{n} uncommitted changes"),
+    }
+}
+
+pub(crate) fn remove_spec(removal: &Removal) -> Spec {
+    let shown = removal.module.shown();
+    let mut spec = Spec::new(format!("Remove submodule {shown}?"), "Remove submodule")
+        .danger()
+        .line(format!(
+            "Its folder {shown} and its Git data are deleted, with any commits and changes made in it that are not pushed. They cannot be brought back."
+        ));
+    match (removal.changes, removal.unpushed) {
+        (0, 0) => {}
+        (changes, 0) => spec = spec.line(format!("It has {} now.", uncommitted_changes(changes))),
+        (0, commits) => spec = spec.line(format!("{} in it {} on no remote.", notice::commits(commits), if commits == 1 { "is" } else { "are" })),
+        (changes, commits) => {
+            spec = spec.line(format!(
+                "It has {} now, and {} in it {} on no remote.",
+                uncommitted_changes(changes),
+                notice::commits(commits),
+                if commits == 1 { "is" } else { "are" }
+            ))
+        }
+    }
+    if let Some(worktree) = &removal.kept_for {
+        spec = spec.line(format!("Its Git data is kept, because worktree {worktree} still uses it."));
+    }
+    spec.line("The removal and the change to .gitmodules are staged for you to commit.")
+}
+
+pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<Tab>) {
+    match ask {
+        Ask::Add { seen } => {
+            let address = answer.text.trim().to_owned();
+            let typed = answer.second.trim().trim_end_matches('/');
+            let path = if typed.is_empty() { derived_path(&address) } else { Some(PathBuf::from(typed)) };
+            let Some(path) = path else {
+                return tab.error("Enter a folder for the submodule. It cannot be taken from this address.".to_owned(), cx);
+            };
+            let progress = format!("Adding submodule {}…", path.display());
+            let addition = Addition { address, path, seen };
+            tab.run_network_or(
+                cx,
+                jobs::Spec::adding_submodule(),
+                &progress,
+                "Submodule added",
+                false,
+                move |repo| add(&repo, &addition),
+                |_, _| {},
+                |_, _| {},
+            );
+        }
+        Ask::Address(module) => {
+            let address = answer.text.trim().to_owned();
+            tab.run_operation_then(
+                cx,
+                "Changing the address…",
+                "Address changed",
+                false,
+                move |repo| set_address(&repo, &module, &address),
+                |_, _| {},
+            );
+        }
+        Ask::Remove(removal) => {
+            if open_in_another_tab(tab, &removal.module, cx) {
+                return;
+            }
+            tab.run_operation_then(
+                cx,
+                "Removing the submodule…",
+                "Submodule removed",
+                false,
+                move |repo| remove(&repo, &removal),
+                |_, _| {},
+            );
+        }
     }
 }
 
@@ -688,6 +1301,15 @@ pub(crate) fn status_changed(tab: &mut Tab, cx: &mut Context<Tab>) {
             }
             let Ok(listed) = listed else { return };
             state.list = listed;
+            if !state.offered {
+                state.offered = true;
+                if state.offer {
+                    state.uninitialised =
+                        state.list.iter().filter(|module| !module.populated && module.recorded.is_some()).map(|module| module.path.clone()).collect();
+                }
+            }
+            let list = &state.list;
+            state.uninitialised.retain(|path| list.iter().any(|module| module.path == *path && !module.populated));
             let before = state.behind.len();
             if let Some(Ok(paths)) = changed {
                 for path in paths {
@@ -892,35 +1514,67 @@ pub(crate) fn strip_text(count: usize) -> String {
     }
 }
 
+pub(crate) fn uninitialised_text(count: usize) -> String {
+    match count {
+        1 => "1 submodule is not initialised, so its folder is empty.".to_owned(),
+        n => format!("{n} submodules are not initialised, so their folders are empty."),
+    }
+}
+
+fn strip_frame(text: String) -> Div {
+    div()
+        .h(px(36.))
+        .flex_shrink_0()
+        .pl(px(14.))
+        .pr(px(10.))
+        .flex()
+        .items_center()
+        .gap_2()
+        .bg(soft(MODIFIED, 0x18))
+        .border_b_1()
+        .border_color(soft(MODIFIED, 0x48))
+        .child(kit::icon("alert").size(px(13.)).text_color(rgb(MODIFIED)))
+        .child(kit::fit(text).size(TEXT_SMALL).grow())
+}
+
 pub(crate) fn strip<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<Div> {
     let ui = app.ui();
+    let refusal = networking(ui).or_else(|| operating(ui)).or_else(|| busy(ui));
+    let dismiss = kit::icon_btn("dismiss-submodules", "x", "Dismiss", view::Action::Submodule(Action::Dismiss), cx);
     let count = ui.submodule.behind.len();
-    if count == 0 {
+    if count > 0 {
+        return Some(
+            strip_frame(strip_text(count))
+                .child(
+                    kit::btn("update-submodules", "Update submodules")
+                        .small()
+                        .enabled(refusal.is_none())
+                        .tip(refusal.unwrap_or_else(|| "git submodule update --init --recursive".to_owned()))
+                        .on(view::Action::Submodule(Action::UpdateAll), cx),
+                )
+                .child(dismiss),
+        );
+    }
+    let waiting = ui.submodule.uninitialised.len();
+    if waiting == 0 {
         return None;
     }
-    let refusal = networking(ui).or_else(|| operating(ui)).or_else(|| busy(ui));
     Some(
-        div()
-            .h(px(36.))
-            .flex_shrink_0()
-            .pl(px(14.))
-            .pr(px(10.))
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(soft(MODIFIED, 0x18))
-            .border_b_1()
-            .border_color(soft(MODIFIED, 0x48))
-            .child(kit::icon("alert").size(px(13.)).text_color(rgb(MODIFIED)))
-            .child(kit::fit(strip_text(count)).size(TEXT_SMALL).grow())
+        strip_frame(uninitialised_text(waiting))
             .child(
-                kit::btn("update-submodules", "Update submodules")
+                kit::btn("initialise-submodules", "Initialise submodules")
                     .small()
                     .enabled(refusal.is_none())
                     .tip(refusal.unwrap_or_else(|| "git submodule update --init --recursive".to_owned()))
-                    .on(view::Action::Submodule(Action::UpdateAll), cx),
+                    .on(view::Action::Submodule(Action::InitialiseAll), cx),
             )
-            .child(kit::icon_btn("dismiss-submodules", "x", "Dismiss", view::Action::Submodule(Action::Dismiss), cx)),
+            .child(
+                kit::btn("stop-offering-submodules", "Don't ask again")
+                    .small()
+                    .tip("Turn this back on in Preferences, under This repository")
+                    .on(view::Action::Submodule(Action::StopOffering), cx),
+            )
+            .child(dismiss),
     )
 }
 
@@ -936,6 +1590,9 @@ pub(crate) fn side_row<T: Desk>(ui: &Ui, index: usize, row: usize, pointed: bool
         }
         if let Some(checked) = &module.checked_out {
             lines.push(format!("Checked out {}", notice::short(checked)));
+        }
+        if let Some(url) = &module.url {
+            lines.push(format!("From {}", remotes::shown(url)));
         }
         lines.join("\n")
     };
@@ -971,7 +1628,6 @@ pub(crate) fn side_row<T: Desk>(ui: &Ui, index: usize, row: usize, pointed: bool
 mod tests {
     use super::*;
     use crate::repository::tests::{Fixture, GlobalConfig};
-    use std::fs;
 
     struct Nest {
         f: Fixture,
@@ -1224,13 +1880,253 @@ mod tests {
         assert_eq!(recorded(f), start);
     }
 
+    fn staged(f: &Fixture) -> String {
+        String::from_utf8(f.git(&["diff", "--cached", "--name-status"])).unwrap()
+    }
+
+    fn declared_url(f: &Fixture, name: &str) -> String {
+        String::from_utf8(f.git(&["config", "--file", ".gitmodules", "--get", &format!("submodule.{name}.url")])).unwrap().trim().to_owned()
+    }
+
+    fn library_path(n: &Nest) -> String {
+        n.library.dir.to_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn a_submodule_is_added_from_an_address_and_staged_with_gitmodules() {
+        let n = nest();
+        let f = &n.f;
+        let head_before = head(f);
+        let refs = f.git(&["for-each-ref"]);
+        let address = library_path(&n);
+        let addition = Addition { address: address.clone(), path: PathBuf::from("vendor/atlas"), seen: list(&f.repo).unwrap() };
+        let outcome = add(&f.repo, &addition).unwrap();
+        let library_head = head(&n.library);
+        assert_eq!(outcome.title, "Added submodule vendor/atlas");
+        assert_eq!(
+            outcome.detail,
+            format!("It is at {}, cloned from {address}. It is staged with .gitmodules: commit them to record it.", notice::short(&library_head))
+        );
+        assert_eq!(outcome.actions.len(), 1);
+        assert_eq!(staged(f), "M\t.gitmodules\nA\tvendor/atlas\n");
+        assert_eq!(declared_url(f, "vendor/atlas"), address);
+        let listed = String::from_utf8(f.git(&["ls-files", "--stage", "--", "vendor/atlas"])).unwrap();
+        assert!(listed.starts_with(&format!("160000 {library_head} 0\t")), "{listed}");
+        assert!(f.repo.common_dir().join("modules/vendor/atlas").is_dir());
+        assert_eq!(at(f, "vendor/atlas", &["rev-parse", "HEAD"]), library_head);
+        assert_eq!(head(f), head_before);
+        assert_eq!(f.git(&["for-each-ref"]), refs);
+        let now = list(&f.repo).unwrap();
+        assert_eq!(now.len(), 2);
+        assert_eq!(now[1].url.as_deref(), Some(address.as_str()));
+        assert!(now[1].in_sync());
+    }
+
+    #[test]
+    fn adding_refuses_a_changed_list_a_used_folder_and_an_old_submodules_data() {
+        let n = nest();
+        let f = &n.f;
+        let address = library_path(&n);
+        let seen = list(&f.repo).unwrap();
+        let before = staged(f);
+        let stale = Addition { address: address.clone(), path: PathBuf::from("atlas"), seen: Vec::new() };
+        assert_eq!(add(&f.repo, &stale).unwrap_err(), "The submodules changed since you chose this. Reopen the action.");
+        let taken = Addition { address: address.clone(), path: PathBuf::from("maps"), seen: seen.clone() };
+        assert_eq!(add(&f.repo, &taken).unwrap_err(), "maps is already a submodule.");
+        let file = Addition { address: address.clone(), path: PathBuf::from("trail.txt"), seen: seen.clone() };
+        assert_eq!(add(&f.repo, &file).unwrap_err(), "trail.txt already exists and is not a folder.");
+        fs::create_dir(f.dir.join("notes")).unwrap();
+        fs::write(f.dir.join("notes/a.txt"), "A\n").unwrap();
+        let full = Addition { address: address.clone(), path: PathBuf::from("notes"), seen: seen.clone() };
+        assert_eq!(add(&f.repo, &full).unwrap_err(), "notes already exists and is not empty.");
+        fs::create_dir_all(f.repo.common_dir().join("modules/atlas")).unwrap();
+        let old = Addition { address: address.clone(), path: PathBuf::from("atlas"), seen: seen.clone() };
+        assert!(add(&f.repo, &old).unwrap_err().starts_with("Git still keeps the data of an earlier submodule named atlas in "));
+        let odd = Addition { address: "-upload-pack=x".to_owned(), path: PathBuf::from("odd"), seen };
+        assert!(add(&f.repo, &odd).is_err());
+        assert_eq!(staged(f), before);
+        assert!(!f.dir.join("atlas").exists() && !f.dir.join("odd").exists());
+    }
+
+    #[test]
+    fn adding_from_a_local_folder_is_explained_when_git_does_not_allow_it() {
+        let library = Fixture::new();
+        commit(&library, "map.txt", "Ridge map\n", "Draw the ridge map");
+        let f = Fixture::new();
+        commit(&f, "trail.txt", "Trail\n", "Start the trail");
+        let empty = tempfile::NamedTempFile::new().unwrap();
+        let _config = GlobalConfig::set(empty.path());
+        let addition = Addition { address: library.dir.to_str().unwrap().to_owned(), path: PathBuf::from("maps"), seen: Vec::new() };
+        assert_eq!(add(&f.repo, &addition).unwrap_err(), LOCAL_REFUSED);
+        assert_eq!(staged(&f), "");
+        assert!(!f.dir.join(".gitmodules").exists());
+        assert!(list(&f.repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_add_prompt_checks_the_address_and_takes_the_folder_from_it() {
+        assert_eq!(derived_path("https://example.invalid/team/atlas.git"), Some(PathBuf::from("atlas")));
+        assert_eq!(derived_path("git@example.invalid:team/atlas"), Some(PathBuf::from("atlas")));
+        assert_eq!(derived_path("/Users/cedar/Maps/"), Some(PathBuf::from("Maps")));
+        assert_eq!(derived_path("host:atlas.git"), Some(PathBuf::from("atlas")));
+        assert_eq!(derived_path("/"), None);
+        assert_eq!(derived_path("https://example.invalid/.."), None);
+        assert_eq!(address_problem("   "), Some(String::new()));
+        assert_eq!(address_problem("https://example.invalid/team/atlas.git"), None);
+        assert!(address_problem("https://token:secret@example.invalid/atlas.git").is_some());
+        assert!(address_problem("-oProxyCommand=x").is_some());
+        let n = nest();
+        let listed = list(&n.f.repo).unwrap();
+        let root = &n.f.dir;
+        assert_eq!(folder_problem(Path::new("libs/atlas"), root, &listed), None);
+        assert_eq!(folder_problem(Path::new("/tmp/atlas"), root, &listed).unwrap(), "Enter a folder inside this repository, such as libs/maps.");
+        assert_eq!(folder_problem(Path::new("libs/../atlas"), root, &listed).unwrap(), "Enter the folder without . or .. in it.");
+        assert_eq!(folder_problem(Path::new("libs/.git"), root, &listed).unwrap(), "Choose a folder that is not named .git.");
+        assert_eq!(folder_problem(Path::new("maps/inner"), root, &listed).unwrap(), "That folder is inside submodule maps.");
+        fs::create_dir(root.join("empty")).unwrap();
+        assert_eq!(folder_problem(Path::new("empty"), root, &listed), None);
+    }
+
+    #[test]
+    fn changing_the_address_updates_gitmodules_the_settings_and_the_checkout() {
+        let n = nest();
+        let f = &n.f;
+        let shown = list(&f.repo).unwrap().remove(0);
+        let index = f.git(&["ls-files", "--stage", "-z"]);
+        let mirror = n.library.dir.with_extension("mirror");
+        n.library.git(&["clone", "-q", "--bare", n.library.dir.to_str().unwrap(), mirror.to_str().unwrap()]);
+        let address = mirror.to_str().unwrap().to_owned();
+        let outcome = set_address(&f.repo, &shown, &address).unwrap();
+        assert_eq!(outcome.title, "Changed the address of submodule maps");
+        assert_eq!(
+            outcome.detail,
+            format!("It fetches from {address}, and so does its checkout. .gitmodules is changed: commit it to share the new address.")
+        );
+        assert_eq!(declared_url(f, "maps"), address);
+        assert_eq!(String::from_utf8(f.git(&["config", "--get", "submodule.maps.url"])).unwrap().trim(), address);
+        assert_eq!(at(f, "maps", &["remote", "get-url", "origin"]), address);
+        assert_eq!(String::from_utf8(f.git(&["status", "--porcelain=v1"])).unwrap(), " M .gitmodules\n");
+        assert_eq!(f.git(&["ls-files", "--stage", "-z"]), index);
+        let refused = set_address(&f.repo, &shown, "/elsewhere/maps").unwrap_err();
+        assert_eq!(refused, "The address of submodule maps changed since you chose this. Reopen the action.");
+        assert_eq!(declared_url(f, "maps"), address);
+        let now = list(&f.repo).unwrap().remove(0);
+        assert_eq!(set_address(&f.repo, &now, &address).unwrap().title, "Nothing changed");
+        assert!(set_address(&f.repo, &now, "-bad").is_err());
+        let _ = fs::remove_dir_all(&mirror);
+    }
+
+    #[test]
+    fn removing_a_submodule_stages_its_removal_and_deletes_its_folder_and_git_data() {
+        let n = nest();
+        let f = &n.f;
+        let addition = Addition { address: library_path(&n), path: PathBuf::from("vendor/atlas"), seen: list(&f.repo).unwrap() };
+        add(&f.repo, &addition).unwrap();
+        f.git(&["commit", "-qm", "Add the atlas"]);
+        for (key, value) in [("user.name", "Cedar"), ("user.email", "cedar@example.invalid"), ("commit.gpgSign", "false")] {
+            at(f, "vendor/atlas", &["config", "--local", key, value]);
+        }
+        let head_before = head(f);
+        let refs = f.git(&["for-each-ref"]);
+        fs::write(f.dir.join("vendor/atlas/lake.txt"), "Lake\n").unwrap();
+        at(f, "vendor/atlas", &["add", "--", "lake.txt"]);
+        at(f, "vendor/atlas", &["commit", "-qm", "Mark the lake"]);
+        fs::write(f.dir.join("vendor/atlas/map.txt"), "Redrawn\n").unwrap();
+        let module = list(&f.repo).unwrap().into_iter().find(|module| module.path == Path::new("vendor/atlas")).unwrap();
+        let prepared = removal(&f.repo, &module).unwrap();
+        assert_eq!((prepared.changes, prepared.unpushed, prepared.kept_for.clone()), (1, 1, None));
+        let spec = remove_spec(&prepared);
+        assert!(spec.danger);
+        assert_eq!(spec.title, "Remove submodule vendor/atlas?");
+        assert_eq!(spec.lines[1], "It has 1 uncommitted change now, and 1 commit in it is on no remote.");
+        let outcome = remove(&f.repo, &prepared).unwrap();
+        assert_eq!(outcome.title, "Removed submodule vendor/atlas");
+        assert_eq!(
+            outcome.detail,
+            "Its folder and its Git data are deleted. The removal and the change to .gitmodules are staged: commit them to record it."
+        );
+        assert_eq!(staged(f), "M\t.gitmodules\nD\tvendor/atlas\n");
+        assert!(f.git(&["ls-files", "--", "vendor/atlas"]).is_empty());
+        assert!(!f.dir.join("vendor/atlas").exists());
+        let modules = f.repo.common_dir().join("modules");
+        assert!(!modules.join("vendor").exists());
+        assert!(modules.join("maps").is_dir());
+        assert!(!fs::read_to_string(f.dir.join(".gitmodules")).unwrap().contains("atlas"));
+        assert_eq!(String::from_utf8(f.git(&["config", "--get-regexp", r"^submodule\..*\.url$"])).unwrap().lines().count(), 1);
+        assert_eq!(head(f), head_before);
+        assert_eq!(f.git(&["for-each-ref"]), refs);
+        assert_eq!(list(&f.repo).unwrap().len(), 1);
+        assert_eq!(n.library.git(&["rev-list", "--count", "HEAD"]), b"1\n");
+    }
+
+    #[test]
+    fn removing_refuses_a_submodule_that_changed_or_an_unstaged_gitmodules() {
+        let n = nest();
+        let f = &n.f;
+        let module = list(&f.repo).unwrap().remove(0);
+        let prepared = removal(&f.repo, &module).unwrap();
+        assert_eq!((prepared.changes, prepared.unpushed), (0, 0));
+        fs::write(f.dir.join("maps/map.txt"), "Redrawn\n").unwrap();
+        let refused = remove(&f.repo, &prepared).unwrap_err();
+        assert_eq!(refused, "What is inside submodule maps changed since you chose to remove it. Reopen the action to see it.");
+        at(f, "maps", &["checkout", "--", "map.txt"]);
+        work_inside(f, "camp.txt", "Camp\n", "Mark the camp");
+        assert!(remove(&f.repo, &prepared).unwrap_err().contains("changed since it was shown"));
+        at(f, "maps", &["checkout", "-q", "HEAD~1"]);
+        set_address(&f.repo, &module, "/elsewhere/maps").unwrap();
+        let moved = list(&f.repo).unwrap().remove(0);
+        let again = removal(&f.repo, &moved).unwrap();
+        assert_eq!(
+            remove(&f.repo, &again).unwrap_err(),
+            "Stage or undo the changes to .gitmodules first. Removing a submodule changes that file and stages it."
+        );
+        assert!(f.dir.join("maps/map.txt").is_file());
+        assert!(f.repo.common_dir().join("modules/maps").is_dir());
+        assert_eq!(staged(f), "");
+    }
+
+    #[test]
+    fn removing_keeps_the_git_data_another_worktree_still_uses() {
+        let n = nest();
+        let f = &n.f;
+        let other = f.dir.with_extension("other");
+        f.git(&["worktree", "add", "-q", "--detach", other.to_str().unwrap()]);
+        let opened = f.open(&other);
+        checked(with_system_tools(&mut opened.command()).args(["submodule", "update", "--init", "-q"])).unwrap();
+        let module = list(&f.repo).unwrap().remove(0);
+        let prepared = removal(&f.repo, &module).unwrap();
+        let name = other.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(prepared.kept_for.as_deref(), Some(name.as_str()));
+        let outcome = remove(&f.repo, &prepared).unwrap();
+        assert!(outcome.detail.starts_with(&format!("Its folder is deleted. Its Git data is kept, because worktree {name} still uses it.")));
+        assert!(f.repo.common_dir().join("modules/maps").is_dir());
+        assert!(other.join("maps/map.txt").is_file());
+        let _ = fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn uninitialised_submodules_are_initialised_and_a_changed_list_is_refused() {
+        let n = nest();
+        let f = &n.f;
+        let start = recorded(f);
+        f.git(&["submodule", "deinit", "-q", "-f", "maps"]);
+        let paths = [PathBuf::from("maps")];
+        assert!(initialise(&f.repo, &[]).is_err());
+        let outcome = initialise(&f.repo, &paths).unwrap();
+        assert_eq!(outcome.title, "Initialised submodule maps");
+        assert_eq!(outcome.detail, "Checked out at the commits this repository records: maps.");
+        assert_eq!(at(f, "maps", &["rev-parse", "HEAD"]), start);
+        assert_eq!(initialise(&f.repo, &paths).unwrap_err(), "The submodules changed since they were shown. Look again, then initialise them.");
+        assert!(initialise(&f.repo, &[PathBuf::from("atlas")]).is_err());
+    }
+
     #[test]
     fn a_folder_without_gitmodules_lists_nothing_and_a_declared_path_must_be_plain() {
         let f = Fixture::new();
         commit(&f, "trail.txt", "Trail\n", "Start the trail");
         assert!(list(&f.repo).unwrap().is_empty());
         fs::write(f.dir.join(".gitmodules"), "[submodule \"odd\"]\n\tpath = ../outside\n[submodule \"maps\"]\n\tpath = maps\n").unwrap();
-        assert_eq!(declared(&f.repo).unwrap(), [("maps".to_owned(), PathBuf::from("maps"))]);
+        assert_eq!(declared(&f.repo).unwrap(), [("maps".to_owned(), PathBuf::from("maps"), None)]);
         assert!(list(&f.repo).unwrap().is_empty());
     }
 }

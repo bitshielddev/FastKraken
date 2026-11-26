@@ -18,6 +18,10 @@ const FORD_TREE: &str = "Camp-trail-ford";
 const SUMMIT: &str = "Summit-trail";
 const SUMMIT_MAPS: &str = "Summit-maps";
 const SUMMIT_PEER: &str = "Summit-peer";
+const BASE_CAMP: &str = "Base-camp";
+const BASE_ATLAS: &str = "Base-atlas";
+const BASE_MIRROR: &str = "Base-atlas-mirror.git";
+const ATLAS: &str = "vendor/atlas";
 
 fn path(path: &Path) -> Result<&str> {
     path.to_str().ok_or_else(|| format!("{} is not UTF-8", path.display()).into())
@@ -44,7 +48,8 @@ impl Replay<'_> {
         self.remove_a_dirty_worktree(dir, &camp).await?;
         let (summit, maps) = self.a_submodule_with_new_commits(dir).await?;
         self.update_a_submodule(&summit).await?;
-        self.pull_a_moved_submodule(dir, &summit, &maps).await
+        self.pull_a_moved_submodule(dir, &summit, &maps).await?;
+        self.add_and_remove_a_submodule(dir).await
     }
 
     async fn until_tab_count(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
@@ -942,6 +947,252 @@ impl Replay<'_> {
         self.action(Action::Submodule(submodule::Action::Dismiss))?;
         self.until("the strip dismissed", |tab| tab.ui.submodule.behind.is_empty()).await?;
         git_is(&inside, &["rev-parse", "HEAD"], &format!("{next}\n"))?;
+        self.pass();
+        Ok(())
+    }
+
+    fn submodule_prompt(&mut self) -> Result<Option<(String, Vec<String>, bool, String)>> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            if !matches!(tab.ui.prompt.asked(), Some(prompt::Kind::Submodule(_))) {
+                return None;
+            }
+            let spec = prompt::shown(&tab.ui)?;
+            let field = tab.ui.prompt.field().map(|field| field.read(cx).text().to_owned()).unwrap_or_default();
+            Some((spec.title, spec.lines, spec.danger, field))
+        })?)
+    }
+
+    async fn until_submodule_prompt(&mut self, title: &str) -> Result<(String, Vec<String>, bool, String)> {
+        let wanted = title.to_owned();
+        self.until(&format!("the prompt {title:?}"), move |tab| {
+            matches!(tab.ui.prompt.asked(), Some(prompt::Kind::Submodule(_)))
+                && prompt::shown(&tab.ui).is_some_and(|spec| spec.title == wanted)
+        })
+        .await?;
+        self.submodule_prompt()?.ok_or_else(|| "The submodule prompt closed".into())
+    }
+
+    fn prompt_problems(&mut self, first: &str, second: &str) -> Result<(Option<String>, Option<String>)> {
+        let (first, second) = (first.to_owned(), second.to_owned());
+        Ok(self.tab.read_with(self.cx, move |tab, _| {
+            let Some(spec) = prompt::shown(&tab.ui) else { return (None, None) };
+            let one = spec.field.as_ref().and_then(|field| (field.validate)(&first, &tab.ui));
+            let two = spec.second.as_ref().and_then(|field| (field.validate)(&second, &tab.ui));
+            (one, two)
+        })?)
+    }
+
+    fn undo_reads(&mut self) -> Result<Availability> {
+        Ok(self.tab.read_with(self.cx, |tab, _| journal::availability(&tab.ui, journal::Way::Undo))?)
+    }
+
+    fn declared_in(root: &Path, key: &str) -> Result<String> {
+        Ok(git(root, &["config", "--file", ".gitmodules", "--get", key])?.trim_end().to_owned())
+    }
+
+    async fn add_and_remove_a_submodule(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1108");
+        let config = global_config(dir);
+        let allowed = fs::read_to_string(&config).unwrap_or_default();
+        if !allowed.contains("[protocol \"file\"]") {
+            fs::write(&config, format!("{allowed}[protocol \"file\"]\n\tallow = always\n"))?;
+        }
+        let atlas = init(dir, BASE_ATLAS)?;
+        record(&atlas, "atlas.txt", "Atlas of the valley\n", "Draw the atlas")?;
+        let atlas_tip = oid(&atlas, "HEAD")?;
+        let root = init(dir, BASE_CAMP)?;
+        record(&root, "trail.txt", TRAIL, "Start the base camp")?;
+        let head = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Base-camp open without submodules", |tab| {
+            tab.ui.repo == BASE_CAMP && tab.ui.history.len() == 1 && tab.ui.head.is_some() && tab.ui.submodule.list.is_empty() && !tab.ui.busy()
+        })
+        .await?;
+        let section_shown = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.refs.rows.iter().any(|row| matches!(row, SideRow::Header { section: Section::Submodules, .. }))
+        })?;
+        if section_shown {
+            return Err("The Submodules section shows before any submodule is added".into());
+        }
+        let rows = self.menu_rows(&Target::Repo)?;
+        if !rows.contains(&("submodule.add", "Add submodule…".to_owned(), None)) {
+            return Err(format!("The repository menu reads {rows:?}").into());
+        }
+        self.choose(&Target::Repo, "submodule.add")?;
+        let asked = self.until_submodule_prompt("Add submodule").await?;
+        if asked.2 || !asked.3.is_empty() {
+            return Err(format!("The add prompt reads {asked:?}").into());
+        }
+        let problems = self.prompt_problems("https://cedar:secret@example.invalid/atlas.git", "trail.txt")?;
+        if problems
+            != (
+                Some("Use a repository URL without embedded credentials, a query or a fragment.".to_owned()),
+                Some("trail.txt already exists and is not a folder.".to_owned()),
+            )
+        {
+            return Err(format!("The add prompt's checks read {problems:?}").into());
+        }
+        let address = path(&atlas)?.to_owned();
+        self.type_first(&address)?;
+        self.type_second(ATLAS)?;
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let offers = self.until_said("Added submodule vendor/atlas").await?;
+        let said = self.said()?.ok_or("No notice after adding the submodule")?;
+        let detail = format!(
+            "It is at {}, cloned from {address}. It is staged with .gitmodules: commit them to record it.",
+            notice::short(&atlas_tip)
+        );
+        if offers != ["Open submodule"] || said.2 != detail {
+            return Err(format!("Adding the submodule said {said:?}").into());
+        }
+        git_is(&root, &["diff", "--cached", "--name-status"], "A\t.gitmodules\nA\tvendor/atlas\n")?;
+        if Self::declared_in(&root, "submodule.vendor/atlas.url")? != address || Self::declared_in(&root, "submodule.vendor/atlas.path")? != ATLAS {
+            return Err("Git's .gitmodules does not declare the new submodule".into());
+        }
+        git_is(&root, &["ls-files", "--stage", "--", ATLAS], &format!("160000 {atlas_tip} 0\t{ATLAS}\n"))?;
+        let modules = root.join(".git/modules");
+        if !modules.join(ATLAS).is_dir() || fs::read_to_string(root.join(ATLAS).join("atlas.txt"))? != "Atlas of the valley\n" {
+            return Err("The new submodule's Git data or files are missing".into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        self.until("the Submodules section with the new submodule", |tab| {
+            tab.ui.refs.rows.iter().any(|row| matches!(row, SideRow::Header { section: Section::Submodules, count: 1, .. }))
+                && tab.ui.submodule.list.first().is_some_and(|module| module.path == Path::new(ATLAS) && module.in_sync())
+                && tab.ui.files.iter().any(|row| row.staged && row.path == Path::new(ATLAS) && row.submodule.is_some())
+                && tab.ui.files.iter().any(|row| row.staged && row.path == Path::new(".gitmodules"))
+        })
+        .await?;
+        let undo = self.undo_reads()?;
+        let refused = Availability::Disabled(
+            "Adding submodule vendor/atlas cannot be undone. Remove it from the Submodules section instead.".to_owned(),
+        );
+        if undo != refused {
+            return Err(format!("Undo after adding a submodule reads {undo:?}").into());
+        }
+        let section = Target::Section(Section::Submodules);
+        let rows = self.menu_rows(&section)?;
+        if !rows.contains(&("submodule.add", "Add submodule…".to_owned(), None)) {
+            return Err(format!("The Submodules section menu reads {rows:?}").into());
+        }
+        git(&root, &["commit", "-qm", "Add the atlas"])?;
+        self.action(Action::Refresh)?;
+        self.until("the added submodule committed", |tab| tab.ui.files.is_empty() && tab.ui.history.len() == 2).await?;
+
+        let mirror = dir.join(BASE_MIRROR);
+        git(dir, &["clone", "-q", "--bare", &address, path(&mirror)?])?;
+        let target = Target::Submodule(ATLAS.into());
+        let rows = self.menu_rows(&target)?;
+        let wanted = [
+            ("submodule.set-url", "Change address…".to_owned(), None),
+            ("submodule.remove", "Remove submodule…".to_owned(), None),
+        ];
+        if !wanted.iter().all(|row| rows.contains(row)) {
+            return Err(format!("The submodule's menu reads {rows:?}").into());
+        }
+        self.choose(&target, "submodule.set-url")?;
+        let asked = self.until_submodule_prompt("Change the address of submodule vendor/atlas").await?;
+        if asked.3 != address || asked.2 {
+            return Err(format!("The address prompt reads {asked:?}").into());
+        }
+        let moved_to = path(&mirror)?.to_owned();
+        self.tab.update(self.cx, |tab, _, cx| {
+            if let Some(field) = tab.ui.prompt.field().cloned() {
+                field.update(cx, |field, cx| field.set_text("", cx));
+            }
+        })?;
+        self.type_first(&moved_to)?;
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        self.until_said("Changed the address of submodule vendor/atlas").await?;
+        if Self::declared_in(&root, "submodule.vendor/atlas.url")? != moved_to {
+            return Err("Changing the address did not change .gitmodules".into());
+        }
+        git_is(&root, &["config", "--get", "submodule.vendor/atlas.url"], &format!("{moved_to}\n"))?;
+        git_is(&root.join(ATLAS), &["remote", "get-url", "origin"], &format!("{moved_to}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1"], " M .gitmodules\n")?;
+        git_is(&root, &["ls-files", "--stage", "--", ATLAS], &format!("160000 {atlas_tip} 0\t{ATLAS}\n"))?;
+        git(&root, &["commit", "-qam", "Fetch the atlas from its mirror"])?;
+
+        scripted(&root, &["submodule", "deinit", "-q", "-f", "--", ATLAS])?;
+        self.open(&root)?;
+        self.until("the offer to initialise after opening", |tab| {
+            tab.ui.repo == BASE_CAMP && tab.ui.submodule.uninitialised == [PathBuf::from(ATLAS)] && tab.ui.submodule.behind.is_empty()
+        })
+        .await?;
+        if submodule::uninitialised_text(1) != "1 submodule is not initialised, so its folder is empty." {
+            return Err(format!("The offer reads {:?}", submodule::uninitialised_text(1)).into());
+        }
+        self.action(Action::Submodule(submodule::Action::InitialiseAll))?;
+        self.until_said("Initialised submodule vendor/atlas").await?;
+        self.until("the offer gone and the submodule listed as initialised", |tab| {
+            tab.ui.submodule.uninitialised.is_empty() && tab.ui.files.is_empty() && tab.ui.submodule.list.first().is_some_and(submodule::Module::in_sync)
+        })
+        .await?;
+        git_is(&root.join(ATLAS), &["rev-parse", "HEAD"], &format!("{atlas_tip}\n"))?;
+
+        let inside = root.join(ATLAS);
+        Self::configure(&inside)?;
+        record(&inside, "ford.txt", "Ford\n", "Mark the ford")?;
+        let ford = oid(&inside, "HEAD")?;
+        fs::write(inside.join("atlas.txt"), "Atlas, redrawn\n")?;
+        self.action(Action::Refresh)?;
+        self.until("the changed submodule seen", move |tab| {
+            tab.ui.files.iter().any(|row| row.path == Path::new(ATLAS) && row.submodule.is_some_and(|flags| flags.moved && flags.modified))
+                && tab.ui.submodule.list.first().is_some_and(|module| module.populated && module.checked_out.as_deref() == Some(ford.as_str()))
+        })
+        .await?;
+        self.choose(&target, "submodule.remove")?;
+        let asked = self.until_submodule_prompt("Remove submodule vendor/atlas?").await?;
+        let lines = [
+            "Its folder vendor/atlas and its Git data are deleted, with any commits and changes made in it that are not pushed. They cannot be brought back.",
+            "It has 1 uncommitted change now, and 1 commit in it is on no remote.",
+            "The removal and the change to .gitmodules are staged for you to commit.",
+        ];
+        if !asked.2 || asked.1 != lines {
+            return Err(format!("The remove prompt reads {asked:?}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::Cancel))?;
+        self.until("the remove prompt closed", |tab| !tab.ui.prompt.open()).await?;
+        if !modules.join(ATLAS).is_dir() || !inside.join("ford.txt").is_file() {
+            return Err("Cancelling the removal touched the submodule".into());
+        }
+        self.choose(&target, "submodule.remove")?;
+        self.until_submodule_prompt("Remove submodule vendor/atlas?").await?;
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let offers = self.until_said("Removed submodule vendor/atlas").await?;
+        let said = self.said()?.ok_or("No notice after removing the submodule")?;
+        if !offers.is_empty()
+            || said.2 != "Its folder and its Git data are deleted. The removal and the change to .gitmodules are staged: commit them to record it."
+        {
+            return Err(format!("Removing the submodule said {said:?}").into());
+        }
+        git_is(&root, &["diff", "--cached", "--name-status"], "M\t.gitmodules\nD\tvendor/atlas\n")?;
+        git_is(&root, &["ls-files", "--", ATLAS], "")?;
+        if fs::read_to_string(root.join(".gitmodules"))?.contains("atlas") {
+            return Err("The removed submodule is still declared in .gitmodules".into());
+        }
+        if root.join(ATLAS).exists() {
+            return Err("The removed submodule's folder is still there".into());
+        }
+        let left: Vec<_> = fs::read_dir(&modules).map(|entries| entries.flatten().map(|entry| entry.file_name()).collect()).unwrap_or_default();
+        if !left.is_empty() {
+            return Err(format!("Removing the submodule left {left:?} under modules/").into());
+        }
+        if fs::read_to_string(root.join(".git/config"))?.contains("[submodule") {
+            return Err("The removed submodule is still registered in the repository's settings".into());
+        }
+        let head = oid(&root, "HEAD")?;
+        self.until("the Submodules section gone", |tab| {
+            tab.ui.submodule.list.is_empty()
+                && !tab.ui.refs.rows.iter().any(|row| matches!(row, SideRow::Header { section: Section::Submodules, .. }))
+                && tab.ui.files.iter().any(|row| row.staged && row.path == Path::new(ATLAS))
+        })
+        .await?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        let undo = self.undo_reads()?;
+        if undo != Availability::Disabled("Removing submodule vendor/atlas cannot be undone.".to_owned()) {
+            return Err(format!("Undo after removing a submodule reads {undo:?}").into());
+        }
+        git_is(&atlas, &["rev-list", "--count", "HEAD"], "1\n")?;
         self.pass();
         Ok(())
     }

@@ -677,6 +677,14 @@ fn repository<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             view::Action::Submodule(crate::submodule::Action::ToggleAutomatic),
             cx,
         ))
+        .child(tick(
+            "preferences-offer-initialise",
+            ui.submodule.offer,
+            "Offer to initialise submodules",
+            "When this repository opens with submodules that are not initialised, a strip under the toolbar offers to initialise them.",
+            view::Action::Submodule(crate::submodule::Action::ToggleOffer),
+            cx,
+        ))
 }
 
 pub(crate) fn radio(on: bool) -> Div {

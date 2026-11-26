@@ -998,7 +998,7 @@ fn choose_folder(tab: &mut Tab, window: &mut Window, cx: &mut Context<Tab>) {
         .detach();
 }
 
-fn open_in_another_tab(path: &Path, cx: &Context<Tab>) -> bool {
+pub(crate) fn open_in_another_tab(path: &Path, cx: &Context<Tab>) -> bool {
     let me = cx.entity_id();
     crate::tabs::strip(cx).is_some_and(|strip| {
         strip.tabs.iter().any(|shown| shown.id != me && shown.root.as_deref().is_some_and(|root| same_place(root, path)))

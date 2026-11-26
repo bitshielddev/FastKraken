@@ -39,7 +39,7 @@ pub(crate) fn repo_rows(section: Section) -> &'static [&'static str] {
         Section::Tags => &["repo.new-tag"],
         Section::Stashes => &["repo.stash"],
         Section::Worktrees => &["worktree.new", "worktree.prune"],
-        Section::Submodules => &["submodule.update-all"],
+        Section::Submodules => &["submodule.add", "submodule.update-all"],
     }
 }
 

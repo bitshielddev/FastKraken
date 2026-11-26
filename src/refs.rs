@@ -1300,6 +1300,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 Section::Branches => Some("New branch"),
                                 Section::Remotes => Some("Add a remote or publish"),
                                 Section::Worktrees => Some("New worktree"),
+                                Section::Submodules => Some("Add submodule"),
                                 _ => None,
                             };
                             let left_out = match crate::graph_view::section_prefix(section) {
@@ -1354,6 +1355,9 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                                         Section::Worktrees => view::Action::Worktree(
                                                             crate::worktree::Action::New(crate::worktree::Start::Head),
                                                         ),
+                                                        Section::Submodules => {
+                                                            view::Action::Submodule(crate::submodule::Action::Add)
+                                                        }
                                                         _ => view::Action::Run("repo.new-branch"),
                                                     };
                                                     app.dispatch(action, w, cx)

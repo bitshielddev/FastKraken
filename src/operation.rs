@@ -1227,7 +1227,15 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::Navigate(_)
         | A::Journal(_)
         | A::Worktree(_) => true,
-        A::Submodule(action) => matches!(action, crate::submodule::Action::Open(_) | crate::submodule::Action::Show(_) | crate::submodule::Action::Dismiss | crate::submodule::Action::ToggleAutomatic),
+        A::Submodule(action) => matches!(
+            action,
+            crate::submodule::Action::Open(_)
+                | crate::submodule::Action::Show(_)
+                | crate::submodule::Action::Dismiss
+                | crate::submodule::Action::ToggleAutomatic
+                | crate::submodule::Action::StopOffering
+                | crate::submodule::Action::ToggleOffer
+        ),
         A::Refs(action) => {
             use crate::refs::Action as R;
             matches!(action, R::Inspect(..) | R::ToggleSection(_) | R::ToggleFolder(_) | R::FoldAll { .. } | R::ToggleList | R::Escape)
