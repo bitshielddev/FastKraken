@@ -713,6 +713,7 @@ impl Repository {
         }
         let mut input = Vec::new();
         for path in paths {
+            input.extend_from_slice(b"./");
             input.extend_from_slice(path.as_os_str().as_encoded_bytes());
             input.push(0);
         }
@@ -721,7 +722,11 @@ impl Repository {
         let output =
             crate::repository::run_with_input(&mut check, input).map_err(|e| format!("Run bundled Git: {e}"))?;
         match output.status.code() {
-            Some(0) => Ok(output.stdout.split(|&b| b == 0).find(|name| !name.is_empty()).map(raw_path)),
+            Some(0) => Ok(output
+                .stdout
+                .split(|&b| b == 0)
+                .find(|name| !name.is_empty())
+                .map(|name| raw_path(name.strip_prefix(b"./").unwrap_or(name)))),
             Some(1) => Ok(None),
             _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
         }
@@ -3107,5 +3112,19 @@ mod tests {
         assert!(f.repo.restore_stashed_file(&ignored).unwrap_err().contains("Git ignores it"));
         assert_eq!(read(&f, "gone.txt").unwrap(), b"ignored copy\n");
         assert_eq!(rev(&f, "refs/stash"), stash);
+    }
+
+    #[test]
+    fn an_ignored_file_whose_name_starts_with_a_colon_is_still_found() {
+        let f = Fixture::new();
+        fs::create_dir_all(f.dir.join(".git/info")).unwrap();
+        fs::write(f.dir.join(".git/info/exclude"), "*.log\n").unwrap();
+        fs::write(f.dir.join(":!odd.txt"), "kept\n").unwrap();
+        fs::write(f.dir.join(":!odd.log"), "ignored\n").unwrap();
+        assert_eq!(f.repo.ignored_among(&[PathBuf::from(":!odd.txt")]).unwrap(), None);
+        assert_eq!(
+            f.repo.ignored_among(&[PathBuf::from(":!odd.txt"), PathBuf::from(":!odd.log")]).unwrap(),
+            Some(PathBuf::from(":!odd.log"))
+        );
     }
 }

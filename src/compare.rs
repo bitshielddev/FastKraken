@@ -69,6 +69,7 @@ pub(crate) struct State {
     pub(crate) names: Option<Names>,
     shown: Option<Selection>,
     pub(crate) files: Vec<ChangedFile>,
+    fork: Option<String>,
     loading: bool,
     failed: Option<String>,
     pub(crate) path: Option<PathBuf>,
@@ -98,6 +99,10 @@ impl State {
         self.loading
     }
 
+    pub(crate) fn fork(&self) -> Option<&str> {
+        self.fork.as_deref()
+    }
+
     pub(crate) fn from(&self, path: &Path) -> Option<PathBuf> {
         self.files.iter().find(|file| file.path == path).and_then(|file| file.from.clone())
     }
@@ -120,6 +125,7 @@ impl State {
         self.ticket += 1;
         self.shown = None;
         self.files.clear();
+        self.fork = None;
         self.loading = false;
         self.failed = None;
         self.path = None;
@@ -261,7 +267,12 @@ impl Repository {
         Ok((base, to))
     }
 
-    pub(crate) fn compared_files(&self, from: &Rev, to: &Rev, since_fork: bool) -> Result<Vec<ChangedFile>, String> {
+    pub(crate) fn compared_files(
+        &self,
+        from: &Rev,
+        to: &Rev,
+        since_fork: bool,
+    ) -> Result<(String, Vec<ChangedFile>), String> {
         let (from, to) = self.compared_ends(from, to, since_fork)?;
         let output = checked(
             self.read_command()
@@ -278,7 +289,7 @@ impl Repository {
                 .args(to.as_ref())
                 .arg("--"),
         )?;
-        parse_changed_files(&output)
+        Ok((from, parse_changed_files(&output)?))
     }
 
     pub(crate) fn compared_patch(
@@ -446,7 +457,8 @@ fn load(tab: &mut Tab, cx: &mut Context<Tab>) {
             state.loading = false;
             let opening = state.opening.take();
             match result {
-                Ok(files) => {
+                Ok((start, files)) => {
+                    state.fork = since_fork.then_some(start);
                     state.files = files;
                     if state.path.as_ref().is_some_and(|path| !state.files.iter().any(|file| &file.path == path)) {
                         state.path = None;
@@ -458,6 +470,7 @@ fn load(tab: &mut Tab, cx: &mut Context<Tab>) {
                 }
                 Err(error) => {
                     state.files.clear();
+                    state.fork = None;
                     state.failed = Some(error);
                 }
             }
@@ -673,8 +686,9 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(heading.title.clone()),
         )
-        .when_some(comparing.clone(), |d, (from, to, _)| {
-            d.children(side_line(ui, "from", &from)).children(side_line(ui, "to", &to))
+        .when_some(comparing.clone(), |d, (from, to, since_fork)| {
+            let start = if since_fork { state.fork.clone().map(Rev::Commit) } else { Some(from) };
+            d.children(start.and_then(|start| side_line(ui, "from", &start))).children(side_line(ui, "to", &to))
         })
         .children(heading.notes.iter().map(|note| kit::muted(note.clone())))
         .when(state.names.is_some() && comparing.as_ref().is_some_and(|(_, to, _)| *to != Rev::WorkingTree), |d| {
@@ -972,7 +986,7 @@ mod tests {
         f.git(&["commit", "-qm", "Rename the camp"]);
         let last = String::from_utf8(f.git(&["rev-parse", "HEAD"])).unwrap().trim().to_owned();
         let before = untouched(&f);
-        let files = f.repo.compared_files(&Rev::Commit(first.clone()), &Rev::Commit(last.clone()), false).unwrap();
+        let files = f.repo.compared_files(&Rev::Commit(first.clone()), &Rev::Commit(last.clone()), false).unwrap().1;
         assert_eq!(listed(&files), vec![("base.txt".to_owned(), "Renamed"), ("trail.txt".to_owned(), "Added")]);
         assert_eq!(files[0].from.as_deref(), Some(Path::new("camp.txt")));
         let ends = (&Rev::Commit(first), &Rev::Commit(last), false);
@@ -992,7 +1006,7 @@ mod tests {
         fs::write(f.dir.join("camp.txt"), "camp by the lake\n").unwrap();
         fs::write(f.dir.join("loose.txt"), "not tracked\n").unwrap();
         let before = untouched(&f);
-        let files = f.repo.compared_files(&Rev::Commit(base.clone()), &Rev::WorkingTree, false).unwrap();
+        let files = f.repo.compared_files(&Rev::Commit(base.clone()), &Rev::WorkingTree, false).unwrap().1;
         assert_eq!(listed(&files), vec![("camp.txt".to_owned(), "Modified"), ("trail.txt".to_owned(), "Added")]);
         let ends = (&Rev::Commit(base), &Rev::WorkingTree, false);
         let patch = f.repo.compared_patch(ends, Some(Path::new("camp.txt")), None, DiffOptions::default()).unwrap();
@@ -1003,15 +1017,17 @@ mod tests {
     #[test]
     fn since_they_diverged_lists_only_what_the_branch_added() {
         let f = Fixture::new();
-        commit_file(&f, "camp.txt", "camp\n", "Pitch the camp");
+        let fork = commit_file(&f, "camp.txt", "camp\n", "Pitch the camp");
         f.git(&["switch", "-qc", "ridge"]);
         let ridge = commit_file(&f, "ridge.txt", "ridge\n", "Survey the ridge");
         f.git(&["switch", "-q", "main"]);
         let main = commit_file(&f, "lake.txt", "lake\n", "Map the lake");
         let before = untouched(&f);
-        let since = f.repo.compared_files(&Rev::Commit(main.clone()), &Rev::Commit(ridge.clone()), true).unwrap();
+        let (start, since) =
+            f.repo.compared_files(&Rev::Commit(main.clone()), &Rev::Commit(ridge.clone()), true).unwrap();
+        assert_eq!(start, fork);
         assert_eq!(listed(&since), vec![("ridge.txt".to_owned(), "Added")]);
-        let tips = f.repo.compared_files(&Rev::Commit(main.clone()), &Rev::Commit(ridge.clone()), false).unwrap();
+        let tips = f.repo.compared_files(&Rev::Commit(main.clone()), &Rev::Commit(ridge.clone()), false).unwrap().1;
         assert_eq!(listed(&tips), vec![("lake.txt".to_owned(), "Deleted"), ("ridge.txt".to_owned(), "Added")]);
         assert_eq!(untouched(&f), before);
         f.git(&["switch", "-q", "--orphan", "island"]);
@@ -1025,7 +1041,7 @@ mod tests {
         let f = Fixture::new();
         commit_file(&f, "camp.txt", "camp\n", "Pitch the camp");
         let tip = commit_file(&f, "trail.txt", "trail\n", "Mark the trail");
-        let files = f.repo.compared_files(&Rev::Commit(EMPTY_TREE.to_owned()), &Rev::Commit(tip), false).unwrap();
+        let files = f.repo.compared_files(&Rev::Commit(EMPTY_TREE.to_owned()), &Rev::Commit(tip), false).unwrap().1;
         assert_eq!(listed(&files), vec![("camp.txt".to_owned(), "Added"), ("trail.txt".to_owned(), "Added")]);
     }
 }

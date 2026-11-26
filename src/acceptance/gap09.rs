@@ -320,6 +320,7 @@ impl Replay<'_> {
         self.start("GAP0902");
         let root = init(dir, "Fork-trail")?;
         record(&root, "camp.txt", "camp\n", "Pitch the camp")?;
+        let fork = oid(&root, "HEAD")?;
         git(&root, &["switch", "-qc", "ridge"])?;
         record(&root, "ridge.txt", "Survey the ridge\n", "Survey the ridge")?;
         let ridge = oid(&root, "HEAD")?;
@@ -349,7 +350,10 @@ impl Replay<'_> {
         }
         self.action(action)?;
         let forked = Selection::Compare { from: Rev::Commit(main.clone()), to: Rev::Commit(ridge.clone()), since_fork: true };
-        self.until("ridge compared with main since they diverged", |tab| showing(tab, &forked, &since)).await?;
+        self.until("ridge compared with main since they diverged", |tab| {
+            showing(tab, &forked, &since) && tab.ui.compare.fork() == Some(fork.as_str())
+        })
+        .await?;
         let read = self.tab.read_with(self.cx, |tab, _| heading(tab).map(|heading| heading.title))?;
         if read.as_deref() != Some("Comparing ridge with main") {
             return Err(format!("The comparison reads {read:?}").into());
@@ -361,7 +365,10 @@ impl Replay<'_> {
         }
         self.action(Action::Compare(compare::Action::SinceFork(false)))?;
         let tip_to_tip = Selection::Compare { from: Rev::Commit(main.clone()), to: Rev::Commit(ridge.clone()), since_fork: false };
-        self.until("ridge compared with main tip to tip", |tab| showing(tab, &tip_to_tip, &tips)).await?;
+        self.until("ridge compared with main tip to tip", |tab| {
+            showing(tab, &tip_to_tip, &tips) && tab.ui.compare.fork().is_none()
+        })
+        .await?;
         let still = self.tab.read_with(self.cx, |tab, _| heading(tab).map(|heading| heading.title))?;
         if still.as_deref() != Some("Comparing ridge with main") {
             return Err(format!("Tip to tip reads {still:?}").into());
@@ -1500,6 +1507,7 @@ impl Replay<'_> {
         self.pass();
         Ok(())
     }
+
     fn save_asked(&self, from: usize) -> Option<(PathBuf, String)> {
         crate::patch::asked().into_iter().skip(from).find_map(|asked| match asked {
             crate::patch::Asked::Save { folder, name } => Some((folder, name)),
