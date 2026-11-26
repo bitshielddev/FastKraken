@@ -17,7 +17,7 @@ use std::{
 
 type Result<T> = std::result::Result<T, String>;
 
-const PROXY_VARIABLES: [&str; 4] = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
+const PROXY_VARIABLES: [[&str; 2]; 2] = [["https_proxy", "HTTPS_PROXY"], ["all_proxy", "ALL_PROXY"]];
 const PROXY_KINDS: [&str; 6] = ["http", "https", "socks4", "socks4a", "socks5", "socks5h"];
 const SCUTIL: &str = "/usr/sbin/scutil";
 
@@ -67,6 +67,9 @@ pub(crate) struct Proxy {
 impl Proxy {
     pub(crate) fn used(&self) -> Option<(String, String)> {
         if let Some((scope, value)) = &self.configured {
+            if value.is_empty() {
+                return None;
+            }
             let from = match scope.as_str() {
                 "global" => "Set by http.proxy in your Git settings for every repository.".to_owned(),
                 "local" | "worktree" => "Set by http.proxy in this repository's own Git settings.".to_owned(),
@@ -258,9 +261,9 @@ pub(crate) fn mac_proxy(listing: &str) -> MacProxy {
 }
 
 pub(crate) fn environment_proxy(variable: impl Fn(&str) -> Option<String>) -> Option<(&'static str, String)> {
-    PROXY_VARIABLES
-        .iter()
-        .find_map(|name| variable(name).map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()).map(|value| (*name, value)))
+    let (name, value) = PROXY_VARIABLES.iter().find_map(|names| names.iter().find_map(|name| variable(name).map(|value| (*name, value))))?;
+    let value = value.trim().to_owned();
+    (!value.is_empty()).then_some((name, value))
 }
 
 fn config_value(command: &mut Command) -> Result<Option<String>> {
@@ -292,7 +295,7 @@ pub(crate) fn read_proxy(repo: Option<&Repository>, variable: impl Fn(&str) -> O
         None => (String::new(), line),
     });
     Ok(Proxy {
-        configured: configured.filter(|(_, value)| !value.is_empty()),
+        configured,
         global: global_proxy()?,
         environment: environment_proxy(variable),
         mac: mac.map_or(MacProxy::Direct, mac_proxy),
@@ -806,6 +809,23 @@ mod tests {
         assert_eq!(read.mac, MacProxy::Server("http://corp.invalid:8443".to_owned()));
         assert_eq!(environment_proxy(|name| (name == "ALL_PROXY").then(|| " socks5://all.invalid ".to_owned())), Some(("ALL_PROXY", "socks5://all.invalid".to_owned())));
         assert_eq!(environment_proxy(|_| Some(String::new())), None);
+        let both = |name: &str| match name {
+            "HTTPS_PROXY" => Some("http://upper.invalid:8080".to_owned()),
+            "https_proxy" => Some("http://lower.invalid:8080".to_owned()),
+            "all_proxy" => Some("socks5://lower-all.invalid:1080".to_owned()),
+            "ALL_PROXY" => Some("socks5://upper-all.invalid:1080".to_owned()),
+            _ => None,
+        };
+        assert_eq!(environment_proxy(both), Some(("https_proxy", "http://lower.invalid:8080".to_owned())));
+        assert_eq!(environment_proxy(|name| both(name).filter(|_| name.ends_with("_PROXY") || name.starts_with("all"))), Some(("HTTPS_PROXY", "http://upper.invalid:8080".to_owned())));
+        assert_eq!(environment_proxy(|name| both(name).filter(|_| name.starts_with("all") || name.starts_with("ALL"))), Some(("all_proxy", "socks5://lower-all.invalid:1080".to_owned())));
+        assert_eq!(environment_proxy(|name| if name == "https_proxy" { Some(String::new()) } else { both(name) }), None);
+
+        fixture.git(&["config", "--local", "http.proxy", ""]);
+        let emptied = read_proxy(Some(&fixture.repo), variables, None).unwrap();
+        assert_eq!(emptied.configured, Some(("local".to_owned(), String::new())));
+        assert_eq!(emptied.environment, Some(("https_proxy", "http://lower.invalid:8080".to_owned())));
+        assert_eq!(emptied.used(), None);
     }
 
     #[test]
