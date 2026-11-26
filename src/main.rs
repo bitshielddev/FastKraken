@@ -1960,6 +1960,24 @@ fn hand_over(argv0: &std::ffi::OsStr, path: Option<std::ffi::OsString>) -> Optio
     }
 }
 
+const FLAGS: &[&str] = &[
+    "--help",
+    "--measure",
+    "--measure-offscreen",
+    "--measure-edits",
+    "--measure-edits-offscreen",
+    "--hold",
+];
+
+fn unknown_flag(args: &[std::ffi::OsString]) -> Option<String> {
+    args.iter().map(|arg| arg.to_string_lossy()).find_map(|arg| {
+        let unknown = arg.starts_with("--")
+            && !FLAGS.contains(&arg.as_ref())
+            && acceptance::Wave::from_flag(&arg).is_none();
+        unknown.then(|| arg.into_owned())
+    })
+}
+
 fn declined() -> notice::Notice {
     notice::Notice::new(Tone::Info, "Cancelled", "")
 }
@@ -1979,6 +1997,14 @@ fn main() {
         && let Some(code) = rewrite::edit_todo(&prepared, target)
     {
         std::process::exit(code);
+    }
+    let helper = matches!(
+        all.first().and_then(|arg| arg.to_str()),
+        Some(credentials::HELPER | "--git-credential")
+    );
+    if !helper && let Some(flag) = unknown_flag(&all) {
+        eprintln!("fastkraken: unknown option {flag}. Run fastkraken --help to list the options.");
+        std::process::exit(2);
     }
     let mut args = all.into_iter();
     let first = args.next();
@@ -2031,7 +2057,7 @@ fn main() {
     };
     if path.as_deref() == Some("--help".as_ref()) {
         println!(
-            "fastkraken [repository]           Open the repository, in a tab of the FastKraken already running\nfastkraken                        Through the installed command: open the folder you are in\nfastkraken --acceptance-wave-1    Replay the first 16 core Git scenarios in temporary repositories\nfastkraken --acceptance-wave-2    Replay 13 stash, merge, reset and revert scenarios\nfastkraken --acceptance-wave-3    Replay five sync scenarios against local bare remotes\nfastkraken --acceptance-gap-NN    Run additional acceptance suite NN (01 to 06)\nfastkraken --measure repository   Measure a read-only walkthrough\nfastkraken --measure-edits        Measure staging and committing in a new temporary repo\nAppend -offscreen to a measure option to time native scene builds without display presentation."
+            "fastkraken [repository]           Open the repository, in a tab of the FastKraken already running\nfastkraken                        Through the installed command: open the folder you are in\nfastkraken --acceptance-wave-1    Replay the first 16 core Git scenarios in temporary repositories\nfastkraken --acceptance-wave-2    Replay 13 stash, merge, reset and revert scenarios\nfastkraken --acceptance-wave-3    Replay five sync scenarios against local bare remotes\nfastkraken --acceptance-gap-NN    Run additional acceptance suite NN (01 to 11)\nfastkraken --measure repository   Measure a read-only walkthrough\nfastkraken --measure-edits        Measure staging and committing in a new temporary repo\nAppend -offscreen to a measure option to time native scene builds without display presentation."
         );
         return;
     }
@@ -2122,7 +2148,32 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Follow, Landing};
+    use super::{Follow, Landing, unknown_flag};
+
+    fn unknown(args: &[&str]) -> Option<String> {
+        unknown_flag(&args.iter().map(std::ffi::OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn a_mistyped_option_is_refused_and_every_known_one_is_kept() {
+        assert_eq!(unknown(&["--acceptance-gaps-11"]).as_deref(), Some("--acceptance-gaps-11"));
+        assert_eq!(unknown(&["--acceptance-gap-99"]).as_deref(), Some("--acceptance-gap-99"));
+        assert_eq!(unknown(&["--measure", "/tmp/repo", "--hld"]).as_deref(), Some("--hld"));
+        assert_eq!(unknown(&["--"]).as_deref(), Some("--"));
+        assert_eq!(unknown(&[]), None);
+        assert_eq!(unknown(&["/tmp/repo"]), None);
+        assert_eq!(unknown(&["relative/folder"]), None);
+        assert_eq!(unknown(&["--help"]), None);
+        assert_eq!(unknown(&["--measure", "/tmp/repo", "--hold"]), None);
+        assert_eq!(unknown(&["--measure-offscreen", "/tmp/repo"]), None);
+        assert_eq!(unknown(&["--measure-edits"]), None);
+        assert_eq!(unknown(&["--measure-edits-offscreen"]), None);
+        assert_eq!(unknown(&["--acceptance-wave-1"]), None);
+        assert_eq!(unknown(&["--acceptance-wave-2"]), None);
+        assert_eq!(unknown(&["--acceptance-wave-3"]), None);
+        assert_eq!(unknown(&["--acceptance-gap-01"]), None);
+        assert_eq!(unknown(&["--acceptance-gap-11"]), None);
+    }
 
     #[test]
     fn a_switch_lands_on_the_changes_it_carries_and_on_head_when_clean() {

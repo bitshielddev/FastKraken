@@ -87,7 +87,11 @@ impl Wave {
 
     pub fn from_flag(flag: &str) -> Option<Self> {
         if let Some(phase) = flag.strip_prefix("--acceptance-gap-") {
-            return phase.parse().ok().map(Self::Gap);
+            return phase
+                .parse()
+                .ok()
+                .filter(|number| GAP_WAVES.iter().any(|(wave, _)| wave == number))
+                .map(Self::Gap);
         }
         [
             Self::One,
