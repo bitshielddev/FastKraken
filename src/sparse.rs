@@ -284,6 +284,10 @@ pub(crate) fn outside(repo: &Repository, folders: &[PathBuf]) -> Result<Vec<Path
 pub(crate) fn quoted(folder: &Path) -> Result<Vec<u8>, String> {
     validate_path(folder)?;
     let text = folder.to_str().ok_or_else(|| format!("{} is not a name FastKraken can pass to Git.", folder.display()))?;
+    let trimmed = |letter: char| matches!(letter, ' ' | '\t' | '\n' | '\r');
+    if text.starts_with(trimmed) || text.ends_with(trimmed) {
+        return Err(format!("\"{text}\" starts or ends with a space, which Git drops from sparse checkout folders. Rename the folder to check it out on its own."));
+    }
     if !text.chars().any(|letter| letter == '"' || letter == '\\' || letter.is_control()) {
         return Ok(text.as_bytes().to_vec());
     }
@@ -1064,6 +1068,21 @@ mod tests {
         assert_eq!(mode(&f.repo).unwrap(), Mode::Cone(folders));
         assert!(!f.dir.join("plain").exists());
         assert!(f.dir.join("say \"hi\"/a.txt").exists());
+    }
+
+    #[test]
+    fn a_folder_name_git_would_trim_is_refused_before_git_runs() {
+        let f = Fixture::new();
+        commit(&f, &[("readme.txt", "Guide\n"), ("trail /a.txt", "A\n"), (" lead/b.txt", "B\n"), ("plain/c.txt", "C\n")], "Spaced names");
+        let before = present(&f);
+        for name in ["trail ", " lead"] {
+            let refused = apply(&f.repo, &change(&[name, "plain"], Mode::Off)).unwrap_err();
+            assert!(refused.text.contains("starts or ends with a space"), "{name:?}: {}", refused.text);
+            assert_eq!(mode(&f.repo).unwrap(), Mode::Off);
+            assert_eq!(present(&f), before);
+        }
+        assert!(quoted(Path::new("maps/ridge route")).is_ok());
+        assert!(quoted(Path::new("maps\t")).is_err());
     }
 
     #[test]
