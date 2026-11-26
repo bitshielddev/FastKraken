@@ -22,6 +22,8 @@ const TODO_NAME: &str = "git-rebase-todo";
 pub(crate) const ACROSS_MERGE: &str = "This range includes a merge. Rewriting across a merge is not supported.";
 const NOT_A_RUN: &str = "Pick commits that follow one another to squash them";
 const FIRST_COMMIT: &str = "This is the first commit, so there is none before it";
+const SHALLOW: &str = "The commit before this one was not fetched, as this is a shallow clone. Fetch the full history to rewrite it.";
+const CANCELLED_OUT: &str = "Together these commits change nothing, so there is nothing to squash them into. Drop them instead.";
 const LISTED: usize = 12;
 
 pub(crate) const COMMANDS: &[crate::commands::Command] = {
@@ -263,6 +265,24 @@ fn parents_of(repo: &Repository, oid: &str) -> Result<Vec<String>, String> {
     Ok(parents)
 }
 
+fn shallow_at(repo: &Repository, oid: &str) -> Result<bool, String> {
+    match fs::read(repo.common_dir().join("shallow")) {
+        Ok(listed) => Ok(listed.split(|&b| b == b'\n').any(|line| line == oid.as_bytes())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("Read the shallow clone's boundary: {error}")),
+    }
+}
+
+fn same_tree(repo: &Repository, one: &str, other: &str) -> Result<bool, String> {
+    validate_oid(one)?;
+    validate_oid(other)?;
+    let (one, other) = (format!("{one}^{{tree}}"), format!("{other}^{{tree}}"));
+    let trees = checked(repo.read_command().args(["rev-parse", &one, &other]))?;
+    let trees = String::from_utf8_lossy(&trees);
+    let mut lines = trees.lines();
+    Ok(lines.next().is_some_and(|tree| Some(tree) == lines.next()))
+}
+
 fn oldest_of(repo: &Repository, chosen: &[String]) -> Result<String, String> {
     if let [only] = chosen {
         return Ok(only.clone());
@@ -332,6 +352,7 @@ pub(crate) fn plan(
     }
     let oldest = oldest_of(repo, &chosen)?;
     let base = match parents_of(repo, &oldest)?.as_slice() {
+        [] if shallow_at(repo, &oldest)? => return Ok(Err(SHALLOW.to_owned())),
         [] => None,
         [parent] => Some(parent.clone()),
         _ => return Ok(Err(ACROSS_MERGE.to_owned())),
@@ -354,6 +375,12 @@ pub(crate) fn plan(
     let chosen: Vec<String> = positions.iter().map(|&at| range[at].oid.clone()).collect();
     if kind == Kind::Squash && (chosen.len() < 2 || positions.windows(2).any(|pair| pair[1] != pair[0] + 1)) {
         return Ok(Err(format!("{NOT_A_RUN}.")));
+    }
+    if kind == Kind::Squash
+        && let (Some(base), Some(newest)) = (base.as_deref(), chosen.last())
+        && same_tree(repo, base, newest)?
+    {
+        return Ok(Err(CANCELLED_OUT.to_owned()));
     }
     if kind == Kind::Drop && base.is_none() {
         return Ok(Err("The first commit cannot be dropped.".to_owned()));
@@ -957,6 +984,34 @@ mod tests {
         let root = plan(&f.repo, &Action::Drop(vec![oids[0].clone()]), "side", &side_seen).unwrap().unwrap_err();
         assert_eq!(root, "The first commit cannot be dropped.");
         assert_eq!(String::from_utf8(f.git(&["for-each-ref"])).unwrap(), before);
+    }
+
+    #[test]
+    fn the_boundary_of_a_shallow_clone_is_not_rewritten_as_a_first_commit() {
+        let (f, oids) = trail();
+        fs::write(f.dir.join(".git/shallow"), format!("{}\n", oids[1])).unwrap();
+        let before = String::from_utf8(f.git(&["for-each-ref"])).unwrap();
+        assert_eq!(refusal(&f, Action::Reword(oids[1].clone())), SHALLOW);
+        assert_eq!(refusal(&f, Action::SquashIntoParent(oids[2].clone())), SHALLOW);
+        assert_eq!(refusal(&f, Action::Squash(vec![oids[2].clone(), oids[1].clone()])), SHALLOW);
+        let above = planned(&f, Action::Reword(oids[2].clone()));
+        assert_eq!(above.base.as_deref(), Some(oids[1].as_str()));
+        assert_eq!(String::from_utf8(f.git(&["for-each-ref"])).unwrap(), before);
+    }
+
+    #[test]
+    fn squashing_commits_that_cancel_out_is_refused_before_anything_starts() {
+        let (f, oids) = trail();
+        let added = commit(&f, "flag.txt", "red\n", "Raise a flag");
+        f.git(&["rm", "-q", "flag.txt"]);
+        f.git(&["commit", "-q", "-m", "Lower the flag"]);
+        let removed = oid(&f, "HEAD");
+        let tip = oid(&f, "main");
+        assert_eq!(refusal(&f, Action::Squash(vec![removed.clone(), added.clone()])), CANCELLED_OUT);
+        assert_eq!(refusal(&f, Action::SquashIntoParent(removed)), CANCELLED_OUT);
+        assert_eq!(oid(&f, "main"), tip);
+        assert!(crate::operation::snapshot(&f.repo).unwrap().is_none());
+        planned(&f, Action::Squash(vec![added, oids[4].clone()]));
     }
 
     #[test]
