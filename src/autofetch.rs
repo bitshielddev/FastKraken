@@ -243,7 +243,7 @@ pub(crate) fn warning<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Option<impl Into
     Some(
         div()
             .id("autofetch-warning")
-            .size(px(18.))
+            .size(px(TARGET))
             .flex()
             .items_center()
             .justify_center()

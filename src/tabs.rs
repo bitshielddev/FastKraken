@@ -7,8 +7,8 @@ use crate::{
     view::{self, Centre, Desk, Tone, Ui},
 };
 use gpui::{
-    AnyWindowHandle, App, AppContext, Context, Entity, EntityId, FontWeight, Global, IntoElement, MouseButton, Render,
-    Subscription, WeakEntity, Window, WindowHandle, div, prelude::*, rgb,
+    AnyWindowHandle, App, AppContext, Context, DispatchPhase, Entity, EntityId, FontWeight, Global, IntoElement,
+    MouseButton, MouseDownEvent, Render, Subscription, WeakEntity, Window, WindowHandle, canvas, div, prelude::*, rgb,
 };
 use crate::theme::px;
 use std::path::{Path, PathBuf};
@@ -559,14 +559,24 @@ impl Render for Workspace {
                     window.refresh();
                 }
             })
-            .capture_any_mouse_down(|_, window, _| {
-                if crate::kit::use_keyboard_focus(false) {
-                    window.refresh();
-                }
-            })
+            .child(pointer_hides_focus_rings())
             .child(self.front().clone())
             .children(crate::view::commit_input::field_menu(window, cx))
     }
+}
+
+fn pointer_hides_focus_rings() -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        |_, _, window, _| {
+            window.on_mouse_event(|_: &MouseDownEvent, phase, window, _| {
+                if phase == DispatchPhase::Capture && crate::kit::use_keyboard_focus(false) {
+                    window.refresh();
+                }
+            })
+        },
+    )
+    .absolute()
 }
 
 #[derive(Clone, Copy)]
