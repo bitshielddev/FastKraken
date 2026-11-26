@@ -330,6 +330,7 @@ pub fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .icon("search")
             .hint(if cfg!(target_os = "macos") { "⌘F" } else { "Ctrl F" })
             .enabled(enabled)
+            .bare(crate::settings::peek(cx, |settings| settings.toolbar == crate::appearance::Toolbar::Icons))
             .on(view::Action::Search(Action::Open), cx),
     )
 }
@@ -409,7 +410,7 @@ pub fn results<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             .h(whole_px(ROW))
                             .px_3()
                             .gap_2()
-                            .child(kit::avatar(&row.author))
+                            .child(kit::avatar(&row.author).email(&row.email))
                             .child(kit::fit(row.subject.clone()).grow())
                             .child(kit::label(row.oid[..7].to_owned()).font_family(MONO))
                             .on_click(cx.listener(move |app, _, w, cx| {

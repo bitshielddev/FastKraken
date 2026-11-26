@@ -690,6 +690,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
                     crate::graph_view::follow_upstream(tab, cx);
                     crate::forecast::refs_loaded(tab, cx);
                     crate::pulls::refs_loaded(tab, cx);
+                    crate::photos::repository_shown(tab, cx);
                 }
                 Err(error) => tab.error(error, cx),
             }

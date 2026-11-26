@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     appearance::{self, Choice},
     commands::{self, Availability, Target},
+    photos,
     preferences::{self, Section},
     theme::{self, Shade},
     view::Column,
@@ -355,6 +356,261 @@ impl Replay<'_> {
         git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
         git_is(&root, &["status", "--porcelain=v1"], "")?;
         self.pass();
+        self.absolute_dates(dir, state).await?;
+        self.photos_wait_for_their_choice(dir, state).await
+    }
+
+    fn row_dates(&mut self) -> Result<Vec<(String, String, String)>> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            let dates = settings::settings(cx).dates;
+            let now = view::now();
+            tab.ui
+                .history
+                .iter()
+                .map(|row| (row.oid.clone(), crate::dates::in_graph(row.time, &row.date, now, dates), view::when(row.time, &row.date, now)))
+                .collect()
+        })?)
+    }
+
+    async fn absolute_dates(&mut self, dir: &Path, state: &Path) -> Result<()> {
+        self.start("GAP1305");
+        let root = init(dir, "Almanac")?;
+        fs::write(root.join("equinox.txt"), "spring\n")?;
+        git(&root, &["add", "--", "equinox.txt"])?;
+        git(&root, &["commit", "-qm", "Mark the equinox", "--date", "2025-03-14T09:26:53"])?;
+        let equinox = oid(&root, "HEAD")?;
+        record(&root, "solstice.txt", "summer\n", "Mark the solstice")?;
+        let head = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Almanac open with its two commits", |tab| tab.ui.repo == "Almanac" && tab.ui.history.len() == 2).await?;
+        let relative = self.row_dates()?;
+        let expected_relative = [(head.clone(), "now".to_owned()), (equinox.clone(), "14 Mar 2025".to_owned())];
+        if relative.iter().map(|(oid, shown, _)| (oid.clone(), shown.clone())).ne(expected_relative.iter().cloned())
+            && !relative[0].1.ends_with("min ago")
+        {
+            return Err(format!("Before any choice the rows show {relative:?}").into());
+        }
+        let standard = self.tab.read_with(self.cx, |tab, _| tab.ui.graph_columns.layout.date)?;
+
+        self.key("cmd-,")?;
+        self.action(Action::Preferences(preferences::Action::Show(Section::Appearance)))?;
+        self.action(Action::Appearance(appearance::Action::Dates(appearance::Dates::Absolute)))?;
+        self.until("absolute dates chosen", |tab| tab.ui.preferences.section() == Section::Appearance).await?;
+        self.key("escape")?;
+        self.until("Preferences closed", |tab| !tab.ui.preferences.open()).await?;
+        let absolute = self.row_dates()?;
+        let parts = git(&root, &["log", "-1", "--format=%ad", "--date=format-local:%d %M %Y %H", &equinox])?;
+        let parts: Vec<&str> = parts.split_whitespace().collect();
+        let [day, minute, year, hour] = parts[..] else { return Err(format!("git gave the date parts {parts:?}").into()) };
+        let shown = absolute.iter().find(|(oid, _, _)| *oid == equinox).map(|(_, shown, _)| shown.clone()).unwrap_or_default();
+        let hour_shown = shown.contains(hour) || shown.contains(hour.trim_start_matches('0')) || shown.contains(&((hour.parse::<u32>()? + 11) % 12 + 1).to_string());
+        if shown != crate::dates::short(self.tab.read_with(self.cx, |tab, _| tab.ui.history[1].time)?)
+            || shown.contains("ago")
+            || shown.contains("Mar 2025")
+            || !shown.contains(day.trim_start_matches('0'))
+            || !shown.contains(minute)
+            || !(shown.contains(year) || shown.contains(&year[2..]))
+            || !hour_shown
+        {
+            return Err(format!("With absolute dates the equinox row shows {shown:?}; git dates it {parts:?}").into());
+        }
+        if absolute.iter().any(|(_, shown, relative)| shown == relative) {
+            return Err(format!("With absolute dates some rows still show the relative date: {absolute:?}").into());
+        }
+        let (column, needed) = self.tab.update(self.cx, |tab, window, _| {
+            let texts = absolute.iter().map(|(_, shown, _)| shown.clone()).collect();
+            (tab.ui.graph_columns.layout.date, crate::columns::widest(window, texts, theme::TEXT_SMALL, false))
+        })?;
+        if column < standard || column < needed {
+            return Err(format!("The Date column is {column} wide for dates {needed} wide (it was {standard})").into());
+        }
+        self.cx.update(|cx| settings::flush(cx))?;
+        if saved(state, "settings.json", &["dates"])? != "absolute" {
+            return Err(format!("settings.json holds the dates {}", saved(state, "settings.json", &["dates"])?).into());
+        }
+        self.relaunch().await?;
+        self.until("Almanac reopened after the relaunch", |tab| tab.ui.repo == "Almanac" && tab.ui.history.len() == 2).await?;
+        let reopened = self.row_dates()?;
+        if reopened.iter().map(|(_, shown, _)| shown).ne(absolute.iter().map(|(_, shown, _)| shown)) {
+            return Err(format!("After the relaunch the rows show {reopened:?}, not {absolute:?}").into());
+        }
+        self.action(Action::Appearance(appearance::Action::Dates(appearance::Dates::Relative)))?;
+        let back = self.row_dates()?;
+        if back.get(1).map(|(_, shown, _)| shown.as_str()) != Some("14 Mar 2025") {
+            return Err(format!("Back on relative dates the rows show {back:?}").into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1"], "")?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn until_app(&mut self, description: &str, predicate: impl Fn(&gpui::App) -> bool) -> Result<()> {
+        let started = Instant::now();
+        loop {
+            self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
+            if self.cx.update(|cx| predicate(cx))? {
+                return Ok(());
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                return Err(format!("Timed out waiting for {description}").into());
+            }
+            self.cx.background_executor().timer(Duration::from_millis(12)).await;
+        }
+    }
+
+    async fn settle_frames(&mut self) -> Result<()> {
+        for _ in 0..20 {
+            self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
+            self.cx.background_executor().timer(Duration::from_millis(12)).await;
+        }
+        Ok(())
+    }
+
+    async fn photos_wait_for_their_choice(&mut self, dir: &Path, state: &Path) -> Result<()> {
+        use super::hosting_mock::{Hosting, TOKEN};
+        self.start("GAP1306");
+        let recorder = self.cx.update(|cx| photos::recorder(cx))?.ok_or("The replay has no picture recorder")?;
+        let folder = self.cx.update(|cx| photos::folder(cx))?.ok_or("The replay has no picture folder")?;
+        if !folder.starts_with(state) {
+            return Err(format!("Pictures would be kept in {}", folder.display()).into());
+        }
+        let hosting = Hosting::start()?;
+        crate::github::serve_replay_from(&hosting.base())?;
+        let client = crate::auth::configure("replay-client", "fastkraken-replay")?;
+        crate::auth::save(&client, 11, &crate::github::Tokens { access_token: TOKEN.into(), refresh_token: None, expires_at: None })?;
+        let root = init(dir, PORTRAITS)?;
+        for (name, email, file) in [
+            ("Moss Keeper", MOSS, "moss.txt"),
+            ("Fern Walker", FERN, "fern.txt"),
+            ("Cedar Contributor", CEDAR, "cedar.txt"),
+        ] {
+            fs::write(root.join(file), format!("{name}\n"))?;
+            git(&root, &["add", "--", file])?;
+            git(&root, &["-c", &format!("user.name={name}"), "-c", &format!("user.email={email}"), "commit", "-qm", &format!("Sit for {name}")])?;
+        }
+        git(&root, &["branch", "-m", "main", "trunk"])?;
+        let origin = super::gap12::hosted(dir, PORTRAITS, "origin", PORTRAITS_PAGE)?;
+        git(&root, &["push", "-q", "-u", "origin", "trunk"])?;
+        let rewrite = format!("url.{origin}.insteadOf");
+        git(&root, &["config", "--local", "--unset", &rewrite])?;
+        crate::auth::bind(&crate::repository::Repository::open(&root)?, "origin", &format!("{PORTRAITS_PAGE}.git"), &client, 11)?;
+        git(&root, &["config", "--local", &rewrite, &format!("{PORTRAITS_PAGE}.git")])?;
+        hosting.change(|hosted| {
+            hosted.commits.insert(
+                PORTRAITS_REPO.into(),
+                vec![serde_json::json!({"commit": {"author": {"email": CEDAR}}, "author": {"avatar_url": CEDAR_AVATAR}})],
+            );
+        });
+        let head = oid(&root, "HEAD")?;
+        let commits_asked = |hosting: &Hosting| hosting.asked().iter().filter(|asked| asked.path.contains("/commits?")).count();
+
+        if self.cx.update(|cx| settings::settings(cx).pictures)? != photos::Pictures::Initials {
+            return Err("A new state folder does not start on Initials".into());
+        }
+        self.open(&root)?;
+        self.until("Portraits open with its pull requests read", |tab| {
+            tab.ui.repo == PORTRAITS && tab.ui.history.len() == 3 && tab.ui.pulls.loaded()
+        })
+        .await?;
+        self.action(Action::Select(Selection::Commit(head.clone())))?;
+        self.until("the newest portrait's details", |tab| tab.ui.inspection.subject.as_deref() == Some("Sit for Cedar Contributor")).await?;
+        self.settle_frames().await?;
+        let painted = self.cx.update(|cx| [CEDAR, FERN, MOSS].map(|email| photos::photo(email, cx).is_some()))?;
+        if !recorder.asked().is_empty() || commits_asked(&hosting) != 0 || folder.exists() || painted.contains(&true) {
+            return Err(format!(
+                "With Initials chosen pictures were asked for {:?}, GitHub was asked for commits {} times, the folder exists: {}, painted {painted:?}",
+                recorder.asked(),
+                commits_asked(&hosting),
+                folder.exists()
+            )
+            .into());
+        }
+
+        let fern_url = "https://avatars.githubusercontent.com/u/583231?s=80&v=4";
+        let cedar_url = format!("{CEDAR_AVATAR}&s=80");
+        let moss_url = format!("https://gravatar.com/avatar/{MOSS_SHA256}?s=80&d=404");
+        for url in [fern_url, cedar_url.as_str(), moss_url.as_str()] {
+            recorder.answer(url, PICTURE.to_vec());
+        }
+        self.key("cmd-,")?;
+        self.action(Action::Preferences(preferences::Action::Show(Section::Appearance)))?;
+        self.action(Action::Appearance(appearance::Action::Pictures(photos::Pictures::GitHub)))?;
+        self.key("escape")?;
+        self.until("Preferences closed on GitHub pictures", |tab| !tab.ui.preferences.open()).await?;
+        if let Err(error) = self.until_app("the GitHub pictures shown", |cx| photos::shown(CEDAR, cx) && photos::shown(FERN, cx)).await {
+            let shown = self.cx.update(|cx| (photos::shown(CEDAR, cx), photos::shown(FERN, cx), settings::settings(cx).pictures))?;
+            return Err(format!("{error}: asked {:?}, commits {}, shown {shown:?}", recorder.asked(), commits_asked(&hosting)).into());
+        }
+        self.settle_frames().await?;
+        let asked = recorder.asked();
+        if asked.iter().any(|url| url.contains("gravatar")) || !asked.contains(&cedar_url) || !asked.contains(&fern_url.to_owned()) {
+            return Err(format!("With GitHub chosen pictures were asked for {asked:?}").into());
+        }
+        if commits_asked(&hosting) != 1 || self.cx.update(|cx| photos::shown(MOSS, cx))? {
+            return Err(format!("GitHub was asked for commits {} times", commits_asked(&hosting)).into());
+        }
+        for url in [fern_url, cedar_url.as_str()] {
+            if !photos::cache_path(&folder, url).is_file() {
+                return Err(format!("{url} is not kept in {}", folder.display()).into());
+            }
+        }
+        self.action(Action::Appearance(appearance::Action::Pictures(photos::Pictures::Gravatar)))?;
+        self.until_app("Moss's Gravatar picture shown", |cx| photos::shown(MOSS, cx)).await?;
+        if !recorder.asked().contains(&moss_url) {
+            return Err(format!("With Gravatar chosen pictures were asked for {:?}", recorder.asked()).into());
+        }
+
+        self.key("cmd-,")?;
+        self.action(Action::Preferences(preferences::Action::Show(Section::Appearance)))?;
+        self.action(Action::Appearance(appearance::Action::Pictures(photos::Pictures::Initials)))?;
+        self.key("escape")?;
+        self.until("Preferences closed on Initials", |tab| !tab.ui.preferences.open()).await?;
+        self.cx.update(|cx| settings::flush(cx))?;
+        if saved(state, "settings.json", &["pictures"])? != "initials" {
+            return Err(format!("settings.json holds the pictures {}", saved(state, "settings.json", &["pictures"])?).into());
+        }
+        let (asked_before, commits_before) = (recorder.asked().len(), commits_asked(&hosting));
+        fs::write(root.join("rowan.txt"), "Rowan\n")?;
+        git(&root, &["add", "--", "rowan.txt"])?;
+        git(&root, &["-c", "user.name=Rowan Ash", "-c", &format!("user.email={ROWAN}"), "commit", "-qm", "Sit for Rowan Ash"])?;
+        let newest = oid(&root, "HEAD")?;
+        self.action(Action::Refresh)?;
+        self.until("Rowan's commit in the graph", |tab| tab.ui.history.len() == 4).await?;
+        self.action(Action::Select(Selection::Commit(newest.clone())))?;
+        self.until("Rowan's commit details", |tab| tab.ui.inspection.subject.as_deref() == Some("Sit for Rowan Ash")).await?;
+        self.relaunch().await?;
+        self.until("Portraits reopened after the relaunch", |tab| tab.ui.repo == PORTRAITS && tab.ui.history.len() == 4 && tab.ui.pulls.loaded())
+            .await?;
+        self.settle_frames().await?;
+        let painted = self.cx.update(|cx| [CEDAR, FERN, MOSS, ROWAN].map(|email| photos::photo(email, cx).is_some()))?;
+        if recorder.asked().len() != asked_before || commits_asked(&hosting) != commits_before || painted.contains(&true) {
+            return Err(format!(
+                "Back on Initials pictures were asked for {:?}, GitHub was asked for commits {} times, painted {painted:?}",
+                &recorder.asked()[asked_before..],
+                commits_asked(&hosting) - commits_before
+            )
+            .into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{newest}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1"], "")?;
+        self.pass();
         Ok(())
     }
 }
+
+const PORTRAITS: &str = "Portraits";
+const PORTRAITS_PAGE: &str = "https://github.com/cedar/portraits";
+const PORTRAITS_REPO: &str = "cedar/portraits";
+const CEDAR: &str = "cedar@example.invalid";
+const CEDAR_AVATAR: &str = "https://avatars.githubusercontent.com/u/7?v=4";
+const FERN: &str = "583231+fern@users.noreply.github.com";
+const MOSS: &str = "moss@example.invalid";
+const MOSS_SHA256: &str = "67e951cf5714042ce2e3a62b0e116f8c4c065f1e2eae5624924b891b79920ba7";
+const ROWAN: &str = "rowan@example.invalid";
+const PICTURE: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02,
+    0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xb6, 0x0d, 0x24, 0x00, 0x00, 0x00, 0x11, 0x49, 0x44, 0x41,
+    0x54, 0x78, 0x9c, 0x63, 0xf8, 0x7a, 0x54, 0xe2, 0x3f, 0x08, 0x33, 0xc0, 0x18, 0x00, 0x66, 0x94, 0x0b, 0x45, 0x2c, 0x8e,
+    0xb7, 0x49, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];

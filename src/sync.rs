@@ -1035,11 +1035,13 @@ pub(crate) fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .map_or((0, 0), |branch| (branch.ahead, branch.behind));
     let divider = || div().w(px(1.)).h(px(CONTROL)).bg(rgb(palette().line_strong));
     let fetch_tip = || fetch_tip(ui);
+    let bare = crate::settings::peek(cx, |settings| settings.toolbar == crate::appearance::Toolbar::Icons);
     let fetch = kit::btn("sync-fetch", "Fetch")
         .ghost()
         .icon("fetch")
         .enabled(idle && has_remote)
-        .tip(fetch_tip());
+        .tip(fetch_tip())
+        .bare(bare);
     let warning = crate::forecast::pull_warning(ui);
     let warned = |tip: String| match &warning {
         Some(warning) => format!("{warning}\n{tip}"),
@@ -1047,7 +1049,7 @@ pub(crate) fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     };
     let pull = kit::btn("sync-pull", ui.sync.button()).ghost().count(Some(behind)).warn(warning.is_some());
     let pull = if ui.sync.chosen().fetch {
-        pull.icon("fetch").enabled(idle && has_remote).tip(warned(fetch_tip()))
+        pull.icon("fetch").enabled(idle && has_remote).tip(warned(fetch_tip())).bare(bare)
     } else {
         pull.icon("arrow-down")
             .enabled(idle && attached && ui.upstream.is_some())
@@ -1060,6 +1062,7 @@ pub(crate) fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             } else {
                 crate::commands::tip_with_keys(ui.sync.chosen().strategy.title(), "repo.pull")
             }))
+            .bare(bare)
     };
     let push = if ui.detached {
         kit::btn("sync-push", "Push")
@@ -1067,6 +1070,7 @@ pub(crate) fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .icon("arrow-up")
             .enabled(false)
             .tip(DETACHED_PUSH)
+            .bare(bare)
             .on(view::Action::Sync(Action::Push), cx)
     } else if ui.upstream.is_some() {
         kit::btn("sync-push", "Push")
@@ -1075,18 +1079,21 @@ pub(crate) fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .count(Some(ahead))
             .enabled(idle && attached)
             .tip(running.clone().unwrap_or_else(|| crate::commands::tip_with_keys("Push", "repo.push")))
+            .bare(bare)
             .on(view::Action::Sync(Action::Push), cx)
     } else if has_remote {
         kit::btn("sync-push", "Publish branch")
             .ghost()
             .icon("arrow-up")
             .enabled(idle && !ui.busy())
+            .bare(bare)
             .on(view::Action::Publish(crate::publish::Action::PushBranch), cx)
     } else {
         kit::btn("sync-push", "Publish…")
             .ghost()
             .icon("arrow-up")
             .enabled(idle && !ui.busy())
+            .bare(bare)
             .on(view::Action::Publish(crate::publish::Action::Publish), cx)
     };
     div()

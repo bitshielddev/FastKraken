@@ -382,7 +382,7 @@ fn person_row(index: usize, person: Person) -> gpui::Stateful<Div> {
         .flex()
         .items_start()
         .gap(px(6.))
-        .child(div().pt(px(1.)).child(kit::avatar(&person.name)))
+        .child(div().pt(px(1.)).child(kit::avatar(&person.name).email(&person.email)))
         .child(
             div()
                 .flex_1()
@@ -488,7 +488,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .child(kit::avatar(&coauthor.name))
+                .child(kit::avatar(&coauthor.name).email(&coauthor.email))
                 .child(kit::fit(coauthor.name.clone()).size(TEXT_SMALL))
                 .child(kit::fit("co-author").size(TEXT_SMALL).color(palette().text_3).grow())
                 .tooltip(kit::tip(coauthor.email.clone()))

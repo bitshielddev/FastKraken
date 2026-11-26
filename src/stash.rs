@@ -1688,6 +1688,8 @@ pub fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement + use<
         Some(reason) if !ui.busy() => reason,
         _ => crate::commands::tip_with_keys("Stash all changes", "repo.stash"),
     });
+    let bare = crate::settings::peek(cx, |settings| settings.toolbar == crate::appearance::Toolbar::Icons);
+    button = button.bare(bare);
     div()
         .relative()
         .flex()

@@ -65,6 +65,9 @@ fn show(tab: &mut Tab, oid: &str) {
 pub fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<Tab>) {
     match action {
         Action::Enter(oid) => {
+            if !crate::settings::peek(cx, |settings| settings.label_highlight) {
+                return;
+            }
             let state = &mut tab.ui.highlight;
             state.ticket += 1;
             let ticket = state.ticket;

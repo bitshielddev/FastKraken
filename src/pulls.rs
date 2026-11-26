@@ -827,6 +827,15 @@ pub(crate) fn poll(tab: &mut Tab, cx: &mut Context<Tab>) {
             state.last = Some(Instant::now());
             state.present = found;
             apply(state, bound, gathered);
+            let authors: Vec<(String, String)> = tab
+                .ui
+                .pulls
+                .hosts
+                .values()
+                .flat_map(|host| host.open.pulls.iter().chain(&host.closed.pulls))
+                .filter_map(|pull| Some((pull.author.clone(), pull.avatar.clone()?)))
+                .collect();
+            crate::photos::pull_authors(authors.iter().map(|(login, url)| (login.as_str(), url.as_str())), cx);
             tell(tab);
             if tab.ui.pulls.due {
                 poll(tab, cx);
@@ -1119,6 +1128,7 @@ mod tests {
             head_repo: Some(repo.into()),
             base: "trunk".into(),
             page: format!("https://github.com/cedar/trail/pull/{number}"),
+            avatar: None,
         }
     }
 

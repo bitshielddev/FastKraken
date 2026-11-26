@@ -390,7 +390,7 @@ pub(crate) fn panned<T: Desk>(app: &mut T, x: Pixels, limit: f32, cx: &mut Conte
     }
 }
 
-fn widest(window: &Window, texts: BTreeSet<String>, size: f32, mono: bool) -> f32 {
+pub(crate) fn widest(window: &Window, texts: BTreeSet<String>, size: f32, mono: bool) -> f32 {
     let mut font = window.text_style().font();
     if mono {
         font.family = MONO.into();
@@ -411,7 +411,7 @@ fn widest(window: &Window, texts: BTreeSet<String>, size: f32, mono: bool) -> f3
         .fold(0., f32::max)
 }
 
-fn fitted(ui: &Ui, column: Column, window: &Window) -> Option<f32> {
+fn fitted(ui: &Ui, column: Column, dates: crate::appearance::Dates, window: &Window) -> Option<f32> {
     let stashes = ui.stash.entries.iter().map(|entry| (&entry.author, &entry.date, entry.time));
     let rows = ui.history.iter().map(|row| (&row.author, &row.date, row.time)).chain(stashes);
     match column {
@@ -423,11 +423,21 @@ fn fitted(ui: &Ui, column: Column, window: &Window) -> Option<f32> {
         }
         Column::Date => {
             let now = view::now();
-            let dates: BTreeSet<String> = rows.map(|(_, date, time)| view::when(time, date, now)).collect();
-            Some(widest(window, dates, TEXT_SMALL, false) + CELL_PAD + SLACK)
+            let shown: BTreeSet<String> = rows.map(|(_, date, time)| crate::dates::in_graph(time, date, now, dates)).collect();
+            Some(widest(window, shown, TEXT_SMALL, false) + CELL_PAD + SLACK)
         }
         Column::Sha => Some(widest(window, ["0123456".to_owned()].into(), SHA_TEXT, true) + CELL_PAD + SLACK),
         Column::Changes => Some(Column::Changes.standard()),
+    }
+}
+
+pub(crate) fn refit_dates(tab: &mut Tab, window: &mut Window, cx: &mut Context<Tab>) {
+    let dates = crate::settings::peek(cx, |s| s.dates);
+    let Some(width) = fitted(&tab.ui, Column::Date, dates, window) else { return };
+    let next = tab.ui.graph_columns.layout.clone().with_width(Column::Date, width.max(Column::Date.standard()));
+    if next != tab.ui.graph_columns.layout {
+        store(&next, cx);
+        tab.ui.graph_columns.layout = next;
     }
 }
 
@@ -441,7 +451,7 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
         }
         Action::Toggle(column) => layout.toggled(column),
         Action::Resize(column, width) => layout.clone().with_width(column, width),
-        Action::Fit(column) => match fitted(&tab.ui, column, window) {
+        Action::Fit(column) => match fitted(&tab.ui, column, crate::settings::peek(cx, |s| s.dates), window) {
             Some(width) => layout.clone().with_width(column, width),
             None => return,
         },

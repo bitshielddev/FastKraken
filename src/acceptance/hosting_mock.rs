@@ -25,6 +25,7 @@ pub(super) struct Hosted {
     pub(super) open: BTreeMap<String, Vec<Value>>,
     pub(super) closed: BTreeMap<String, Vec<Value>>,
     pub(super) checks: BTreeMap<String, Vec<Value>>,
+    pub(super) commits: BTreeMap<String, Vec<Value>>,
     pub(super) denied_pulls: BTreeSet<String>,
     pub(super) denied_checks: BTreeSet<String>,
     pub(super) user: Option<(u64, String)>,
@@ -222,6 +223,9 @@ fn route(state: &Hosted, path: &str) -> (u16, Value) {
         }
         let listed = if tail.contains("state=open") { &state.open } else { &state.closed };
         return (200, Value::Array(listed.get(&repo).cloned().unwrap_or_default()));
+    }
+    if tail == "commits?per_page=100" {
+        return (200, Value::Array(state.commits.get(&repo).cloned().unwrap_or_default()));
     }
     if let Some(sha) = tail.strip_prefix("commits/").and_then(|rest| rest.strip_suffix("/check-runs?per_page=100")) {
         if state.denied_checks.contains(&repo) {

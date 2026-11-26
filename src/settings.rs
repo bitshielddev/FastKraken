@@ -84,6 +84,17 @@ pub(crate) struct Settings {
     pub(crate) appearance: crate::appearance::Choice,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) zoom: Option<u16>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) dates: crate::appearance::Dates,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) pictures: crate::photos::Pictures,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) row_tint: crate::appearance::Tint,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) notices: crate::appearance::Corner,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) toolbar: crate::appearance::Toolbar,
+    pub(crate) label_highlight: bool,
 }
 
 impl Settings {
@@ -143,6 +154,12 @@ impl Default for Settings {
             ssh_command: String::new(),
             appearance: crate::appearance::Choice::default(),
             zoom: None,
+            dates: crate::appearance::Dates::default(),
+            pictures: crate::photos::Pictures::default(),
+            row_tint: crate::appearance::Tint::default(),
+            notices: crate::appearance::Corner::default(),
+            toolbar: crate::appearance::Toolbar::default(),
+            label_highlight: true,
         }
     }
 }
@@ -413,6 +430,7 @@ pub(crate) fn load(dir: Option<PathBuf>, cx: &mut App) {
     });
     crate::appearance::start(cx);
     crate::zoom::start(cx);
+    crate::photos::start(cx);
 }
 
 fn read(dir: &Path) -> (Settings, Memory, Option<String>) {
@@ -431,6 +449,17 @@ pub(crate) fn settings(cx: &App) -> Settings {
     cx.try_global::<Store>()
         .map(|store| store.settings.clone())
         .unwrap_or_default()
+}
+
+pub(crate) fn peek<R>(cx: &App, look: impl FnOnce(&Settings) -> R) -> R {
+    match cx.try_global::<Store>() {
+        Some(store) => look(&store.settings),
+        None => look(&Settings::default()),
+    }
+}
+
+pub(crate) fn folder(cx: &App) -> Option<PathBuf> {
+    cx.try_global::<Store>().and_then(|store| store.dir.clone())
 }
 
 pub(crate) fn memory(cx: &App) -> Option<&Memory> {
@@ -706,6 +735,12 @@ mod tests {
             ssh_command: "ssh -F /tmp/ssh/config".to_owned(),
             appearance: crate::appearance::Choice::System,
             zoom: Some(130),
+            dates: crate::appearance::Dates::Absolute,
+            pictures: crate::photos::Pictures::Gravatar,
+            row_tint: crate::appearance::Tint::Lane,
+            notices: crate::appearance::Corner::TopRight,
+            toolbar: crate::appearance::Toolbar::Icons,
+            label_highlight: false,
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

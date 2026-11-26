@@ -507,3 +507,21 @@ fn a_push_time_is_read_as_seconds_since_1970() {
         assert_eq!(epoch_of(stamp), None, "{stamp:?}");
     }
 }
+
+#[test]
+fn commit_authors_pair_each_address_with_its_github_picture() {
+    let listed = json!([
+        {"commit": {"author": {"email": "Cedar@Example.invalid"}}, "author": {"avatar_url": "https://avatars.githubusercontent.com/u/7?v=4"}},
+        {"commit": {"author": {"email": "fern@example.invalid"}}, "author": null},
+        {"commit": {"author": {"email": "moss@example.invalid"}}, "author": {"avatar_url": "https://evil.example.invalid/u/8"}},
+        {"commit": {"author": {"email": "not an address"}}, "author": {"avatar_url": "https://avatars.githubusercontent.com/u/9"}},
+    ]);
+    let records = mock(vec![response(200, listed), response(404, json!({"message": "Not Found"}))], |client| {
+        let authors = client.commit_authors("auth-fixture", "cedar", "trail").unwrap();
+        assert_eq!(authors, vec![("cedar@example.invalid".to_owned(), "https://avatars.githubusercontent.com/u/7?v=4".to_owned())]);
+        assert!(client.commit_authors("auth-fixture", "cedar", "trail").is_err());
+        assert!(client.commit_authors("auth-fixture", "../cedar", "trail").is_err());
+    });
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].line, "GET /repos/cedar/trail/commits?per_page=100 HTTP/1.1");
+}

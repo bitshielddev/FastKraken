@@ -162,7 +162,7 @@ fn snapshot(root: &Path) -> Result<String> {
     Ok(git(root, &["for-each-ref", "--format=%(refname) %(objectname)"])? + &git(root, &["status", "--porcelain"])?)
 }
 
-fn hosted(dir: &Path, name: &str, remote: &str, page: &str) -> Result<String> {
+pub(super) fn hosted(dir: &Path, name: &str, remote: &str, page: &str) -> Result<String> {
     let bare = dir.join(format!("{name}-{remote}.git"));
     fs::create_dir(&bare)?;
     git(&bare, &["init", "-q", "--bare", "-b", "trunk"])?;

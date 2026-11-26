@@ -1,4 +1,4 @@
-use crate::theme::{palette, soft};
+use crate::theme::{STREAK, STREAK_SELECTED, blend, palette, soft};
 use gpui::{
     BorderStyle, Bounds, ContentMask, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, fill,
     linear_color_stop, linear_gradient, point, quad, rgb, size,
@@ -140,6 +140,11 @@ impl Graph {
         self.content_width().clamp(NARROWEST, LEFT + (LANE_CAP - 1) as f32 * LANE + RIGHT)
     }
 
+    pub fn lane_colour(&self, row: usize) -> Option<u32> {
+        let lanes = palette().lanes;
+        self.rows.get(row).map(|row| lanes[row.node % lanes.len()])
+    }
+
     pub fn node_x(&self, row: usize) -> Option<f32> {
         self.rows.get(row).map(|row| LEFT + row.node as f32 * LANE)
     }
@@ -151,6 +156,7 @@ impl Graph {
         selected: bool,
         stash_above: bool,
         lanes: Lanes,
+        tinted: bool,
     ) -> impl IntoElement + use<> {
         let row = self.rows[row].clone();
         let content = self.content_width();
@@ -161,6 +167,15 @@ impl Graph {
                 let x = |lane: usize| b.left() + px(LEFT + lane as f32 * LANE - lanes.offset);
                 let mid = b.center().y;
                 let color = |lane: usize| rgb(palette().lanes[lane % palette().lanes.len()]);
+                let streaked = tinted.then(|| {
+                    let lane = palette().lanes[row.node % palette().lanes.len()];
+                    let alpha = if selected { STREAK_SELECTED } else { STREAK };
+                    let start = x(row.node).max(b.left());
+                    if start < b.right() {
+                        window.paint_quad(fill(Bounds::new(point(start, b.top()), size(b.right() - start, b.size.height)), soft(lane, alpha)));
+                    }
+                    (blend(ground, lane, alpha), start <= b.left() + px(FADE.min(lanes.width / 3.)))
+                });
                 let straight = |lane: usize, y1, y2| {
                     fill(
                         Bounds::new(point(x(lane) - px(1.), y1), size(px(2.), y2 - y1)),
@@ -211,7 +226,7 @@ impl Graph {
                     )
                 };
                 let ink = color(row.node);
-                let disc_ground = rgb(ground);
+                let disc_ground = rgb(streaked.map_or(ground, |(streak, _)| streak));
                 if checked_out {
                     window.paint_quad(quad(disc(6.5), px(6.5), disc_ground, px(2.), ink, BorderStyle::Solid));
                     window.paint_quad(fill(disc(2.5), ink).corner_radii(px(2.5)));
@@ -221,7 +236,10 @@ impl Graph {
                     window.paint_quad(fill(disc(6.5), disc_ground).corner_radii(px(6.5)));
                     window.paint_quad(fill(disc(4.5), ink).corner_radii(px(4.5)));
                 }
-                fades(window, b, lanes, content, ground);
+                match streaked {
+                    Some((streak, from_left)) => fades_between(window, b, lanes, content, if from_left { streak } else { ground }, streak),
+                    None => fades(window, b, lanes, content, ground),
+                }
             }),
         )
         .w(px(lanes.width))
@@ -273,15 +291,20 @@ pub fn hidden_sides(lanes: Lanes, content: f32) -> (bool, bool) {
 }
 
 fn fades(window: &mut Window, bounds: Bounds<Pixels>, lanes: Lanes, content: f32, ground: u32) {
+    fades_between(window, bounds, lanes, content, ground, ground);
+}
+
+fn fades_between(window: &mut Window, bounds: Bounds<Pixels>, lanes: Lanes, content: f32, left_ground: u32, right_ground: u32) {
     let (left, right) = hidden_sides(lanes, content);
     let band = px(FADE.min(lanes.width / 3.));
-    let (solid, clear) = (rgb(ground), soft(ground, 0));
     if left {
         let area = Bounds::new(bounds.origin, size(band, bounds.size.height));
+        let (solid, clear) = (rgb(left_ground), soft(left_ground, 0));
         window.paint_quad(fill(area, linear_gradient(90., linear_color_stop(solid, 0.), linear_color_stop(clear, 1.))));
     }
     if right {
         let area = Bounds::new(point(bounds.right() - band, bounds.top()), size(band, bounds.size.height));
+        let (solid, clear) = (rgb(right_ground), soft(right_ground, 0));
         window.paint_quad(fill(area, linear_gradient(90., linear_color_stop(clear, 0.), linear_color_stop(solid, 1.))));
     }
 }

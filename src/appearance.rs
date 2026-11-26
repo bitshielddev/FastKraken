@@ -30,9 +30,101 @@ impl Choice {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Dates {
+    #[default]
+    Relative,
+    Absolute,
+}
+
+impl Dates {
+    pub(crate) const ALL: [Dates; 2] = [Dates::Relative, Dates::Absolute];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Dates::Relative => "Relative",
+            Dates::Absolute => "Date and time",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Tint {
+    #[default]
+    Off,
+    Lane,
+}
+
+impl Tint {
+    pub(crate) const ALL: [Tint; 2] = [Tint::Off, Tint::Lane];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Tint::Off => "Off",
+            Tint::Lane => "Lane colour",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Corner {
+    #[default]
+    BottomRight,
+    BottomLeft,
+    TopRight,
+}
+
+impl Corner {
+    pub(crate) const ALL: [Corner; 3] = [Corner::BottomRight, Corner::BottomLeft, Corner::TopRight];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Corner::BottomRight => "Bottom right",
+            Corner::BottomLeft => "Bottom left",
+            Corner::TopRight => "Top right",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Toolbar {
+    #[default]
+    Labels,
+    Icons,
+}
+
+impl Toolbar {
+    pub(crate) const ALL: [Toolbar; 2] = [Toolbar::Labels, Toolbar::Icons];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Toolbar::Labels => "Icons and labels",
+            Toolbar::Icons => "Icons only",
+        }
+    }
+}
+
+pub(crate) const DATES_HELP: &str =
+    "How the graph's Date column shows when a commit was made. Date and time uses the short format and the 12 or 24 hour clock set in macOS System Settings > General > Language & Region. Hold the pointer on a date for the exact time.";
+pub(crate) const TINT_HELP: &str = "A faint streak in the colour of each commit's lane, from its dot across its description.";
+pub(crate) const NOTICES_HELP: &str = "Where messages about finished and failed work appear in the window.";
+pub(crate) const LABEL_HIGHLIGHT_HELP: &str =
+    "Holding the pointer on a branch or tag label in the graph fades the commits that are not on it.";
+pub(crate) const TOOLBAR_HELP: &str = "With icons only, hold the pointer on a toolbar button to see its name.";
+
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
     Choose(Choice),
+    Dates(Dates),
+    Pictures(crate::photos::Pictures),
+    Tint(Tint),
+    Notices(Corner),
+    Toolbar(Toolbar),
+    LabelHighlight(bool),
 }
 
 fn chosen_already<const N: usize>(_: &view::Ui, target: &Target, cx: &App) -> Availability {
@@ -120,11 +212,31 @@ fn apply(cx: &mut App) {
     }
 }
 
-pub(crate) fn dispatch(_: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<Tab>) {
+pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
     match action {
         Action::Choose(choice) => {
             Settings::update(cx, |s| s.appearance = choice);
             apply(cx);
+        }
+        Action::Dates(dates) => {
+            if settings::peek(cx, |s| s.dates) != dates {
+                Settings::update(cx, |s| s.dates = dates);
+                crate::columns::refit_dates(tab, window, cx);
+            }
+        }
+        Action::Pictures(pictures) => {
+            Settings::update(cx, |s| s.pictures = pictures);
+            crate::photos::chosen(cx);
+            crate::photos::repository_shown(tab, cx);
+        }
+        Action::Tint(tint) => Settings::update(cx, |s| s.row_tint = tint),
+        Action::Notices(corner) => Settings::update(cx, |s| s.notices = corner),
+        Action::Toolbar(toolbar) => Settings::update(cx, |s| s.toolbar = toolbar),
+        Action::LabelHighlight(on) => {
+            Settings::update(cx, |s| s.label_highlight = on);
+            if !on {
+                tab.ui.highlight.clear();
+            }
         }
     }
     cx.notify();
@@ -157,7 +269,51 @@ pub(crate) fn preferences<T: Desk>(cx: &mut Context<T>) -> Div {
         ));
     }
     let help: SharedString = help(chosen, system(cx)).into();
-    div().flex().flex_col().child(setting("Appearance", Some(help), choices)).child(crate::zoom::preferences(cx))
+    let now = settings::settings(cx);
+    div()
+        .flex()
+        .flex_col()
+        .child(setting("Appearance", Some(help), choices))
+        .child(crate::zoom::preferences(cx))
+        .child(options("preferences-dates", "Dates in the graph", DATES_HELP, &Dates::ALL, now.dates, Dates::title, Action::Dates, cx))
+        .child(options(
+            "preferences-pictures",
+            "Author pictures",
+            now.pictures.help(),
+            &crate::photos::Pictures::ALL,
+            now.pictures,
+            crate::photos::Pictures::title,
+            Action::Pictures,
+            cx,
+        ))
+        .child(options("preferences-tint", "Row tint", TINT_HELP, &Tint::ALL, now.row_tint, Tint::title, Action::Tint, cx))
+        .child(options("preferences-notices", "Where notices appear", NOTICES_HELP, &Corner::ALL, now.notices, Corner::title, Action::Notices, cx))
+        .child(options("preferences-toolbar", "Toolbar", TOOLBAR_HELP, &Toolbar::ALL, now.toolbar, Toolbar::title, Action::Toolbar, cx))
+        .child(crate::preferences::tick(
+            "preferences-label-highlight",
+            now.label_highlight,
+            "Highlight a branch's commits",
+            LABEL_HIGHLIGHT_HELP,
+            view::Action::Appearance(Action::LabelHighlight(!now.label_highlight)),
+            cx,
+        ))
+}
+
+fn options<T: Desk, C: Copy + PartialEq>(
+    id: &'static str,
+    title: &'static str,
+    help: &'static str,
+    all: &[C],
+    chosen: C,
+    name: fn(C) -> &'static str,
+    action: fn(C) -> Action,
+    cx: &mut Context<T>,
+) -> Div {
+    let mut choices = kit::segmented();
+    for (index, choice) in all.iter().copied().enumerate() {
+        choices = choices.child(kit::segment((id, index), name(choice), None, chosen == choice, view::Action::Appearance(action(choice)), cx));
+    }
+    setting(title, Some(SharedString::new_static(help)), choices)
 }
 
 #[cfg(test)]
@@ -187,6 +343,28 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"appearance": "light"}"#).unwrap();
         assert_eq!(settings.appearance, Choice::Light);
         assert_eq!(Settings::default().appearance, Choice::Dark);
+    }
+
+    #[test]
+    fn the_appearance_options_start_as_before_and_are_saved_by_name() {
+        let fresh = Settings::default();
+        assert_eq!((fresh.dates, fresh.row_tint, fresh.notices, fresh.toolbar), (Dates::Relative, Tint::Off, Corner::BottomRight, Toolbar::Labels));
+        assert_eq!(serde_json::to_value(Dates::Absolute).unwrap(), "absolute");
+        assert_eq!(serde_json::to_value(Tint::Lane).unwrap(), "lane");
+        assert_eq!(serde_json::to_value(Corner::BottomLeft).unwrap(), "bottom_left");
+        assert_eq!(serde_json::to_value(Corner::TopRight).unwrap(), "top_right");
+        assert_eq!(serde_json::to_value(Toolbar::Icons).unwrap(), "icons");
+        let read: Settings =
+            serde_json::from_str(r#"{"dates": "absolute", "row_tint": "rainbow", "notices": "top_right", "toolbar": "icons"}"#).unwrap();
+        assert_eq!((read.dates, read.row_tint, read.notices, read.toolbar), (Dates::Absolute, Tint::Off, Corner::TopRight, Toolbar::Icons));
+        let titles: Vec<&str> = Corner::ALL.into_iter().map(Corner::title).collect();
+        assert_eq!(titles, ["Bottom right", "Bottom left", "Top right"]);
+        assert_eq!(Toolbar::ALL.map(Toolbar::title), ["Icons and labels", "Icons only"]);
+        assert_eq!(Dates::ALL.map(Dates::title), ["Relative", "Date and time"]);
+        assert!(DATES_HELP.contains("12 or 24 hour"));
+        assert!(fresh.label_highlight);
+        let read: Settings = serde_json::from_str(r#"{"label_highlight": false}"#).unwrap();
+        assert!(!read.label_highlight);
     }
 
     #[test]

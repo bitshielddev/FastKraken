@@ -181,6 +181,17 @@ pub fn soft(color: u32, alpha: u8) -> Rgba {
     rgba((color << 8) | alpha as u32)
 }
 
+pub const STREAK: u8 = 0x14;
+pub const STREAK_SELECTED: u8 = 0x1c;
+
+pub fn blend(ground: u32, over: u32, alpha: u8) -> u32 {
+    let mix = |shift: u32| {
+        let (below, above) = ((ground >> shift) & 0xff, (over >> shift) & 0xff);
+        ((below * (255 - alpha as u32) + above * alpha as u32 + 127) / 255) << shift
+    };
+    mix(16) | mix(8) | mix(0)
+}
+
 pub fn scrim() -> Rgba {
     rgba(palette().scrim)
 }
@@ -316,6 +327,24 @@ mod tests {
             ("deleted_bg", p.deleted_bg),
             ("find_match", p.find_match),
         ]
+    }
+
+    #[test]
+    fn a_lane_streak_blends_faintly_and_keeps_text_readable() {
+        assert_eq!(blend(0x000000, 0xffffff, 0), 0x000000);
+        assert_eq!(blend(0x000000, 0xffffff, 255), 0xffffff);
+        assert_eq!(blend(0x204060, 0x204060, 0x80), 0x204060);
+        assert_eq!(blend(0x000000, 0xff0000, 0x80), 0x800000);
+        for palette in [&DARK, &LIGHT] {
+            for lane in palette.lanes {
+                for (ground, alpha) in [(palette.canvas, STREAK), (palette.selected, STREAK_SELECTED)] {
+                    let streak = blend(ground, lane, alpha);
+                    for ink in [palette.text, palette.text_2] {
+                        assert!(contrast(ink, streak) >= 4.5, "{ink:06x} on {streak:06x} from lane {lane:06x}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

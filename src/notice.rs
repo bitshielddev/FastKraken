@@ -505,12 +505,15 @@ pub(crate) fn stack<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoEl
     if items.is_empty() {
         return None;
     }
+    let corner = crate::settings::peek(cx, |settings| settings.notices);
+    let placed = match corner {
+        crate::appearance::Corner::BottomRight => div().absolute().bottom(px(14.)).right(px(14.)),
+        crate::appearance::Corner::BottomLeft => div().absolute().bottom(px(14.)).left(px(14.)),
+        crate::appearance::Corner::TopRight => div().absolute().top(px(TOOLBAR + 10.)).right(px(14.)),
+    };
     Some(
         deferred(
-            div()
-                .absolute()
-                .bottom(px(14.))
-                .right(px(14.))
+            placed
                 .w(px(360.))
                 .flex()
                 .flex_col()

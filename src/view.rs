@@ -2046,6 +2046,7 @@ fn changes_cell(width: f32, size: Option<(crate::changes::Size, u32)>, color: u3
 fn history_metadata(
     written: Written,
     now: i64,
+    dates: crate::appearance::Dates,
     widths: crate::columns::Widths,
     selected: bool,
     size: Option<(crate::changes::Size, u32)>,
@@ -2068,7 +2069,7 @@ fn history_metadata(
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .child(kit::avatar(author))
+                .child(kit::avatar(author).email(email))
                 .when(named, |d| {
                     let name = kit::fit(author.to_owned()).size(12.5).color(palette().text_2).grow();
                     d.child(if pointed { name.clipped(&clipped) } else { name })
@@ -2085,7 +2086,7 @@ fn history_metadata(
         })
         .when(widths.changes > 0., |d| d.child(changes_cell(widths.changes, size, color, pointed)))
         .when(widths.date > 0., |d| {
-            let text = kit::fit(when(time, date, now)).size(TEXT_SMALL).color(color).cell(widths.date, CELL_GAP);
+            let text = kit::fit(crate::dates::in_graph(time, date, now, dates)).size(TEXT_SMALL).color(color).cell(widths.date, CELL_GAP);
             d.child(match pointed && time > 0 {
                 true => div().id("date").flex_shrink_0().flex().child(text).tooltip(kit::tip_with(move || exact_time(time))).into_any_element(),
                 false => text.into_any_element(),
@@ -2321,6 +2322,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
     let limit = crate::columns::limit(ui, widths.graph);
     let shown_graph = widths.graph > 0.;
     let moment = now();
+    let (dates, tinted) = crate::settings::peek(cx, |s| (s.dates, s.row_tint == crate::appearance::Tint::Lane));
     let headings = div()
         .id("history-headings")
         .h(px(HEADINGS))
@@ -2423,6 +2425,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                 .child(history_metadata(
                                     Written { author: &entry.author, email: "", date: &entry.date, time: entry.time, oid: &entry.oid },
                                     moment,
+                                    dates,
                                     widths,
                                     active,
                                     None,
@@ -2457,6 +2460,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     let marking = ui.search.in_graph();
                     let marked = ui.search.marks(&row.oid);
                     let dimmed = ui.graph_view.dims(&row.author, &row.email) || ui.highlight.fades(&row.oid);
+                    let streak = ui.graph.lane_colour(i).filter(|_| tinted && !(marked && !active));
                     let shown_row = kit::row(("commit", i), active);
                     let shown_row = if cx.has_active_drag() {
                         let dropped_on = crate::commands::Target::Commit(row.oid.clone());
@@ -2489,7 +2493,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                             }),
                         )
                         .when(shown_graph, |d| {
-                            d.child(lanes_here(kit::any(ui.graph.element(i, checked_out, active, ui.stash.at_commit(i), lanes))))
+                            d.child(lanes_here(kit::any(ui.graph.element(i, checked_out, active, ui.stash.at_commit(i), lanes, tinted))))
                         })
                         .child(
                             div()
@@ -2499,6 +2503,14 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
+                                .when_some(streak, |d, lane| {
+                                    let alpha = if active { STREAK_SELECTED } else { STREAK };
+                                    d.bg(gpui::linear_gradient(
+                                        90.,
+                                        gpui::linear_color_stop(soft(lane, alpha), 0.),
+                                        gpui::linear_color_stop(soft(lane, 0), 1.),
+                                    ))
+                                })
                                 .when(dimmed, |d| d.opacity(DIMMED))
                                 .when(
                                     crate::refs::show_labels(&ui.refs) && (!row.refs.is_empty() || ui.worktree.at(&row.oid).next().is_some()),
@@ -2522,6 +2534,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                             history_metadata(
                                 Written { author: &row.author, email: &row.email, date: &row.date, time: row.time, oid: &row.oid },
                                 moment,
+                                dates,
                                 widths,
                                 active,
                                 ui.changes.of(&row.oid).map(|size| (size, most)),

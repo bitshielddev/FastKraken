@@ -283,6 +283,7 @@ pub struct Btn {
     hint: Option<&'static str>,
     tip: Option<SharedString>,
     warn: bool,
+    bare: bool,
 }
 
 pub fn btn(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Btn {
@@ -300,6 +301,7 @@ pub fn btn(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Btn {
         hint: None,
         tip: None,
         warn: false,
+        bare: false,
     }
 }
 
@@ -360,6 +362,22 @@ impl Btn {
         self.warn = warn;
         self
     }
+    pub fn bare(mut self, bare: bool) -> Self {
+        self.bare = bare && self.icon.is_some() && !self.label.is_empty();
+        if self.bare {
+            let named = match self.hint {
+                Some(hint) => format!("{} {hint}", self.label),
+                None => self.label.to_string(),
+            };
+            self.tip = Some(match self.tip.take() {
+                Some(tip) if tip.contains(self.label.as_ref()) => tip,
+                Some(tip) => format!("{named}\n{tip}").into(),
+                None => named.into(),
+            });
+            self.hint = None;
+        }
+        self
+    }
 
     fn base(self) -> Stateful<Div> {
         let (fg, bg, border, hover) = match self.tone {
@@ -411,7 +429,7 @@ impl Btn {
             };
             let size = if self.small { TEXT_SMALL } else { 12.5 };
             base = base.child(fit(self.label).size(size).color(fg).weight(weight));
-        } else if !self.label.is_empty() {
+        } else if !self.label.is_empty() && !self.bare {
             base = base.child(self.label);
         }
         if let Some(count) = self.count {
@@ -731,12 +749,18 @@ pub fn moved_from(status: &str, from: &std::path::Path) -> String {
 
 pub struct Avatar {
     initials: SharedString,
+    email: SharedString,
     tint: usize,
     size: Pixels,
     text: Pixels,
 }
 
 impl Avatar {
+    pub fn email(mut self, email: &str) -> Self {
+        self.email = SharedString::from(email.to_owned());
+        self
+    }
+
     pub fn size(mut self, size: Pixels) -> Self {
         self.size = size;
         self
@@ -758,7 +782,7 @@ pub fn avatar(name: &str) -> Avatar {
         .take(2)
         .flat_map(char::to_uppercase)
         .collect();
-    Avatar { initials: initials.into(), tint: hash as usize, size: px(16.), text: px(8.) }
+    Avatar { initials: initials.into(), email: SharedString::default(), tint: hash as usize, size: px(16.), text: px(8.) }
 }
 
 impl IntoElement for Avatar {
@@ -806,6 +830,10 @@ impl Element for Avatar {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some(photo) = crate::photos::photo(&self.email, cx) {
+            let _ = window.paint_image(bounds, gpui::Corners::all(self.size / 2.), photo, 0, false);
+            return;
+        }
         let avatars = palette().avatars;
         window.paint_quad(gpui::fill(bounds, rgb(avatars[self.tint % avatars.len()])).corner_radii(self.size / 2.));
         if self.initials.is_empty() {
@@ -1317,4 +1345,24 @@ pub fn dialog(title: impl Into<SharedString>, width: f32) -> Div {
 
 pub fn any(element: impl IntoElement) -> AnyElement {
     element.into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_icon_only_button_keeps_its_name_in_the_tooltip() {
+        let fetch = btn("fetch", "Fetch").icon("fetch").tip("Fetch from origin").bare(true);
+        assert!(fetch.bare);
+        assert_eq!(fetch.tip.as_ref().map(|tip| tip.as_ref()), Some("Fetch from origin"));
+        let pull = btn("pull", "Pull").icon("arrow-down").tip("This branch has no upstream to pull from").bare(true);
+        assert_eq!(pull.tip.as_ref().map(|tip| tip.as_ref()), Some("Pull\nThis branch has no upstream to pull from"));
+        let search = btn("search", "Search").icon("search").hint("⌘F").bare(true);
+        assert_eq!((search.tip.as_ref().map(|tip| tip.as_ref()), search.hint), (Some("Search ⌘F"), None));
+        let labelled = btn("push", "Push").icon("arrow-up").bare(false);
+        assert!(!labelled.bare && labelled.tip.is_none());
+        let plain = btn("plain", "Plain").bare(true);
+        assert!(!plain.bare && plain.tip.is_none());
+    }
 }

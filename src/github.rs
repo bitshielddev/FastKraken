@@ -86,6 +86,7 @@ pub(crate) struct PullRequest {
     pub head_repo: Option<String>,
     pub base: String,
     pub page: String,
+    pub avatar: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -412,6 +413,20 @@ impl Client {
         })
     }
 
+    pub(crate) fn commit_authors(&self, token: &str, owner: &str, name: &str) -> Result<Vec<(String, String)>, Error> {
+        validate_destination(owner, name)?;
+        let body = success(self.get(token, &format!("/repos/{owner}/{name}/commits?per_page=100"))?, 200)?;
+        let listed = body.as_array().ok_or_else(invalid_response)?;
+        Ok(listed
+            .iter()
+            .filter_map(|item| {
+                let email = item["commit"]["author"]["email"].as_str().map(crate::photos::key_of).filter(|email| email.contains('@'))?;
+                let avatar = item["author"]["avatar_url"].as_str().and_then(crate::photos::github_avatar)?;
+                Some((email, avatar))
+            })
+            .collect())
+    }
+
     pub(crate) fn user(&self, token: &str) -> Result<(u64, String), Error> {
         let body = success(self.get(token, "/user")?, 200)?;
         let id = body["id"].as_u64().ok_or_else(invalid_response)?;
@@ -591,7 +606,7 @@ impl Client {
     }
 }
 
-fn http_agent(loopback: bool) -> Agent {
+pub(crate) fn http_agent(loopback: bool) -> Agent {
     let builder = Agent::config_builder()
         .tls_config(
             TlsConfig::builder()
@@ -785,6 +800,7 @@ fn pull_from_response(item: &Value, base: &str) -> Option<PullRequest> {
         head_repo: full_name(&item["head"]["repo"]["full_name"]),
         base: branch_name(&item["base"]["ref"])?,
         page: format!("https://github.com/{base}/pull/{number}"),
+        avatar: item["user"]["avatar_url"].as_str().and_then(crate::photos::github_avatar),
     })
 }
 
