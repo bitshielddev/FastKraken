@@ -488,7 +488,12 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
             "file.discard",
             Group::Changes,
             |_, target| plural(target, false, "Discard changes…", "Discard {n} files…"),
-            |ui, target, _| file(ui, target, false),
+            |ui, target, _| match worktree(target, false) {
+                Some(path) if ui.files.iter().any(|row| !row.staged && row.path == *path && row.submodule.is_some()) => {
+                    Availability::Hidden
+                }
+                _ => file(ui, target, false),
+            },
             |_, target| {
                 worktree(target, false).map(|path| Action::AskDiscard(Discard::File(path.clone()))).or_else(|| {
                     picked(target, false).map(|paths| Action::Picked(crate::picked::Action::AskDiscard(paths.clone())))

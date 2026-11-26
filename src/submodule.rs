@@ -288,6 +288,42 @@ pub(crate) fn details(repo: &Repository, path: &Path, staged: bool) -> Result<De
     Ok(details)
 }
 
+fn configured(command: &mut Process) -> Option<String> {
+    let output = run(command).ok().filter(|output| output.status.success())?;
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn checks_out(repo: &Repository, module: &Module) -> bool {
+    let key = format!("submodule.{}.update", module.name);
+    let declared = repo.root.join(".gitmodules");
+    configured(repo.read_command().args(["config", "--get", &key]))
+        .or_else(|| configured(repo.read_command().args(["config", "--file"]).arg(&declared).args(["--get", &key])))
+        .is_none_or(|mode| mode == "checkout")
+}
+
+fn left_behind(repo: &Repository, module: &Module) -> Result<usize, String> {
+    let Some(head) = module.checked_out.as_deref().filter(|_| module.populated) else { return Ok(0) };
+    if !checks_out(repo, module) {
+        return Ok(0);
+    }
+    let mut command = inside(repo, &module.path);
+    command.args(["rev-list", "--count", head, "--not", "--branches", "--tags", "--remotes"]);
+    if let Some(recorded) = module.recorded.as_deref().filter(|oid| present(repo, &module.path, oid)) {
+        command.arg(recorded);
+    }
+    let output = checked(command.arg("--"))?;
+    Ok(String::from_utf8_lossy(&output).trim().parse().unwrap_or(0))
+}
+
+fn stranded(module: &Module, count: usize) -> String {
+    format!(
+        "Submodule {} has {} on no branch. Open it and create a branch there first, or updating leaves {} behind.",
+        module.shown(),
+        notice::commits(count),
+        if count == 1 { "it" } else { "them" }
+    )
+}
+
 fn fresh(repo: &Repository, path: &Path) -> Result<Module, String> {
     list(repo)?
         .into_iter()
@@ -305,6 +341,10 @@ pub(crate) fn update(repo: &Repository, expected: &Module) -> Result<Outcome, St
     };
     if found.in_sync() {
         return Err(format!("Submodule {} is already at the recorded commit", expected.shown()));
+    }
+    let count = left_behind(repo, &found)?;
+    if count > 0 {
+        return Err(stranded(&found, count));
     }
     checked(with_system_tools(&mut repo.network_command()?).args(["submodule", "update", "--init", "--progress", "--"]).arg(&found.path))?;
     let now = fresh(repo, &found.path)?;
@@ -331,6 +371,12 @@ pub(crate) fn update_all(repo: &Repository, expected: &[Module]) -> Result<Outco
     let waiting: Vec<&Module> = found.iter().filter(|module| !module.in_sync() && module.recorded.is_some()).collect();
     if waiting.is_empty() {
         return Err("Every submodule is already at the commit this branch expects".to_owned());
+    }
+    for module in &waiting {
+        let count = left_behind(repo, module)?;
+        if count > 0 {
+            return Err(stranded(module, count));
+        }
     }
     checked(with_system_tools(&mut repo.network_command()?).args(["submodule", "update", "--init", "--recursive", "--progress"]))?;
     let now = list(repo)?;
@@ -1086,6 +1132,39 @@ mod tests {
         assert_eq!(recorded(f), later);
         let in_sync = list(&f.repo).unwrap().remove(0);
         assert!(update(&f.repo, &in_sync).unwrap_err().contains("already at the recorded commit"));
+    }
+
+    #[test]
+    fn updating_refuses_to_leave_commits_that_are_on_no_branch_behind() {
+        let n = nest();
+        let f = &n.f;
+        let start = recorded(f);
+        at(f, "maps", &["checkout", "-q", "--detach"]);
+        work_inside(f, "camp.txt", "Camp\n", "Mark the camp");
+        let loose = work_inside(f, "lake.txt", "Lake\n", "Mark the lake");
+        let shown = list(&f.repo).unwrap();
+        assert_eq!(left_behind(&f.repo, &shown[0]).unwrap(), 2);
+        let refused = update(&f.repo, &shown[0]).unwrap_err();
+        assert_eq!(refused, "Submodule maps has 2 commits on no branch. Open it and create a branch there first, or updating leaves them behind.");
+        assert_eq!(update_all(&f.repo, &shown).unwrap_err(), refused);
+        assert_eq!(at(f, "maps", &["rev-parse", "HEAD"]), loose);
+        f.git(&["config", "submodule.maps.update", "rebase"]);
+        assert_eq!(left_behind(&f.repo, &shown[0]).unwrap(), 0);
+        f.git(&["config", "--unset", "submodule.maps.update"]);
+        at(f, "maps", &["branch", "camp"]);
+        assert_eq!(left_behind(&f.repo, &shown[0]).unwrap(), 0);
+        assert_eq!(update(&f.repo, &shown[0]).unwrap().title, "Updated submodule maps");
+        assert_eq!(at(f, "maps", &["rev-parse", "HEAD"]), start);
+        assert_eq!(at(f, "maps", &["rev-parse", "camp"]), loose);
+        at(f, "maps", &["checkout", "-q", "--detach", &loose]);
+        at(f, "maps", &["branch", "-qD", "camp"]);
+        f.git(&["update-index", "--cacheinfo", &format!("160000,{loose},maps")]);
+        at(f, "maps", &["checkout", "-q", "--detach", "HEAD~1"]);
+        let behind = list(&f.repo).unwrap().remove(0);
+        assert_eq!(behind.recorded.as_deref(), Some(loose.as_str()));
+        assert_eq!(left_behind(&f.repo, &behind).unwrap(), 0);
+        assert_eq!(update(&f.repo, &behind).unwrap().title, "Updated submodule maps");
+        assert_eq!(at(f, "maps", &["rev-parse", "HEAD"]), loose);
     }
 
     #[test]

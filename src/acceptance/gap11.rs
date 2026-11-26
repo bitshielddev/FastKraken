@@ -678,7 +678,7 @@ impl Replay<'_> {
             ("submodule.open", "Open submodule".to_owned(), None),
             ("submodule.update", "Update to the recorded commit".to_owned(), None),
         ];
-        if !wanted.iter().all(|row| rows.contains(row)) {
+        if !wanted.iter().all(|row| rows.contains(row)) || rows.iter().any(|row| row.0 == "file.discard") {
             return Err(format!("The submodule row's menu reads {rows:?}").into());
         }
 
