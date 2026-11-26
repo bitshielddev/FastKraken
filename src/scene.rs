@@ -25,6 +25,21 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             Action::Compare(crate::compare::Action::Pick { rev: crate::compare::Rev::Commit(row.oid.clone()), how })
         }),
         "reword" => tab.ui.history.get(index).map(|row| Action::Rewrite(crate::rewrite::Action::Reword(row.oid.clone()))),
+        "irebase" => tab.ui.history.get(index).map(|row| {
+            let onto = crate::merge::Source::Commit(row.oid.clone());
+            Action::RebaseEditor(crate::rebase_editor::Action::Open { branch: None, onto })
+        }),
+        "irow" => {
+            let choice = match argument.split_once('/').map(|(_, choice)| choice) {
+                Some("reword") => crate::rebase_editor::Choice::Reword,
+                Some("squash") => crate::rebase_editor::Choice::Squash,
+                Some("drop") => crate::rebase_editor::Choice::Drop,
+                _ => crate::rebase_editor::Choice::Pick,
+            };
+            let row = argument.split('/').next().and_then(|row| row.parse().ok()).unwrap_or(0);
+            Some(Action::RebaseEditor(crate::rebase_editor::Action::Set(row, choice)))
+        }
+        "imove" => Some(Action::RebaseEditor(crate::rebase_editor::Action::Shift(if index == 0 { -1 } else { 1 }))),
         "cfile" => tab
             .ui
             .compare

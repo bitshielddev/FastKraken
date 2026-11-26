@@ -513,6 +513,7 @@ impl Replay<'_> {
             ("branch.merge", "Merge feature/map into main".to_owned(), None),
             ("branch.rebase-onto", "Rebase main onto feature/map…".to_owned(), None),
             ("branch.rebase", "Rebase feature/map onto main…".to_owned(), None),
+            ("branch.interactive-rebase", "Interactive rebase main onto feature/map…".to_owned(), None),
             ("branch.rename", "Rename feature/map…".to_owned(), None),
             ("branch.delete", "Delete feature/map…".to_owned(), None),
             ("ref.compare-current", "Compare with main".to_owned(), None),
@@ -548,6 +549,7 @@ impl Replay<'_> {
             ("branch.merge", "Merge feature/map into main".to_owned(), reason.clone()),
             ("branch.rebase-onto", "Rebase main onto feature/map…".to_owned(), reason.clone()),
             ("branch.rebase", "Rebase feature/map onto main…".to_owned(), reason.clone()),
+            ("branch.interactive-rebase", "Interactive rebase main onto feature/map…".to_owned(), reason.clone()),
             ("branch.rename", "Rename feature/map…".to_owned(), reason.clone()),
             ("branch.delete", "Delete feature/map…".to_owned(), reason.clone()),
             ("ref.compare-current", "Compare with main".to_owned(), None),
@@ -573,6 +575,8 @@ impl Replay<'_> {
                 "commit.reset",
                 "commit.reword",
                 "commit.squash-into-parent",
+                "commit.move-up",
+                "commit.move-down",
                 "commit.drop",
             ]
             || rows.iter().rev().take(3).map(|row| row.0).collect::<Vec<_>>()
@@ -697,10 +701,13 @@ impl Replay<'_> {
                 "commit.switch",
                 "commit.checkout",
                 "commit.merge",
+                "commit.interactive-rebase",
                 "commit.revert",
                 "commit.reset",
                 "commit.reword",
                 "commit.squash-into-parent",
+                "commit.move-up",
+                "commit.move-down",
                 "commit.drop",
                 "commit.compare-working",
                 "commit.browse-files",
@@ -735,6 +742,7 @@ impl Replay<'_> {
             ("branch.merge", format!("Merge {first} into main")),
             ("branch.rebase-onto", format!("Rebase main onto {first}…")),
             ("branch.rebase", format!("Rebase {first} onto main…")),
+            ("branch.interactive-rebase", format!("Interactive rebase main onto {first}…")),
             ("branch.set-upstream", format!("Set upstream of {first}…")),
             ("branch.rename", format!("Rename {first}…")),
             ("branch.delete", format!("Delete {first}…")),
@@ -755,6 +763,8 @@ impl Replay<'_> {
         let merge_tag = ("tag.merge", "Merge v1 into main".to_owned());
         let rebase_remote = ("branch.rebase-onto-remote", "Rebase main onto origin/feature/map…".to_owned());
         let rebase_tag = ("tag.rebase-onto", "Rebase main onto v1…".to_owned());
+        let edit_remote = ("branch.interactive-rebase-remote", "Interactive rebase main onto origin/feature/map…".to_owned());
+        let edit_tag = ("tag.interactive-rebase", "Interactive rebase main onto v1…".to_owned());
         let tag_rows = vec![
             ("tag.push", "Push v1 to origin".to_owned()),
             ("tag.annotate", "Annotate v1…".to_owned()),
@@ -762,21 +772,22 @@ impl Replay<'_> {
             ("tag.delete-remote", "Delete v1 from origin…".to_owned()),
         ];
         let pin = vec![("graph.pin", "Pin to the left".to_owned())];
-        for (target, own, merge, rebase, more, pinned, copy) in [
+        for (target, own, merge, rebase, edit, more, pinned, copy) in [
             (
                 Target::RemoteBranch("origin/feature/map".into()),
                 check_out,
                 merge_remote,
                 rebase_remote,
+                edit_remote,
                 vec![("branch.delete-remote", "Delete origin/feature/map…".to_owned())],
                 pin,
                 "Copy branch name",
             ),
-            (Target::Tag("v1".into()), tag_check_out, merge_tag, rebase_tag, tag_rows, Vec::new(), "Copy tag name"),
+            (Target::Tag("v1".into()), tag_check_out, merge_tag, rebase_tag, edit_tag, tag_rows, Vec::new(), "Copy tag name"),
         ] {
             let rows: Vec<_> = self.menu_rows(&target)?.into_iter().map(|row| (row.0, row.1)).collect();
             let expected: Vec<_> = std::iter::once(("ref.branch", "Create branch here…".to_owned()))
-                .chain([own, merge, rebase])
+                .chain([own, merge, rebase, edit])
                 .chain(more)
                 .chain([
                     ("ref.compare-current", "Compare with main".to_owned()),
@@ -821,6 +832,7 @@ impl Replay<'_> {
                         "tag.checkout",
                         "tag.merge",
                         "tag.rebase-onto",
+                        "tag.interactive-rebase",
                         "tag.push",
                         "tag.annotate",
                         "tag.delete",
@@ -842,7 +854,7 @@ impl Replay<'_> {
             self.key(key)?;
         }
         let cursor = self.tab.read_with(self.cx, |tab, _| tab.ui.menu_cursor)?;
-        if cursor != (commands::Cursor { row: Some(1), open: true, sub: Some(12) }) {
+        if cursor != (commands::Cursor { row: Some(1), open: true, sub: Some(13) }) {
             return Err(format!("Up, Right and Up left the highlight at {cursor:?}").into());
         }
         let copied = {

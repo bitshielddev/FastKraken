@@ -223,6 +223,24 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         tab.dispatch(view::Action::Browse(wanted), window, cx);
         return;
     }
+    if crate::view::centre(ui) == crate::view::Centre::RebaseEditor && zone != Zone::Sidebar {
+        use crate::rebase_editor::Action as Editor;
+        let last = ui.rebase_editor.editor().map_or(0, |editor| editor.rows().len().saturating_sub(1));
+        let wanted = match action {
+            Action::Step(delta) => Editor::Step(delta),
+            Action::Page(pages) => Editor::Step(pages * 10),
+            Action::First | Action::Home => Editor::Highlight(0),
+            Action::Last | Action::End => Editor::Highlight(last),
+            Action::Choose => Editor::RewordHighlighted,
+            Action::Left => {
+                sideways(tab, zone, false, window, cx);
+                return;
+            }
+            _ => return,
+        };
+        tab.dispatch(view::Action::RebaseEditor(wanted), window, cx);
+        return;
+    }
     if crate::view::centre(ui) == crate::view::Centre::FileHistory && zone != Zone::Sidebar {
         use crate::file_history::Action as History;
         let last = ui.file_history.entries().len().saturating_sub(1);

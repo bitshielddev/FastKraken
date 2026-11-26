@@ -1263,6 +1263,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
             )
         }
         A::Autostash(action) => matches!(action, crate::autostash::Action::Toggle),
+        A::RebaseEditor(action) => !action.writes(),
         A::Picked(action) => action.picks(),
         A::Lines(action) => action.picks(),
         A::ViewChanges

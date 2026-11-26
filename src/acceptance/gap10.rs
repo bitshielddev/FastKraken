@@ -5,6 +5,9 @@ use crate::{
     journal,
     notice,
     picked::How,
+    operation,
+    prompt,
+    rebase_editor::{self, Choice},
     rewrite,
     view::Tone,
 };
@@ -41,7 +44,10 @@ impl Replay<'_> {
         self.reword_the_third_commit(dir).await?;
         self.drop_a_commit(dir).await?;
         self.squash_three_commits(dir).await?;
-        self.refuse_a_range_with_a_merge(dir).await
+        self.refuse_a_range_with_a_merge(dir).await?;
+        self.reorder_and_drop_in_the_editor(dir).await?;
+        self.stop_an_edited_rebase_on_a_conflict(dir).await?;
+        self.undo_a_whole_edited_rebase(dir).await
     }
 
     fn menu_rows_now(&mut self) -> Result<[(String, bool); 2]> {
@@ -650,6 +656,245 @@ impl Replay<'_> {
         if root.join(".git/rebase-merge").exists() {
             return Err("A rebase was started".into());
         }
+        self.pass();
+        Ok(())
+    }
+
+    fn rebase_editor_now(&mut self) -> Result<Option<(String, Vec<(String, Choice)>, usize, String, Option<String>)>> {
+        Ok(self.tab.read_with(self.cx, |tab, _| {
+            let editor = tab.ui.rebase_editor.editor()?;
+            let rows = editor.rows().iter().map(|row| (row.commit.subject.clone(), row.choice)).collect();
+            Some((editor.heading(), rows, editor.highlighted(), editor.summary(), editor.start_refusal()))
+        })?)
+    }
+
+    async fn rebase_editor_opened(&mut self, heading: &str) -> Result<Vec<(String, Choice)>> {
+        self.until(&format!("the editor {heading:?} open"), |tab| {
+            crate::view::centre(&tab.ui) == crate::view::Centre::RebaseEditor
+                && tab.ui.rebase_editor.editor().is_some_and(|editor| editor.heading() == heading)
+                && !tab.ui.rebase_editor.loading()
+        })
+        .await?;
+        Ok(self.rebase_editor_now()?.map(|(_, rows, ..)| rows).unwrap_or_default())
+    }
+
+    fn picks(subjects: &[&str]) -> Vec<(String, Choice)> {
+        subjects.iter().map(|subject| ((*subject).to_owned(), Choice::Pick)).collect()
+    }
+
+    async fn reorder_and_drop_in_the_editor(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1014");
+        let root = init(dir, "Tidy-trail")?;
+        record(&root, "base.txt", "Start\n", "Start the trail")?;
+        let main = oid(&root, "main")?;
+        git(&root, &["switch", "-qc", "feature"])?;
+        record(&root, "camp.txt", "Tents\n", "Pitch the camp")?;
+        record(&root, "map.txt", "Creek\n", "Map the creek")?;
+        record(&root, "ridge.txt", "Pass\n", "Climb the ridge")?;
+        record(&root, "lake.txt", "Cold\n", "Swim in the lake")?;
+        self.open(&root)?;
+        let base = Target::Branch("main".into());
+        self.until("Tidy-trail open on feature with main listed", |tab| {
+            tab.ui.repo == "Tidy-trail" && tab.ui.branch == "feature" && tab.ui.refs.oid_of(&base).is_some()
+        })
+        .await?;
+        let rows = self.menu_rows(&base)?;
+        let offered = ("branch.interactive-rebase", "Interactive rebase feature onto main…".to_owned(), None);
+        if !rows.contains(&offered) {
+            return Err(format!("The menu of main lists {rows:?}").into());
+        }
+        self.choose(&base, "branch.interactive-rebase")?;
+        let rows = self.rebase_editor_opened("Rebasing 4 commits onto main").await?;
+        if rows != Self::picks(&["Swim in the lake", "Climb the ridge", "Map the creek", "Pitch the camp"]) {
+            return Err(format!("The editor lists {rows:?}").into());
+        }
+        let refusal = self.rebase_editor_now()?.and_then(|(.., refusal)| refusal);
+        if refusal.as_deref() != Some("Nothing has changed yet. Set an action or move a commit first") {
+            return Err(format!("Before any change Start says {refusal:?}").into());
+        }
+        let untouched = git(&root, &["for-each-ref", "--format=%(refname) %(objectname)"])?;
+        self.focus_desk()?;
+        self.key("down")?;
+        self.key("alt-down")?;
+        self.key("alt-down")?;
+        let now = self.rebase_editor_now()?.map(|(_, rows, at, ..)| (rows, at));
+        let moved = Self::picks(&["Swim in the lake", "Map the creek", "Pitch the camp", "Climb the ridge"]);
+        if now != Some((moved.clone(), 3)) {
+            return Err(format!("After Option-Down twice the editor holds {now:?}").into());
+        }
+        self.key("up")?;
+        self.key("up")?;
+        self.key("d")?;
+        let mut expected = moved;
+        expected[1].1 = Choice::Drop;
+        let now = self.rebase_editor_now()?;
+        let wanted = ("Rebasing 4 commits onto main".to_owned(), expected, 1, "1 dropped, order changed".to_owned(), None);
+        if now.as_ref() != Some(&wanted) {
+            return Err(format!("After D the editor holds {now:?}").into());
+        }
+        git_is(&root, &["for-each-ref", "--format=%(refname) %(objectname)"], &untouched)?;
+        self.action(Action::RebaseEditor(rebase_editor::Action::Start))?;
+        let said = self.settled_notice("Rebased feature onto main").await?;
+        let tip = oid(&root, "feature")?;
+        let detail = format!("1 dropped, order changed. feature is at {}.", notice::short(&tip));
+        if said.0 != Tone::Success || said.2 != detail || !said.3.contains(&"Undo".to_owned()) {
+            return Err(format!("Starting said {said:?}").into());
+        }
+        git_is(&root, &["log", "--format=%s", "main..feature"], "Swim in the lake\nPitch the camp\nClimb the ridge\n")?;
+        git_is(&root, &["ls-tree", "--name-only", "feature"], "base.txt\ncamp.txt\nlake.txt\nridge.txt\n")?;
+        git_is(&root, &["merge-base", "main", "feature"], &format!("{main}\n"))?;
+        git_is(&root, &["rev-parse", "feature~3"], &format!("{main}\n"))?;
+        git_is(&root, &["rev-parse", "main"], &format!("{main}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        if root.join(".git/rebase-merge").exists() || self.tab.read_with(self.cx, |tab, _| tab.ui.rebase_editor.open())? {
+            return Err("The rebase or the editor was left open".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn stop_an_edited_rebase_on_a_conflict(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1015");
+        let root = init(dir, "Knot-trail")?;
+        record(&root, "base.txt", "Start\n", "Start the trail")?;
+        let base = oid(&root, "main")?;
+        record(&root, "trail.txt", "One\n", "Mark the first waypoint")?;
+        record(&root, "trail.txt", "One\nTwo\n", "Mark the second waypoint")?;
+        let tip = oid(&root, "main")?;
+        self.open(&root)?;
+        self.until("Knot-trail open on main with three commits", |tab| {
+            tab.ui.repo == "Knot-trail" && tab.ui.history.len() == 3 && tab.ui.head.as_deref() == Some(tip.as_str()) && tab.ui.branch == "main"
+        })
+        .await?;
+        let onto = Target::Commit(base.clone());
+        let rows = self.menu_rows(&onto)?;
+        if !rows.contains(&("commit.interactive-rebase", "Interactive rebase main onto this commit…".to_owned(), None)) {
+            return Err(format!("The menu of the first commit lists {rows:?}").into());
+        }
+        let short = notice::short(&base).to_owned();
+        self.choose(&onto, "commit.interactive-rebase")?;
+        self.rebase_editor_opened(&format!("Rebasing 2 commits onto {short}")).await?;
+        self.focus_desk()?;
+        self.key("alt-down")?;
+        let rows = self.rebase_editor_now()?.map(|(_, rows, ..)| rows);
+        if rows != Some(Self::picks(&["Mark the first waypoint", "Mark the second waypoint"])) {
+            return Err(format!("After Option-Down the editor lists {rows:?}").into());
+        }
+        self.action(Action::RebaseEditor(rebase_editor::Action::Start))?;
+        let banner = format!("Rebasing main onto {short} · commit 1 of 2 · 1 file needs resolving");
+        self.until("the rebase stopped on trail.txt", |tab| {
+            tab.ui.operation.summary().as_deref() == Some(banner.as_str())
+                && operation::owns_panel(&tab.ui)
+                && !tab.ui.busy()
+        })
+        .await?;
+        let state = self.tab.read_with(self.cx, |tab, _| {
+            (crate::view::centre(&tab.ui), tab.ui.rebase_editor.open(), tab.ui.operation.abort_label(), tab.ui.notices.newest().map(|n| (n.tone, n.title.clone())))
+        })?;
+        let stopped = "The rebase stopped on a conflict at commit 1 of 2. 1 file needs resolving before it can go on.".to_owned();
+        if state != (crate::view::Centre::History, false, Some("Abort rebase"), Some((Tone::Error, stopped))) {
+            return Err(format!("After the stop the window shows {state:?}").into());
+        }
+        self.action(Action::Operation(operation::Action::Abort))?;
+        self.until("the abort question", |tab| matches!(tab.ui.prompt.asked(), Some(prompt::Kind::Operation(_)))).await?;
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        self.until("the rebase aborted", |tab| {
+            !tab.ui.operation.active() && tab.ui.notices.newest().is_some_and(|n| n.title == "Rebase aborted")
+        })
+        .await?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
+        git_is(&root, &["rev-parse", "main"], &format!("{tip}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        if root.join(".git/rebase-merge").exists() {
+            return Err("The rebase is still in progress after Abort".into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn undo_a_whole_edited_rebase(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1016");
+        let root = init(dir, "Undo-rebase")?;
+        record(&root, "base.txt", "Start\n", "Start the trail")?;
+        git(&root, &["switch", "-qc", "feature"])?;
+        record(&root, "camp.txt", "Tents\n", "Pitch the camp")?;
+        record(&root, "map.txt", "Creek\n", "Map the creek")?;
+        record(&root, "ridge.txt", "Pass\n", "Climb the ridge")?;
+        let before = oid(&root, "feature")?;
+        git(&root, &["switch", "-q", "main"])?;
+        record(&root, "bridge.txt", "Stone\n", "Bridge the river")?;
+        let main = oid(&root, "main")?;
+        let refs = git(&root, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"])?;
+        self.open(&root)?;
+        let feature = Target::Branch("feature".into());
+        self.until("Undo-rebase open on main with feature listed", |tab| {
+            tab.ui.repo == "Undo-rebase" && tab.ui.branch == "main" && tab.ui.refs.oid_of(&feature).is_some()
+        })
+        .await?;
+        let dropped = crate::drag::pair(feature.clone(), Target::Branch("main".into()));
+        let rows = self.menu_rows(&dropped)?;
+        let offered = ("drop.interactive-rebase", "Switch to feature and interactively rebase it onto main…".to_owned(), None);
+        if !rows.contains(&offered) {
+            return Err(format!("The drop menu lists {rows:?}").into());
+        }
+        self.choose(&dropped, "drop.interactive-rebase")?;
+        let rows = self.rebase_editor_opened("Rebasing 3 commits onto main").await?;
+        if rows != Self::picks(&["Climb the ridge", "Map the creek", "Pitch the camp"]) {
+            return Err(format!("The editor lists {rows:?}").into());
+        }
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
+        self.focus_desk()?;
+        self.key("down")?;
+        self.key("s")?;
+        self.key("up")?;
+        self.key("enter")?;
+        self.asked_about("Edit commit message").await?;
+        let fields = self.message_fields()?;
+        if fields != Some(("Climb the ridge".to_owned(), String::new())) {
+            return Err(format!("The message prompt is prefilled with {fields:?}").into());
+        }
+        self.write_message("Climb to the ridge", "Over the pass")?;
+        self.key(CMD_RETURN)?;
+        self.until("the reword set", |tab| {
+            !tab.ui.prompt.open()
+                && tab.ui.rebase_editor.editor().is_some_and(|editor| editor.rows().first().is_some_and(|row| row.choice == Choice::Reword))
+        })
+        .await?;
+        let now = self.rebase_editor_now()?.map(|(_, rows, _, summary, refusal)| (rows, summary, refusal));
+        let wanted = (
+            vec![
+                ("Climb the ridge".to_owned(), Choice::Reword),
+                ("Map the creek".to_owned(), Choice::Squash),
+                ("Pitch the camp".to_owned(), Choice::Pick),
+            ],
+            "1 squashed, 1 reworded".to_owned(),
+            None,
+        );
+        if now.as_ref() != Some(&wanted) {
+            return Err(format!("Before Start the editor holds {now:?}").into());
+        }
+        let switching = self.tab.read_with(self.cx, |tab, _| tab.ui.rebase_editor.editor().map(|editor| editor.loaded().upstream.clone()))?;
+        if switching != Some(None) {
+            return Err(format!("The editor reports an upstream: {switching:?}").into());
+        }
+        self.action(Action::RebaseEditor(rebase_editor::Action::Start))?;
+        self.settled_notice("Rebased feature onto main").await?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/feature\n")?;
+        git_is(&root, &["log", "--format=%s", "main..feature"], "Climb to the ridge\nPitch the camp\n")?;
+        git_is(&root, &["log", "-1", "--format=%B", "feature"], "Climb to the ridge\n\nOver the pass\n\n")?;
+        git_is(&root, &["diff", "--name-only", "main", "feature~1"], "camp.txt\nmap.txt\n")?;
+        git_is(&root, &["rev-parse", "feature~2"], &format!("{main}\n"))?;
+        let rows = self.menu_rows_now()?;
+        if rows[0] != ("Undo Interactive rebase feature onto main".to_owned(), true) {
+            return Err(format!("After the rebase the Edit menu reads {rows:?}").into());
+        }
+        self.focus_desk()?;
+        self.key("cmd-z")?;
+        self.settled_notice("Undid: Interactive rebase feature onto main").await?;
+        git_is(&root, &["rev-parse", "feature"], &format!("{before}\n"))?;
+        git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
+        git_is(&root, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"], &refs)?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
         self.pass();
         Ok(())
     }

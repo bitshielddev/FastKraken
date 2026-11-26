@@ -56,6 +56,7 @@ pub(crate) const COMMANDS: &[Command] = {
                     Centre::FileHistory => "Close file history",
                     Centre::Blame => "Close blame",
                     Centre::Browse => "Close the file browser",
+                    Centre::RebaseEditor => "Cancel the interactive rebase",
                     Centre::Search | Centre::History => "Close tab",
                 }
                 .into()
@@ -71,6 +72,7 @@ pub(crate) const COMMANDS: &[Command] = {
                     Centre::FileHistory => view::Action::FileHistory(crate::file_history::Action::Close),
                     Centre::Blame => view::Action::Blame(crate::blame::Action::Close),
                     Centre::Browse => view::Action::Browse(crate::browse::Action::Close),
+                    Centre::RebaseEditor => view::Action::RebaseEditor(crate::rebase_editor::Action::Cancel),
                     Centre::Search | Centre::History => view::Action::Tabs(Action::Close(None)),
                 })
             },

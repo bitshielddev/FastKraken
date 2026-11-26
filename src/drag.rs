@@ -389,6 +389,30 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         )
         .icon("branch"),
         Command::new(
+            "drop.interactive-rebase",
+            Group::Switch,
+            |ui, target| match rebasing(ui, target) {
+                Some((branch, onto)) if checked_out(ui, branch) => {
+                    format!("Interactive rebase {} onto {}…", branch.to_string_lossy(), named(onto))
+                }
+                Some((branch, onto)) => {
+                    format!("Switch to {} and interactively rebase it onto {}…", branch.to_string_lossy(), named(onto))
+                }
+                None => String::new(),
+            },
+            |ui, target, _| match rebasing(ui, target) {
+                Some(_) => attached(ui),
+                None => Availability::Hidden,
+            },
+            |ui, target| {
+                let (branch, onto) = rebasing(ui, target)?;
+                let onto = Source::of(onto)?;
+                let branch = (!checked_out(ui, branch)).then(|| branch.clone());
+                Some(view::Action::RebaseEditor(crate::rebase_editor::Action::Open { branch, onto }))
+            },
+        )
+        .icon("list"),
+        Command::new(
             "drop.reset-soft",
             Group::Reverse,
             |_, _| "Soft: keep all changes staged…".into(),

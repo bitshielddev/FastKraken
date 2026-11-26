@@ -22,6 +22,7 @@ const TODO_NAME: &str = "git-rebase-todo";
 pub(crate) const ACROSS_MERGE: &str = "This range includes a merge. Rewriting across a merge is not supported.";
 const NOT_A_RUN: &str = "Pick commits that follow one another to squash them";
 const FIRST_COMMIT: &str = "This is the first commit, so there is none before it";
+const NEWEST_COMMIT: &str = "This is the newest commit, so there is none after it";
 const SHALLOW: &str = "The commit before this one was not fetched, as this is a shallow clone. Fetch the full history to rewrite it.";
 const CANCELLED_OUT: &str = "Together these commits change nothing, so there is nothing to squash them into. Drop them instead.";
 const LISTED: usize = 12;
@@ -57,6 +58,36 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
         )
         .words(&["squash", "fixup", "combine", "meld", "join commits"])
         .icon("merge"),
+        Command::new(
+            "commit.move-up",
+            Group::Reverse,
+            |_, _| "Move commit up".into(),
+            |ui, target, _| match commit(target) {
+                Some(oid) if on_branch(ui, std::slice::from_ref(&oid.to_owned())) => match rewritable(ui) {
+                    Availability::Enabled if ui.head.as_deref() == Some(oid) => Availability::Disabled(NEWEST_COMMIT.to_owned()),
+                    other => other,
+                },
+                _ => Availability::Hidden,
+            },
+            |_, target| commit(target).map(|oid| view::Action::Rewrite(Action::MoveUp(oid.to_owned()))),
+        )
+        .words(&["move", "reorder", "swap", "later", "rewrite"])
+        .icon("arrow-up"),
+        Command::new(
+            "commit.move-down",
+            Group::Reverse,
+            |_, _| "Move commit down".into(),
+            |ui, target, _| match commit(target) {
+                Some(oid) if on_branch(ui, std::slice::from_ref(&oid.to_owned())) => match rewritable(ui) {
+                    Availability::Enabled if first_commit(ui, oid) => Availability::Disabled(FIRST_COMMIT.to_owned()),
+                    other => other,
+                },
+                _ => Availability::Hidden,
+            },
+            |_, target| commit(target).map(|oid| view::Action::Rewrite(Action::MoveDown(oid.to_owned()))),
+        )
+        .words(&["move", "reorder", "swap", "earlier", "rewrite"])
+        .icon("arrow-down"),
         Command::new(
             "commit.drop",
             Group::Reverse,
@@ -175,6 +206,8 @@ pub enum Action {
     SquashIntoParent(String),
     Squash(Vec<String>),
     Drop(Vec<String>),
+    MoveUp(String),
+    MoveDown(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,6 +215,8 @@ pub(crate) enum Kind {
     Reword,
     Squash,
     Drop,
+    MoveUp,
+    MoveDown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,8 +262,14 @@ impl Plan {
         self.range.iter().find(|listed| listed.oid == oid).map_or("", |listed| listed.subject.as_str())
     }
 
+    fn moves(&self) -> bool {
+        matches!(self.kind, Kind::MoveUp | Kind::MoveDown)
+    }
+
     fn undo_title(&self) -> String {
         match (self.kind, self.chosen.as_slice()) {
+            (Kind::MoveUp, [older, _]) => format!("Move '{}' up", self.subject_of(older)),
+            (Kind::MoveDown, [_, newer]) => format!("Move '{}' down", self.subject_of(newer)),
             (Kind::Reword, [oid]) => format!("Reword '{}'", self.subject_of(oid)),
             (Kind::Drop, [oid]) => format!("Drop '{}'", self.subject_of(oid)),
             (Kind::Drop, chosen) => format!("Drop {}", commits(chosen.len())),
@@ -237,7 +278,7 @@ impl Plan {
     }
 }
 
-fn split(message: &str) -> (String, String) {
+pub(crate) fn split(message: &str) -> (String, String) {
     let message = message.replace("\r\n", "\n");
     let message = message.trim();
     match message.split_once('\n') {
@@ -265,7 +306,7 @@ fn parents_of(repo: &Repository, oid: &str) -> Result<Vec<String>, String> {
     Ok(parents)
 }
 
-fn shallow_at(repo: &Repository, oid: &str) -> Result<bool, String> {
+pub(crate) fn shallow_at(repo: &Repository, oid: &str) -> Result<bool, String> {
     match fs::read(repo.common_dir().join("shallow")) {
         Ok(listed) => Ok(listed.split(|&b| b == b'\n').any(|line| line == oid.as_bytes())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -330,6 +371,8 @@ pub(crate) fn plan(
         Action::SquashIntoParent(oid) => (Kind::Squash, vec![oid.clone()]),
         Action::Squash(oids) => (Kind::Squash, oids.clone()),
         Action::Drop(oids) => (Kind::Drop, oids.clone()),
+        Action::MoveUp(oid) => (Kind::MoveUp, vec![oid.clone()]),
+        Action::MoveDown(oid) => (Kind::MoveDown, vec![oid.clone()]),
     };
     if chosen.is_empty() {
         return Ok(Err("Pick the commits first.".to_owned()));
@@ -343,8 +386,9 @@ pub(crate) fn plan(
             )));
         }
     }
-    if let Action::SquashIntoParent(oid) = action {
+    if let Action::SquashIntoParent(oid) | Action::MoveDown(oid) = action {
         match parents_of(repo, oid)?.as_slice() {
+            [] if kind == Kind::MoveDown => return Ok(Err(format!("{FIRST_COMMIT} to move it below."))),
             [] => return Ok(Err(format!("{FIRST_COMMIT} to squash into."))),
             [parent] => chosen.insert(0, parent.clone()),
             _ => return Ok(Err(ACROSS_MERGE.to_owned())),
@@ -363,6 +407,13 @@ pub(crate) fn plan(
         return Ok(Err(ACROSS_MERGE.to_owned()));
     }
     let range: Vec<Listed> = rows.into_iter().map(|row| row.listed).collect();
+    if kind == Kind::MoveUp {
+        let after = range.iter().position(|listed| listed.oid == chosen[0]).and_then(|at| range.get(at + 1));
+        match after {
+            Some(newer) => chosen.push(newer.oid.clone()),
+            None => return Ok(Err(format!("This is the newest commit on {branch}, so there is none after it to move it above."))),
+        }
+    }
     let mut positions = Vec::with_capacity(chosen.len());
     for oid in &chosen {
         match range.iter().position(|listed| listed.oid == *oid) {
@@ -386,7 +437,7 @@ pub(crate) fn plan(
         return Ok(Err("The first commit cannot be dropped.".to_owned()));
     }
     let (summary, description) = match kind {
-        Kind::Drop => (String::new(), String::new()),
+        Kind::Drop | Kind::MoveUp | Kind::MoveDown => (String::new(), String::new()),
         Kind::Reword => split(&repo.commit_message(&chosen[0])?),
         Kind::Squash => {
             let mut messages = Vec::with_capacity(chosen.len());
@@ -417,7 +468,7 @@ fn quoted(text: &[u8]) -> Vec<u8> {
     quoted
 }
 
-fn amend_line(message: &str) -> Result<String, String> {
+pub(crate) fn amend_line(message: &str) -> Result<String, String> {
     if message.contains('\0') {
         return Err("A commit message cannot hold a NUL character.".to_owned());
     }
@@ -437,6 +488,11 @@ pub(crate) fn todo(plan: &Plan, message: Option<&str>) -> Result<String, String>
         let chosen = plan.chosen.contains(&listed.oid);
         let first = plan.chosen.first() == Some(&listed.oid);
         match plan.kind {
+            Kind::MoveUp | Kind::MoveDown if plan.chosen.get(1) == Some(&listed.oid) => continue,
+            Kind::MoveUp | Kind::MoveDown if first => {
+                lines.push(format!("pick {}", plan.chosen[1]));
+                lines.push(format!("pick {}", listed.oid));
+            }
             Kind::Drop if chosen => continue,
             Kind::Squash if chosen && !first => lines.push(format!("fixup {}", listed.oid)),
             _ => lines.push(format!("pick {}", listed.oid)),
@@ -483,7 +539,13 @@ fn sequence_editor(folder: &Path) -> Result<OsString, String> {
     }
 }
 
-fn scripted(repo: &Repository, base: Option<&str>, todo: &str, autostash: bool) -> Result<String, Failure> {
+pub(crate) fn scripted(
+    repo: &Repository,
+    base: Option<&str>,
+    switch: Option<&OsStr>,
+    todo: &str,
+    autostash: bool,
+) -> Result<String, Failure> {
     if let Some(base) = base {
         validate_oid(base)?;
     }
@@ -525,6 +587,9 @@ fn scripted(repo: &Repository, base: Option<&str>, todo: &str, autostash: bool) 
         Some(base) => command.arg("--end-of-options").arg(base),
         None => command.args(["--root", "--end-of-options"]),
     };
+    if let Some(branch) = switch {
+        command.arg(branch);
+    }
     let output = command.run().map_err(|e| Failure::from(format!("Run bundled Git: {e}")))?;
     let ended = crate::rebase::ended(repo, &output, autostash);
     drop(folder);
@@ -570,13 +635,14 @@ impl Rewrite {
         let branch = &plan.branch;
         let message = match (&self.message, plan.kind) {
             (Some(message), Kind::Reword | Kind::Squash) if !message.trim().is_empty() => Some(message.as_str()),
-            (_, Kind::Drop) => None,
+            (_, Kind::Drop | Kind::MoveUp | Kind::MoveDown) => None,
             _ => return Err(Failure::from("Enter a commit message.".to_owned())),
         };
         let (title, done) = match plan.kind {
             Kind::Reword => ("Commit message updated".to_owned(), "Updated the commit message".to_owned()),
             Kind::Squash => (format!("Squashed {} into one", commits(plan.chosen.len())), format!("Squashed {}", commits(plan.chosen.len()))),
             Kind::Drop => (format!("Dropped {} from {branch}", commits(plan.chosen.len())), format!("Dropped {}", commits(plan.chosen.len()))),
+            Kind::MoveUp | Kind::MoveDown => ("Commit moved".to_owned(), "Moved the commit".to_owned()),
         };
         if plan.rewords_tip() {
             let head = amend_message(repo, message.unwrap_or_default())?;
@@ -589,7 +655,7 @@ impl Rewrite {
             stash,
             kept,
             || Retry::Rewrite(Box::new(self.clone())),
-            |autostash| scripted(repo, plan.base.as_deref(), &todo, autostash),
+            |autostash| scripted(repo, plan.base.as_deref(), None, &todo, autostash),
             |_| done.clone(),
         )
         .map_err(|mut failure| {
@@ -598,7 +664,11 @@ impl Rewrite {
             }
             failure
         })?;
-        let rewritten = plan.later() + usize::from(plan.kind != Kind::Drop);
+        let rewritten = match plan.kind {
+            Kind::Drop => plan.later(),
+            Kind::MoveUp | Kind::MoveDown => plan.later() + 2,
+            Kind::Reword | Kind::Squash => plan.later() + 1,
+        };
         let mut detail = match rewritten {
             0 => format!("{branch} is at {}.", notice::short(&head)),
             1 => format!("1 commit was rewritten. {branch} is at {}.", notice::short(&head)),
@@ -665,6 +735,7 @@ fn spec(plan: &Plan) -> Spec {
             };
             spec.line("Undo, in the notice that follows, brings them back.")
         }
+        Kind::MoveUp | Kind::MoveDown => Spec::new("Move commit", "Move commit"),
     };
     if let Some(upstream) = &plan.upstream {
         let has = match (plan.kind, plan.range.len()) {
@@ -674,7 +745,7 @@ fn spec(plan: &Plan) -> Spec {
         };
         spec = spec.line(format!("{upstream} already has {has}. You will need to force push afterwards."));
     }
-    if plan.kind != Kind::Drop {
+    if matches!(plan.kind, Kind::Reword | Kind::Squash) {
         spec.field = Some(Field {
             label: "Summary",
             placeholder: "Summary",
@@ -696,7 +767,7 @@ fn spec(plan: &Plan) -> Spec {
 
 pub(crate) fn confirm(tab: &mut Tab, plan: Plan, answer: Answer, cx: &mut Context<Tab>) {
     let message = match plan.kind {
-        Kind::Drop => None,
+        Kind::Drop | Kind::MoveUp | Kind::MoveDown => None,
         Kind::Reword | Kind::Squash => {
             if answer.text.trim().is_empty() {
                 return;
@@ -718,6 +789,7 @@ pub(crate) fn run(tab: &mut Tab, rewrite: Rewrite, stash: bool, cx: &mut Context
         Kind::Reword => "Rewording…",
         Kind::Squash => "Squashing…",
         Kind::Drop => "Dropping…",
+        Kind::MoveUp | Kind::MoveDown => "Moving…",
     };
     let kept = Kept::default();
     let stopped = kept.clone();
@@ -738,6 +810,7 @@ fn refused(kind: &Action) -> &'static str {
         Action::Reword(_) => "The message cannot be edited here",
         Action::SquashIntoParent(_) | Action::Squash(_) => "These commits cannot be squashed",
         Action::Drop(_) => "This cannot be dropped",
+        Action::MoveUp(_) | Action::MoveDown(_) => "This commit cannot be moved",
     }
 }
 
@@ -766,6 +839,10 @@ pub fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut Context<
                 return;
             }
             match planned {
+                Ok(Ok(plan)) if plan.moves() => {
+                    let stash = tab.ui.autostash.always;
+                    run(tab, Rewrite { plan, message: None }, stash, cx);
+                }
                 Ok(Ok(plan)) => prompt::ask(&mut tab.ui, prompt::Kind::Rewrite(plan), cx),
                 Ok(Err(limit)) => {
                     tab.ui.notices.show(Notice::new(Tone::Info, refused(&action), limit));
@@ -1127,5 +1204,48 @@ mod tests {
         assert!(amend_line("bad\0").is_err());
         assert_eq!(joined("  Summary  ", "\n\nBody\r\nline\n\n"), "Summary\n\nBody\nline\n");
         assert_eq!(split("Summary\n\n\nBody\n"), ("Summary".to_owned(), "Body".to_owned()));
+    }
+
+    #[test]
+    fn moving_a_commit_up_or_down_swaps_it_with_its_neighbour_and_keeps_every_change() {
+        let (f, oids) = trail();
+        let tip_tree = tree(&f, "main");
+        let plan = planned(&f, Action::MoveUp(oids[1].clone()));
+        assert_eq!(plan.chosen, [oids[1].clone(), oids[2].clone()]);
+        assert_eq!(plan.undo_title(), "Move 'Map the creek' up");
+        let expected: Vec<String> = [2, 1, 3, 4].iter().map(|&at| format!("pick {}", oids[at])).collect();
+        assert_eq!(todo(&plan, None).unwrap(), expected.join("\n") + "\n");
+        let outcome = applied(&f, plan, None);
+        assert_eq!(outcome.title, "Commit moved");
+        assert!(outcome.detail.starts_with("4 commits were rewritten."), "{}", outcome.detail);
+        assert_eq!(log(&f), ["Reach the summit", "Swim in the lake", "Map the creek", "Climb the ridge", "Pitch the camp"]);
+        assert_eq!(oid(&f, "main~4"), oids[0]);
+        assert_eq!(tree(&f, "main"), tip_tree);
+        let lake = oid(&f, "main~1");
+        let plan = planned(&f, Action::MoveDown(lake));
+        assert_eq!(plan.undo_title(), "Move 'Swim in the lake' down");
+        applied(&f, plan, None);
+        assert_eq!(log(&f), ["Reach the summit", "Map the creek", "Swim in the lake", "Climb the ridge", "Pitch the camp"]);
+        assert_eq!(tree(&f, "main"), tip_tree);
+        assert_eq!(status(&f), "");
+        let before = oid(&f, "main");
+        assert_eq!(refusal(&f, Action::MoveUp(before.clone())), "This is the newest commit on main, so there is none after it to move it above.");
+        assert_eq!(refusal(&f, Action::MoveDown(oids[0].clone())), "This is the first commit, so there is none before it to move it below.");
+        assert_eq!(oid(&f, "main"), before);
+    }
+
+    #[test]
+    fn moving_a_commit_past_one_that_changes_the_same_file_stops_as_a_rebase() {
+        let f = Fixture::new();
+        commit(&f, "camp.txt", "tents\n", "Pitch the camp");
+        commit(&f, "trail.txt", "one\n", "First waypoint");
+        let second = commit(&f, "trail.txt", "one\ntwo\n", "Second waypoint");
+        let tip = oid(&f, "main");
+        let plan = planned(&f, Action::MoveDown(second));
+        let err = rewrite(plan, None).apply(&f.repo, false, &Kept::default()).err().expect("the swap conflicts");
+        assert!(err.text.starts_with("The rebase stopped on a conflict"), "{}", err.text);
+        f.git(&["rebase", "--abort"]);
+        assert_eq!(oid(&f, "main"), tip);
+        assert_eq!(status(&f), "");
     }
 }

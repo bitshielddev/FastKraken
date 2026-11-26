@@ -143,6 +143,7 @@ pub(crate) enum Kind {
     PushTo(crate::push_to::Ask),
     Patch(crate::patch::Ask),
     Rewrite(crate::rewrite::Plan),
+    RebaseMessage(crate::rebase_editor::Reword),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -171,6 +172,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::PushTo(ask) => crate::push_to::describe(ask, ui),
         Kind::Patch(ask) => crate::patch::describe(ask, ui),
         Kind::Rewrite(plan) => crate::rewrite::describe(plan, ui),
+        Kind::RebaseMessage(reword) => crate::rebase_editor::describe_reword(reword, ui),
     }
 }
 
@@ -200,6 +202,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::PushTo(ask) => crate::push_to::confirm(tab, ask, answer, cx),
         Kind::Patch(ask) => crate::patch::confirm(tab, ask, answer, cx),
         Kind::Rewrite(plan) => crate::rewrite::confirm(tab, plan, answer, cx),
+        Kind::RebaseMessage(reword) => crate::rebase_editor::confirm_reword(tab, reword, answer, cx),
     }
 }
 

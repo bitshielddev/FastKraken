@@ -598,6 +598,7 @@ pub enum Action {
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
     Rewrite(crate::rewrite::Action),
+    RebaseEditor(crate::rebase_editor::Action),
     Autostash(crate::autostash::Action),
     Explain(crate::explain::Action),
     Select(Selection),
@@ -780,6 +781,7 @@ pub struct Ui {
     pub(crate) graph_columns: crate::columns::State,
     pub(crate) drag: crate::drag::State,
     pub(crate) journal: crate::journal::State,
+    pub(crate) rebase_editor: crate::rebase_editor::State,
     pub(crate) chrome_drawn: bool,
 }
 
@@ -878,6 +880,7 @@ impl Ui {
             graph_columns: crate::columns::State::new(settings.graph_columns.clone()),
             drag: Default::default(),
             journal: Default::default(),
+            rebase_editor: Default::default(),
             chrome_drawn: false,
             diff_layout: DiffLayout::default(),
             diff_mode: settings.diff_mode,
@@ -2904,6 +2907,7 @@ pub(crate) enum Centre {
     FileHistory,
     Blame,
     Browse,
+    RebaseEditor,
     Search,
     History,
 }
@@ -2935,6 +2939,8 @@ pub(crate) fn centre(ui: &Ui) -> Centre {
         Centre::Browse
     } else if ui.diff_open && browsing {
         Centre::Diff
+    } else if ui.rebase_editor.open() {
+        Centre::RebaseEditor
     } else if operating && ui.merge.editing().is_some() {
         Centre::Resolver
     } else if operating && ui.conflict.showing().is_some() {
@@ -3134,7 +3140,13 @@ pub fn render<T: Desk>(
     let root = div()
         .id("desk")
         .track_focus(&ui.focus)
-        .key_context(if crate::diff_select::focused(ui) { "Desk DiffText" } else { "Desk" })
+        .key_context(if crate::diff_select::focused(ui) {
+            "Desk DiffText"
+        } else if crate::rebase_editor::keyed(ui) {
+            "Desk RebaseEditor"
+        } else {
+            "Desk"
+        })
         .size_full()
         .relative()
         .flex()
@@ -3286,6 +3298,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Browse(crate::browse::Action::Back), w, cx);
             } else if centre(ui) == Centre::Diff {
                 app.dispatch(Action::CloseDiff, w, cx);
+            } else if centre(ui) == Centre::RebaseEditor {
+                app.dispatch(Action::RebaseEditor(crate::rebase_editor::Action::Cancel), w, cx);
             } else if centre(ui) == Centre::Resolver && crate::diff_select::current(ui).is_some() {
                 app.dispatch(Action::Text(crate::diff_select::Action::Clear), w, cx);
             } else if ui.merge.editing().is_some() {
@@ -3363,6 +3377,7 @@ pub fn render<T: Desk>(
             Centre::FileHistory => crate::file_history::render(app, window, cx),
             Centre::Blame => crate::blame::render(app, window, cx),
             Centre::Browse => crate::browse::render(app, window, cx),
+            Centre::RebaseEditor => crate::rebase_editor::render(app, cx),
             Centre::Search => crate::search::results(app, cx),
             Centre::History => history(app, ui.columns_drawn(viewport).1, cx),
         };

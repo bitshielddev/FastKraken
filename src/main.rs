@@ -64,6 +64,7 @@ mod picked;
 mod pin;
 mod preferences;
 mod rebase;
+mod rebase_editor;
 mod recover;
 mod prompt;
 mod publish;
@@ -1699,6 +1700,7 @@ impl Tab {
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
             Action::Rewrite(action) => rewrite::dispatch(self, action, window, cx),
+            Action::RebaseEditor(action) => rebase_editor::dispatch(self, action, window, cx),
             Action::Autostash(action) => autostash::dispatch(self, action, window, cx),
             Action::Explain(action) => explain::dispatch(self, action, window, cx),
             Action::Stash(action) => stash::dispatch(self, action, window, cx),

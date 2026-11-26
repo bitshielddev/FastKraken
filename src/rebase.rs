@@ -125,11 +125,11 @@ pub(crate) fn on_branch(ui: &Ui) -> bool {
     !ui.detached && ui.head.is_some() && ui.head_ref.as_deref().is_some_and(|r| r.as_bytes().starts_with(b"refs/heads/"))
 }
 
-fn checked_out(ui: &Ui, name: &OsStr) -> bool {
+pub(crate) fn checked_out(ui: &Ui, name: &OsStr) -> bool {
     ui.head_ref.as_deref().is_some_and(|full| full.as_bytes().strip_prefix(b"refs/heads/") == Some(name.as_bytes()))
 }
 
-fn branch_ref(name: &OsStr) -> OsString {
+pub(crate) fn branch_ref(name: &OsStr) -> OsString {
     let mut full = OsString::from("refs/heads/");
     full.push(name);
     full
@@ -269,17 +269,7 @@ impl Ask {
         {
             return Err(Failure::from("The checked-out branch or its tip changed. Reopen the action.".to_owned()));
         }
-        match &self.onto {
-            Source::Commit(oid) => {
-                let mut commit = OsString::from(oid);
-                commit.push("^{commit}");
-                if *oid != self.target || repo.resolve(&commit).ok().as_deref() != Some(self.target.as_str()) {
-                    return Err(Failure::from("This commit is not in the repository. Refresh and select it again.".to_owned()));
-                }
-            }
-            Source::Tag(_) => repo.expect_names_commit(&self.onto.full(), &self.target)?,
-            Source::Branch(_) | Source::RemoteBranch(_) => repo.expect_ref(&self.onto.full(), &self.target)?,
-        }
+        expect_onto(repo, &self.onto, &self.target)?;
         let switch = self.switch.then(|| OsStr::from_bytes(short));
         let (branch, label) = (&self.branch, &self.label);
         let finished = format!("Rebased {branch} onto {label}");
@@ -318,6 +308,21 @@ impl Ask {
         let outcome = Outcome::titled(format!("Rebased {branch} onto {label}"), put_back(detail));
         Ok(operation::backend::offer_force_push(repo, outcome))
     }
+}
+
+pub(crate) fn expect_onto(repo: &Repository, onto: &Source, target: &str) -> Result<(), Failure> {
+    match onto {
+        Source::Commit(oid) => {
+            let mut commit = OsString::from(oid);
+            commit.push("^{commit}");
+            if oid != target || repo.resolve(&commit).ok().as_deref() != Some(target) {
+                return Err(Failure::from("This commit is not in the repository. Refresh and select it again.".to_owned()));
+            }
+        }
+        Source::Tag(_) => repo.expect_names_commit(&onto.full(), target)?,
+        Source::Branch(_) | Source::RemoteBranch(_) => repo.expect_ref(&onto.full(), target)?,
+    }
+    Ok(())
 }
 
 pub(crate) fn replay(

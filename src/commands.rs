@@ -283,6 +283,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::merge::COMMANDS,
         crate::pick::COMMANDS,
         crate::rebase::COMMANDS,
+        crate::rebase_editor::COMMANDS,
         crate::operation::COMMANDS,
         crate::conflict::COMMANDS,
         crate::reverse::COMMANDS,
