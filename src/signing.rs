@@ -325,7 +325,7 @@ impl Repository {
         let format = Format::of_signature(&block);
         let output = self
             .read_command()
-            .args(["log", "-1", "--no-notes", "--format=%G?%x00%GS%x00%GK%x00%GF", oid, "--"])
+            .args(["log", "-1", "--no-notes", "--no-show-signature", "--format=%G?%x00%GS%x00%GK%x00%GF", oid, "--"])
             .run()
             .map_err(|error| format!("Run bundled Git: {error}"))?;
         if !output.status.success() {
@@ -721,6 +721,9 @@ pub(crate) mod tests {
         assert_eq!((verified.grade, verified.format, verified.signer.as_str()), (Grade::Verified, Format::Ssh, "cedar@example.invalid"));
         assert!(verified.fingerprint.starts_with("SHA256:"), "{verified:?}");
         assert_eq!(refs(&f), before, "checking a signature changes nothing");
+        f.git(&["config", "--local", "log.showSignature", "true"]);
+        let shown = f.repo.commit_signature(&signed).unwrap().unwrap();
+        assert_eq!((shown.grade, shown.signer.as_str()), (Grade::Verified, "cedar@example.invalid"), "{shown:?}");
 
         let stranger = ssh_key(&keys, "stranger");
         f.git(&["config", "--local", "user.signingKey", stranger.to_str().unwrap()]);
