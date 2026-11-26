@@ -491,6 +491,7 @@ impl Replay<'_> {
         let rows = self.menu_rows(&main)?;
         let expected = [
             ("ref.branch", "Create branch here…".to_owned(), None),
+            ("worktree.new", "New worktree from main…".to_owned(), None),
             ("branch.switch", "Switch to main".to_owned(), Some("main is already checked out".to_owned())),
             ("branch.merge", "Merge into main".to_owned(), Some("main is the checked-out branch".to_owned())),
             ("branch.rename", "Rename main…".to_owned(), None),
@@ -509,6 +510,7 @@ impl Replay<'_> {
         let rows = self.menu_rows(&feature)?;
         let expected = [
             ("ref.branch", "Create branch here…".to_owned(), None),
+            ("worktree.new", "New worktree from feature/map…".to_owned(), None),
             ("branch.switch", "Switch to feature/map".to_owned(), None),
             ("branch.merge", "Merge feature/map into main".to_owned(), None),
             ("branch.rebase-onto", "Rebase main onto feature/map…".to_owned(), None),
@@ -545,6 +547,7 @@ impl Replay<'_> {
         let rows = self.menu_rows(&feature)?;
         let expected = [
             ("ref.branch", "Create branch here…".to_owned(), reason.clone()),
+            ("worktree.new", "New worktree from feature/map…".to_owned(), None),
             ("branch.switch", "Switch to feature/map".to_owned(), reason.clone()),
             ("branch.merge", "Merge feature/map into main".to_owned(), reason.clone()),
             ("branch.rebase-onto", "Rebase main onto feature/map…".to_owned(), reason.clone()),
@@ -698,6 +701,7 @@ impl Replay<'_> {
             != [
                 "commit.branch",
                 "commit.tag",
+                "worktree.new",
                 "commit.switch",
                 "commit.checkout",
                 "commit.merge",
@@ -738,6 +742,7 @@ impl Replay<'_> {
             ("branch.pull", format!("Pull {first}")),
             ("branch.push-to", format!("Push {first} to…")),
             ("ref.branch", "Create branch here…".to_owned()),
+            ("worktree.new", format!("New worktree from {first}…")),
             ("branch.switch", format!("Switch to {first}")),
             ("branch.merge", format!("Merge {first} into main")),
             ("branch.rebase-onto", format!("Rebase main onto {first}…")),

@@ -1595,7 +1595,8 @@ impl Tab {
                 | Action::Cli(_)
         );
         if self.ui.prompt.open() {
-            if !chrome && !matches!(action, Action::Prompt(_) | Action::Open | Action::Refresh) {
+            let choosing = matches!(action, Action::Worktree(worktree::Action::ChooseFolder));
+            if !chrome && !choosing && !matches!(action, Action::Prompt(_) | Action::Open | Action::Refresh) {
                 return;
             }
         } else if self.ui.publish.open()

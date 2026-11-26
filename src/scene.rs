@@ -184,6 +184,10 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             }))
         }
         "newbranch" => Some(Action::Refs(refs::Action::New(refs::Kind::Branch))),
+        "newworktree" => Some(Action::Worktree(crate::worktree::Action::New(match argument {
+            "" => crate::worktree::Start::Head,
+            branch => crate::worktree::Start::Branch(branch.into()),
+        }))),
         "newtag" => Some(Action::Refs(refs::Action::New(refs::Kind::Tag))),
         "tagname" => {
             tab.ui.refs.input.update(cx, |input, cx| input.set_text(argument, cx));
@@ -216,6 +220,7 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
                 "remotes" => refs::Section::Remotes,
                 "tags" => refs::Section::Tags,
                 "stashes" => refs::Section::Stashes,
+                "worktrees" => refs::Section::Worktrees,
                 _ => refs::Section::Branches,
             };
             Some(Action::Menu(Some(Menu::Object {

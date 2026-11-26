@@ -38,6 +38,7 @@ pub(crate) struct Spec {
     pub note: Option<Note>,
     pub tick: Option<(SharedString, bool)>,
     pub fixed_tick: bool,
+    pub tick_opens_second: bool,
     pub items: Vec<Item>,
     pub choices: Vec<Choice>,
     pub unblocked: bool,
@@ -73,6 +74,7 @@ impl Spec {
             note: None,
             tick: None,
             fixed_tick: false,
+            tick_opens_second: false,
             items: Vec::new(),
             choices: Vec::new(),
             unblocked: false,
@@ -144,6 +146,7 @@ pub(crate) enum Kind {
     Patch(crate::patch::Ask),
     Rewrite(crate::rewrite::Plan),
     RebaseMessage(crate::rebase_editor::Reword),
+    Worktree(crate::worktree::Ask),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -173,6 +176,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Patch(ask) => crate::patch::describe(ask, ui),
         Kind::Rewrite(plan) => crate::rewrite::describe(plan, ui),
         Kind::RebaseMessage(reword) => crate::rebase_editor::describe_reword(reword, ui),
+        Kind::Worktree(ask) => crate::worktree::describe(ask, ui),
     }
 }
 
@@ -203,6 +207,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Patch(ask) => crate::patch::confirm(tab, ask, answer, cx),
         Kind::Rewrite(plan) => crate::rewrite::confirm(tab, plan, answer, cx),
         Kind::RebaseMessage(reword) => crate::rebase_editor::confirm_reword(tab, reword, answer, cx),
+        Kind::Worktree(ask) => crate::worktree::confirm(tab, ask, answer, cx),
     }
 }
 
@@ -392,10 +397,14 @@ pub(crate) fn stops(spec: &Spec, can_confirm: bool) -> Vec<Stop> {
     if spec.field.is_some() {
         stops.push(Stop::Field);
     }
+    let tick = spec.tick.is_some() && !spec.fixed_tick;
+    if tick && spec.tick_opens_second {
+        stops.push(Stop::Tick);
+    }
     if spec.second.is_some() {
         stops.push(Stop::Second);
     }
-    if spec.tick.is_some() && !spec.fixed_tick {
+    if tick && !spec.tick_opens_second {
         stops.push(Stop::Tick);
     }
     stops.extend((0..spec.items.len()).map(Stop::Item));
@@ -512,7 +521,10 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             }
         }
         Action::Next | Action::Previous => {
-            let stops = stops(&spec, can_confirm);
+            let mut stops = stops(&spec, can_confirm);
+            if spec.tick_opens_second && !tab.ui.prompt.tick {
+                stops.retain(|stop| *stop != Stop::Second);
+            }
             let from = tab.ui.prompt.focused(window, cx);
             let to = cycle(&stops, from, matches!(action, Action::Next));
             if let Some(handle) = tab.ui.prompt.handle(to, cx) {
@@ -571,11 +583,15 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
     if let (Some(field), Some(input)) = (&spec.field, &state.field) {
         body = body.child(kit::field(field.label, input.clone(), help(field, first_problem)));
     }
-    if let (Some(field), Some(input)) = (&spec.second, &state.second) {
-        let input = div().when(spec.second_lines, |d| d.key_context("PromptLines")).child(input.clone());
-        body = body.child(kit::field(field.label, input, help(field, second_problem)));
-    }
-    if let Some(note) = &spec.note {
+    let shows_second = !spec.tick_opens_second || state.tick;
+    let second_row = match (&spec.second, &state.second) {
+        (Some(field), Some(input)) if shows_second => {
+            let input = div().when(spec.second_lines, |d| d.key_context("PromptLines")).child(input.clone());
+            Some(kit::field(field.label, input, help(field, second_problem)).into_any_element())
+        }
+        _ => None,
+    };
+    let note_row = spec.note.as_ref().map(|note| {
         let mut line = div()
             .flex()
             .flex_wrap()
@@ -587,10 +603,10 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
         if let Some((label, action)) = &note.link {
             line = line.child(kit::link("prompt-note-link", label.clone(), action.clone(), cx));
         }
-        body = body.child(line);
-    }
-    if let (Some((label, _)), true) = (&spec.tick, spec.fixed_tick) {
-        body = body.child(
+        line.into_any_element()
+    });
+    let tick_row = match (&spec.tick, spec.fixed_tick) {
+        (Some((label, _)), true) => Some(
             div()
                 .id("prompt-tick")
                 .flex()
@@ -600,36 +616,45 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
                 .opacity(0.55)
                 .text_size(px(12.5))
                 .child(kit::checkbox(state.tick))
-                .child(label.clone()),
-        );
-    } else if let Some((label, _)) = &spec.tick {
-        let toggle = act(Action::Toggle);
-        body = body.child(
-            div()
-                .id("prompt-tick")
-                .key_context("DeskButton")
-                .track_focus(&state.toggle)
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_1()
-                .rounded(px(RADIUS_CHIP))
-                .border_1()
-                .border_color(kit::clear())
-                .focus(|s| s.border_color(rgb(ACCENT)))
-                .cursor_pointer()
-                .text_size(px(12.5))
-                .child(kit::checkbox(state.tick))
                 .child(label.clone())
-                .on_click(cx.listener({
-                    let toggle = toggle.clone();
-                    move |app, _, w, cx| app.dispatch(toggle.clone(), w, cx)
-                }))
-                .on_action(cx.listener(move |app, _: &ActivateControl, w, cx| {
-                    app.dispatch(toggle.clone(), w, cx)
-                })),
-        );
-    }
+                .into_any_element(),
+        ),
+        (Some((label, _)), false) => {
+            let toggle = act(Action::Toggle);
+            Some(
+                div()
+                    .id("prompt-tick")
+                    .key_context("DeskButton")
+                    .track_focus(&state.toggle)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .rounded(px(RADIUS_CHIP))
+                    .border_1()
+                    .border_color(kit::clear())
+                    .focus(|s| s.border_color(rgb(ACCENT)))
+                    .cursor_pointer()
+                    .text_size(px(12.5))
+                    .child(kit::checkbox(state.tick))
+                    .child(label.clone())
+                    .on_click(cx.listener({
+                        let toggle = toggle.clone();
+                        move |app, _, w, cx| app.dispatch(toggle.clone(), w, cx)
+                    }))
+                    .on_action(cx.listener(move |app, _: &ActivateControl, w, cx| {
+                        app.dispatch(toggle.clone(), w, cx)
+                    }))
+                    .into_any_element(),
+            )
+        }
+        (None, _) => None,
+    };
+    body = if spec.tick_opens_second {
+        body.children(note_row).children(tick_row).children(second_row)
+    } else {
+        body.children(second_row).children(note_row).children(tick_row)
+    };
     if !spec.items.is_empty() {
         let mut list = div()
             .id("prompt-items")
@@ -804,6 +829,23 @@ mod tests {
         assert_eq!(order, [Stop::Cancel, Stop::Confirm]);
         assert_eq!(cycle(&order, Some(Stop::Confirm), true), Stop::Cancel);
         assert_eq!(cycle(&order, Some(Stop::Cancel), false), Stop::Confirm);
+    }
+
+    #[test]
+    fn a_tick_that_opens_the_second_field_comes_before_it() {
+        let mut spec = form(false, true);
+        spec.second = Some(Field {
+            label: "New branch",
+            placeholder: "Name of the new branch",
+            initial: String::new(),
+            masked: false,
+            validate: Box::new(|_, _| None),
+        });
+        assert_eq!(stops(&spec, true), [Stop::Field, Stop::Second, Stop::Tick, Stop::Cancel, Stop::Confirm]);
+        spec.tick_opens_second = true;
+        assert_eq!(stops(&spec, true), [Stop::Field, Stop::Tick, Stop::Second, Stop::Cancel, Stop::Confirm]);
+        spec.fixed_tick = true;
+        assert_eq!(stops(&spec, true), [Stop::Field, Stop::Second, Stop::Cancel, Stop::Confirm]);
     }
 
     #[test]

@@ -1277,13 +1277,13 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let add = match section {
                                 Section::Branches => Some("New branch"),
                                 Section::Remotes => Some("Add a remote or publish"),
+                                Section::Worktrees => Some("New worktree"),
                                 _ => None,
                             };
                             let left_out = match crate::graph_view::section_prefix(section) {
                                 Some(prefix) => ui.graph_view.hidden.contains(prefix),
                                 None => section == Section::Stashes && ui.graph_view.hide_stashes,
                             };
-                            let has_menu = section != Section::Worktrees;
                             div()
                                 .id(("side-header", i))
                                 .group("side-header")
@@ -1325,19 +1325,21 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                             .on_click(cx.listener(
                                                 move |app, event: &gpui::ClickEvent, w, cx| {
                                                     cx.stop_propagation();
-                                                    let action = if section == Section::Remotes {
-                                                        view::Action::Menu(Some(Menu::Remotes {
+                                                    let action = match section {
+                                                        Section::Remotes => view::Action::Menu(Some(Menu::Remotes {
                                                             at: event.position(),
-                                                        }))
-                                                    } else {
-                                                        view::Action::Run("repo.new-branch")
+                                                        })),
+                                                        Section::Worktrees => view::Action::Worktree(
+                                                            crate::worktree::Action::New(crate::worktree::Start::Head),
+                                                        ),
+                                                        _ => view::Action::Run("repo.new-branch"),
                                                     };
                                                     app.dispatch(action, w, cx)
                                                 },
                                             )),
                                     )
                                 })
-                                .when(has_menu, |d| d.child(
+                                .child(
                                     div()
                                         .id(("side-more", i))
                                         .invisible()
@@ -1361,7 +1363,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                                 cx,
                                             )
                                         })),
-                                ))
+                                )
                                 .when(left_out, |d| {
                                     d.child(
                                         div()
@@ -1381,9 +1383,6 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .on_mouse_down(
                                     MouseButton::Right,
                                     cx.listener(move |app, event: &MouseDownEvent, w, cx| {
-                                        if !has_menu {
-                                            return;
-                                        }
                                         app.dispatch(
                                             view::Action::Menu(Some(Menu::Object {
                                                 target: Target::Section(section),
