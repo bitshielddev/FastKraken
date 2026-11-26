@@ -684,7 +684,8 @@ impl Replay<'_> {
             "FastKraken problem report".to_owned(),
             format!("FastKraken {}", env!("CARGO_PKG_VERSION")),
             format!("Thread: {BEACON_THREAD}"),
-            "Lost the beacon while reading https://•••@example.invalid/beacon.git with password=•••".to_owned(),
+            "\nmacOS ".to_owned(),
+            "Lost the beacon while reading https://•••@example.invalid/beacon.git with password=••• and ghp_•••\n".to_owned(),
             "config --local beacon.mirror https://•••@example.invalid/beacon.git · exit 0".to_owned(),
             "Backtrace".to_owned(),
         ] {

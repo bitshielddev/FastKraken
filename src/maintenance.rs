@@ -104,6 +104,15 @@ pub(crate) enum Health {
     Damaged(Vec<String>),
 }
 
+fn progress_meter(line: &str) -> bool {
+    let Some((label, rest)) = line.split_once(": ") else { return false };
+    let named = label.starts_with(|c: char| c.is_ascii_uppercase())
+        && label.chars().all(|c| c.is_ascii_alphabetic() || c == ' ' || c == '-');
+    let rest = rest.trim_start();
+    let after = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+    named && after.len() < rest.len() && (after.is_empty() || after.starts_with('%') || after.starts_with(','))
+}
+
 pub(crate) fn check(repo: &Repository) -> Result<(Health, Stored), String> {
     let store = stored(repo)?;
     let output = crate::repository::run(
@@ -115,8 +124,8 @@ pub(crate) fn check(repo: &Repository) -> Result<(Health, Stored), String> {
     }
     let said = [&output.stdout, &output.stderr]
         .iter()
-        .flat_map(|bytes| String::from_utf8_lossy(bytes).lines().map(str::trim).map(str::to_owned).collect::<Vec<_>>())
-        .filter(|line| !line.is_empty() && !jobs::is_progress(line) && !line.starts_with("dangling "))
+        .flat_map(|bytes| String::from_utf8_lossy(bytes).split(['\n', '\r']).map(str::trim).map(str::to_owned).collect::<Vec<_>>())
+        .filter(|line| !line.is_empty() && !jobs::is_progress(line) && !progress_meter(line) && !line.starts_with("dangling "))
         .collect::<Vec<_>>();
     let problems = if said.is_empty() {
         vec![format!("git fsck stopped with exit code {}", output.status.code().unwrap_or(-1))]
@@ -191,7 +200,7 @@ pub(crate) fn tidied_notice(before: Stored, after: Stored) -> Notice {
     if before.loose > after.loose {
         changes.push(format!("packed {} that were stored one by one", objects(before.loose - after.loose)));
     }
-    if before.packs != after.packs {
+    if before.packs > after.packs {
         changes.push(format!("turned {} into {}", packs(before.packs), after.packs));
     }
     if before.bytes > after.bytes {
@@ -309,6 +318,8 @@ mod tests {
     fn a_missing_object_is_reported_in_plain_words_and_nothing_is_changed() {
         let f = Fixture::new();
         committed(&f, "FastKraken: git for the impatient\n", "Start the trail");
+        committed(&f, "FastKraken: git for the impatient\nsecond line\n", "Extend the trail");
+        f.git(&["commit-graph", "write", "--reachable", "--no-progress"]);
         let blob = text(&f, &["rev-parse", "HEAD:trail.txt"]).trim().to_owned();
         let object = f.dir.join(".git/objects").join(&blob[..2]).join(&blob[2..]);
         fs::remove_file(&object).unwrap();
@@ -316,9 +327,21 @@ mod tests {
         let (health, _) = check(&f.repo).unwrap();
         let Health::Damaged(problems) = &health else { panic!("{health:?}") };
         assert!(problems.iter().any(|line| line.starts_with("missing blob") && line.contains(&blob)), "{problems:?}");
+        assert!(problems.iter().all(|line| !line.starts_with("Checking ") && !line.starts_with("Verifying ")), "{problems:?}");
+        for meter in ["Checking ref database: 100% (1/1)", "Verifying commits in commit graph:  50% (1/2)", "Checking objects: 12, done."] {
+            assert!(progress_meter(meter), "{meter}");
+        }
+        for problem in [
+            "error: 587be6b4c3f93f93c489c0111bba5596147a26cb: object corrupt or missing",
+            "missing blob 587be6b4c3f93f93c489c0111bba5596147a26cb",
+            "error: refs/heads/main: invalid sha1 pointer 0000000000000000000000000000000000000000",
+            "Checking ref database",
+        ] {
+            assert!(!progress_meter(problem), "{problem}");
+        }
         assert!(!object.exists());
         assert_eq!(text(&f, &["for-each-ref", "--format=%(refname) %(objectname)"]), refs);
-        assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "FastKraken: git for the impatient\n");
+        assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "FastKraken: git for the impatient\nsecond line\n");
         let shown = checked_notice(&health, Stored::default());
         assert_eq!((shown.tone, shown.title.as_str()), (Tone::Error, DAMAGED));
         assert!(shown.detail.starts_with("Git found 1 missing or broken object. Your files are untouched."), "{}", shown.detail);
@@ -349,6 +372,11 @@ mod tests {
         let shown = tidied_notice(before, after);
         assert_eq!((shown.tone, shown.title.as_str()), (Tone::Success, TIDIED));
         assert!(shown.detail.starts_with("Git packed 3 objects that were stored one by one, turned 2 packs into 1"), "{}", shown.detail);
+        let first_pack = tidied_notice(
+            Stored { loose: 9, packed: 0, packs: 0, bytes: 40_960 },
+            Stored { loose: 0, packed: 9, packs: 1, bytes: 8_192 },
+        );
+        assert!(first_pack.detail.starts_with("Git packed 9 objects that were stored one by one and freed"), "{}", first_pack.detail);
         let (again_before, again_after) = tidy(&f.repo).unwrap();
         assert_eq!(again_before, again_after);
         let shown = tidied_notice(again_before, again_after);

@@ -135,8 +135,14 @@ fn local(at: SystemTime) -> Option<libc::tm> {
     (!unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null()).then_some(tm)
 }
 
+fn universal(at: SystemTime) -> Option<libc::tm> {
+    let seconds = at.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    (!unsafe { libc::gmtime_r(&seconds, &mut tm) }.is_null()).then_some(tm)
+}
+
 pub(crate) fn file_stamp(at: SystemTime) -> String {
-    match local(at) {
+    match universal(at) {
         Some(tm) => format!(
             "{:04}{:02}{:02}-{:02}{:02}{:02}",
             tm.tm_year + 1900,
@@ -434,6 +440,7 @@ mod tests {
         assert_eq!(fs::metadata(&logs).unwrap().permissions().mode() & 0o777, 0o700);
         let name = first.file_name().unwrap().to_str().unwrap().to_owned();
         assert_eq!(name, format!("crash-{}.txt", file_stamp(at)));
+        assert_eq!(file_stamp(at), "20261118-110820");
         fs::write(logs.join(ACTIVITY_LOG), "kept").unwrap();
         fs::write(logs.join("notes.txt"), "kept").unwrap();
         assert_eq!(reports(&logs), [first.clone(), second.clone()]);
