@@ -7,7 +7,10 @@ use std::{
     os::unix::ffi::OsStringExt,
     path::{Component, Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
 };
 
@@ -17,6 +20,13 @@ type Result<T> = std::result::Result<T, String>;
 const MAX_DIFF_BYTES: usize = 1024 * 1024;
 const SSH_TIMEOUTS: &str = "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2";
 const WHOLE_FILE: &str = "--unified=1000000";
+pub(crate) const OLDEST_GIT: [u32; 2] = [2, 46];
+const SHIM: &str = "/usr/bin/git";
+const DEVELOPER_LINK: &str = "/var/db/xcode_select_link";
+const COMMAND_LINE_TOOLS: &str = "/Library/Developer/CommandLineTools";
+
+static CHOSEN: RwLock<Option<Engine>> = RwLock::new(None);
+static SSH_PROGRAM: RwLock<Option<String>> = RwLock::new(None);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DiffOptions {
@@ -52,8 +62,8 @@ pub struct Repository {
 #[derive(Clone, Debug)]
 struct Engine {
     executable: PathBuf,
-    exec_dir: PathBuf,
-    templates: PathBuf,
+    exec_dir: Option<PathBuf>,
+    templates: Option<PathBuf>,
     bin: PathBuf,
 }
 
@@ -329,10 +339,29 @@ impl Engine {
         env::join_paths([bin]).map_err(|e| e.to_string())?;
         Ok(Self {
             executable: executable.to_owned(),
-            exec_dir: root.join("libexec/git-core"),
-            templates: root.join("share/git-core/templates"),
+            exec_dir: Some(root.join("libexec/git-core")),
+            templates: Some(root.join("share/git-core/templates")),
             bin: bin.to_owned(),
         })
+    }
+
+    fn installed(executable: &Path) -> Result<Self> {
+        if !executable.is_absolute() {
+            return Err(format!("{} is not a full path to a program.", executable.display()));
+        }
+        if !runnable(executable) {
+            return Err(format!("{} is not a program FastKraken can run.", executable.display()));
+        }
+        let bin = executable.parent().ok_or("A Git program needs a folder")?;
+        env::join_paths([bin]).map_err(|_| format!("{} cannot go on a search path.", bin.display()))?;
+        Ok(Self { executable: executable.to_owned(), exec_dir: None, templates: None, bin: bin.to_owned() })
+    }
+
+    fn current() -> Result<Self> {
+        match chosen_engine() {
+            Some(engine) => Ok(engine),
+            None => Self::bundled(),
+        }
     }
 
     fn search_path(&self) -> OsString {
@@ -344,10 +373,16 @@ impl Engine {
         let mut cmd = Command::new(&self.executable);
         cmd.current_dir(dir)
             .env("PATH", self.search_path())
-            .env("GIT_EXEC_PATH", &self.exec_dir)
-            .env("GIT_TEMPLATE_DIR", &self.templates)
             .env("GIT_TERMINAL_PROMPT", "0")
             .arg("--no-pager");
+        match &self.exec_dir {
+            Some(dir) => cmd.env("GIT_EXEC_PATH", dir),
+            None => cmd.env_remove("GIT_EXEC_PATH"),
+        };
+        match &self.templates {
+            Some(dir) => cmd.env("GIT_TEMPLATE_DIR", dir),
+            None => cmd.env_remove("GIT_TEMPLATE_DIR"),
+        };
         #[cfg(test)]
         {
             cmd.env("GIT_CONFIG_GLOBAL", tests::global_config())
@@ -378,8 +413,99 @@ pub(crate) fn bundled_command(directory: &Path) -> Result<Command> {
     Ok(Engine::bundled()?.command(directory))
 }
 
+pub(crate) fn git_command(directory: &Path) -> Result<Command> {
+    Ok(Engine::current()?.command(directory))
+}
+
+fn chosen_engine() -> Option<Engine> {
+    CHOSEN.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+pub(crate) fn git_in_use() -> Option<PathBuf> {
+    CHOSEN.read().unwrap_or_else(|e| e.into_inner()).as_ref().map(|engine| engine.executable.clone())
+}
+
+pub(crate) fn use_git(program: Option<&Path>) -> Result<()> {
+    let engine = program.map(Engine::installed).transpose()?;
+    *CHOSEN.write().unwrap_or_else(|e| e.into_inner()) = engine;
+    Ok(())
+}
+
+pub(crate) fn use_ssh_program(program: Option<String>) {
+    *SSH_PROGRAM.write().unwrap_or_else(|e| e.into_inner()) = program.filter(|program| !program.trim().is_empty());
+}
+
+pub(crate) fn ssh_program() -> Option<String> {
+    SSH_PROGRAM.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+pub(crate) fn runnable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+pub(crate) fn developer_git() -> Option<PathBuf> {
+    let developer = std::fs::read_link(DEVELOPER_LINK).unwrap_or_else(|_| PathBuf::from(COMMAND_LINE_TOOLS));
+    let git = developer.join("usr/bin/git");
+    runnable(&git).then_some(git)
+}
+
+pub(crate) fn bundled_bin() -> Option<PathBuf> {
+    Engine::bundled().ok().map(|engine| engine.bin)
+}
+
+pub(crate) fn system_git(dirs: &[PathBuf], bundled: Option<&Path>, developer: Option<&Path>) -> Option<PathBuf> {
+    let fallback = Path::new("/usr/bin");
+    let listed = dirs.iter().map(PathBuf::as_path).chain((!dirs.iter().any(|dir| dir == fallback)).then_some(fallback));
+    for dir in listed {
+        if bundled.is_some_and(|bundled| same_place(dir, bundled)) {
+            continue;
+        }
+        let git = dir.join("git");
+        if !runnable(&git) || (git == Path::new(SHIM) && developer.is_none()) {
+            continue;
+        }
+        return Some(git);
+    }
+    None
+}
+
+pub(crate) fn version_number(version: &str) -> Vec<u32> {
+    version
+        .split(|c: char| !c.is_ascii_digit())
+        .take_while(|part| !part.is_empty())
+        .filter_map(|part| part.parse().ok())
+        .collect()
+}
+
+pub(crate) fn new_enough(version: &str) -> bool {
+    let number = version_number(version);
+    number.len() >= 2 && number[..2] >= OLDEST_GIT[..]
+}
+
+pub(crate) fn git_version(program: &Path, developer: Option<&Path>) -> Result<String> {
+    if program == Path::new(SHIM) && developer.is_none() {
+        return Err("The Command Line Tools are not installed, so /usr/bin/git would only ask to install them. Install them with xcode-select --install, or choose another Git.".to_owned());
+    }
+    let engine = Engine::installed(program)?;
+    let output = run(engine.command(Path::new("/")).arg("--version").stdin(Stdio::null()))
+        .map_err(|e| format!("{} could not be run: {e}", program.display()))?;
+    let said = String::from_utf8_lossy(&output.stdout);
+    let version = version_of(&said)
+        .ok_or_else(|| format!("{} did not answer as Git does to --version.", program.display()))?;
+    if !new_enough(&version) {
+        return Err(format!(
+            "{} is Git {version}, and FastKraken needs Git {}.{} or newer.",
+            program.display(),
+            OLDEST_GIT[0],
+            OLDEST_GIT[1]
+        ));
+    }
+    Ok(version)
+}
+
 pub(crate) fn clone_command(directory: &Path) -> Result<Command> {
-    let engine = Engine::bundled()?;
+    let engine = Engine::current()?;
     let mut command = engine.command(directory);
     let mut read = engine.command(Path::new("/"));
     read.arg("--no-optional-locks");
@@ -390,9 +516,13 @@ pub(crate) fn clone_command(directory: &Path) -> Result<Command> {
 
 fn timeouts(command: &mut Command, read: Command) {
     command.args(["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=30"]);
-    if own_ssh_command(read).is_none() {
-        command.env("GIT_SSH_COMMAND", SSH_TIMEOUTS);
+    if let Some(program) = ssh_for(own_ssh_command(read).is_some(), ssh_program()) {
+        command.env("GIT_SSH_COMMAND", program);
     }
+}
+
+fn ssh_for(own: bool, chosen: Option<String>) -> Option<String> {
+    (!own).then(|| chosen.unwrap_or_else(|| SSH_TIMEOUTS.to_owned()))
 }
 
 fn answers(command: &mut Command) {
@@ -425,15 +555,21 @@ impl Repository {
         Self::open_with_engine(path, Engine::at(git)?)
     }
 
+    #[cfg(test)]
+    fn with_installed_git(path: &Path, git: &Path) -> Result<Self> {
+        Self::open_with_engine(path, Engine::installed(git)?)
+    }
+
     fn open_with_engine(path: &Path, engine: Engine) -> Result<Self> {
         let directory = if path.is_file() {
             path.parent().unwrap_or(path)
         } else {
             path
         };
+        let running = chosen_engine().unwrap_or_else(|| engine.clone());
         let query = |flags: &[&str]| -> Result<Vec<u8>> {
             checked(
-                engine
+                running
                     .command(directory)
                     .args(["--no-optional-locks", "rev-parse", "--path-format=absolute"])
                     .args(flags),
@@ -484,7 +620,10 @@ impl Repository {
     }
 
     pub(crate) fn command(&self) -> Command {
-        let mut command = self.engine.command(&self.root);
+        let mut command = match chosen_engine() {
+            Some(engine) => engine.command(&self.root),
+            None => self.engine.command(&self.root),
+        };
         if let Some(link) = crate::jobs::Link::current()
             && let Some(session) = link.session()
         {
@@ -2271,6 +2410,56 @@ pub(crate) mod tests {
         assert_eq!(f.git(&["ls-files", "--stage"]), index);
         assert_eq!(f.git(&["status", "--porcelain=v1"]), b" M trail.txt\n");
         assert_eq!(fs::read(f.dir.join("trail.txt")).unwrap(), b"one\ntwo\n");
+    }
+
+    #[test]
+    fn another_git_runs_every_command_without_the_bundled_runtime() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new();
+        let bundled_root = f.git.parent().unwrap().parent().unwrap().to_owned();
+        let outside = tempfile::tempdir().unwrap();
+        let other = outside.path().join("other-git");
+        fs::create_dir(&other).unwrap();
+        let log = outside.path().join("other-git.log");
+        let wrapper = other.join("git");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"${{GIT_EXEC_PATH-unset}}\" \"${{GIT_TEMPLATE_DIR-unset}}\" \"${{PATH%%:*}}\" \"$*\" >> '{}'\nGIT_EXEC_PATH='{}' exec '{}' \"$@\"\n",
+                log.display(),
+                bundled_root.join("libexec/git-core").display(),
+                f.git.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(f.dir.join("trail.txt"), "one\n").unwrap();
+        let repo = Repository::with_installed_git(&f.dir, &wrapper).unwrap();
+        checked(repo.command().args(["add", "trail.txt"])).unwrap();
+        checked(repo.command().args(["commit", "-qm", "Through the other Git"])).unwrap();
+        let subject = f.git(&["log", "-1", "--format=%s"]);
+        assert_eq!(String::from_utf8_lossy(&subject).trim(), "Through the other Git");
+        assert_eq!(String::from_utf8_lossy(&f.git(&["status", "--porcelain"])), "");
+        let logged = fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = logged.lines().collect();
+        assert!(lines.len() >= 3, "{logged}");
+        for line in &lines {
+            let fields: Vec<&str> = line.splitn(4, '|').collect();
+            assert_eq!(&fields[..3], ["unset", "unset", other.to_str().unwrap()], "{line}");
+        }
+        assert!(lines.iter().any(|line| line.ends_with("|--no-pager commit -qm Through the other Git")), "{logged}");
+        assert_eq!(git_version(&wrapper, None).unwrap(), version_of(&String::from_utf8_lossy(&checked(Engine::at(&f.git).unwrap().command(&f.dir).arg("--version")).unwrap())).unwrap());
+        let bundled = Engine::at(&f.git).unwrap().command(&f.dir);
+        let exec = bundled.get_envs().find(|(name, _)| *name == "GIT_EXEC_PATH").and_then(|(_, value)| value);
+        assert_eq!(exec, Some(bundled_root.join("libexec/git-core").as_os_str()));
+    }
+
+    #[test]
+    fn a_chosen_ssh_program_replaces_the_timeouts_but_not_a_repositorys_own() {
+        assert_eq!(ssh_for(false, None).as_deref(), Some(SSH_TIMEOUTS));
+        assert_eq!(ssh_for(false, Some("/opt/ssh/bin/ssh -F work".to_owned())).as_deref(), Some("/opt/ssh/bin/ssh -F work"));
+        assert_eq!(ssh_for(true, Some("/opt/ssh/bin/ssh -F work".to_owned())), None);
+        assert_eq!(ssh_for(true, None), None);
     }
 
     #[test]

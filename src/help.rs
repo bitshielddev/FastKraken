@@ -234,6 +234,10 @@ fn about<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> gpui::Div {
         Some(Ok(version)) => format!("Bundled Git {version}"),
         Some(Err(error)) => format!("Bundled Git: {error}"),
     };
+    let git = match crate::repository::git_in_use() {
+        Some(path) => format!("{git}, not in use: Git runs from {}", path.display()),
+        None => git,
+    };
     kit::dialog("About FastKraken", 380.)
         .child(
             div()

@@ -677,6 +677,7 @@ pub enum Action {
     Tabs(crate::tabs::Action),
     Tools(crate::tools::Action),
     DiffTool(crate::difftool::Action),
+    Engine(crate::engine::Action),
     Cli(crate::cli::Action),
     CommitOptions(crate::commit_options::Action),
 }
@@ -772,6 +773,7 @@ pub struct Ui {
     pub(crate) autofetch: crate::autofetch::State,
     pub(crate) tools: crate::tools::State,
     pub(crate) difftool: crate::difftool::State,
+    pub(crate) engine: crate::engine::State,
     pub(crate) commit_options: crate::commit_options::State,
     pub(crate) syntax: crate::syntax::State,
     pub(crate) diff_options: crate::diff_options::State,
@@ -895,6 +897,7 @@ impl Ui {
             autofetch: Default::default(),
             tools: crate::tools::State::new(cx),
             difftool: crate::difftool::State::new(cx),
+            engine: crate::engine::State::new(cx),
             commit_options: crate::commit_options::State::new(cx),
             syntax: crate::syntax::State::new(settings.colour_code),
             diff_options: crate::diff_options::State::new(&settings),

@@ -28,6 +28,7 @@ mod diff_select;
 mod diff_text;
 mod discard;
 mod drag;
+mod engine;
 mod environment;
 mod explain;
 mod file_history;
@@ -1859,6 +1860,7 @@ impl Tab {
             Action::AutoFetch(action) => autofetch::dispatch(self, action, window, cx),
             Action::Tools(action) => tools::dispatch(self, action, window, cx),
             Action::DiffTool(action) => difftool::dispatch(self, action, window, cx),
+            Action::Engine(action) => engine::dispatch(self, action, window, cx),
             Action::Tabs(action) => tabs::dispatch(self, action, window, cx),
             Action::Cli(action) => cli::dispatch(self, action, window, cx),
             Action::Palette(action) => palette::dispatch(self, action, window, cx),
@@ -2103,6 +2105,7 @@ fn main() {
         view::bindings(cx);
         settings::load(state_dir, cx);
         environment::use_login_shell(settings::settings(cx).login_path, cx);
+        engine::apply_saved(cx);
         cx.on_app_quit(|cx| {
             settings::flush(cx);
             repository::stop_running();

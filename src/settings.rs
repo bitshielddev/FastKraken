@@ -76,6 +76,10 @@ pub(crate) struct Settings {
     pub(crate) file_list_sort: crate::file_list::Sort,
     #[serde(deserialize_with = "storage::lenient_list")]
     pub(crate) profiles: Vec<crate::profiles::Profile>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) git_program: crate::engine::GitProgram,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) ssh_command: String,
 }
 
 impl Settings {
@@ -131,6 +135,8 @@ impl Default for Settings {
             file_list_mode: crate::file_list::Mode::default(),
             file_list_sort: crate::file_list::Sort::default(),
             profiles: Vec::new(),
+            git_program: crate::engine::GitProgram::Bundled,
+            ssh_command: String::new(),
         }
     }
 }
@@ -424,6 +430,16 @@ pub(crate) fn on_disk(cx: &App) -> bool {
     cx.try_global::<Store>().is_some_and(|store| store.dir.is_some())
 }
 
+pub(crate) fn tell_at_startup(cx: &mut App, notice: String) {
+    if cx.has_global::<Store>() {
+        let store = cx.global_mut::<Store>();
+        store.startup_notice = Some(match store.startup_notice.take() {
+            Some(earlier) => format!("{earlier} {notice}"),
+            None => notice,
+        });
+    }
+}
+
 pub(crate) fn take_startup_notice(cx: &mut App) -> Option<String> {
     if !cx.has_global::<Store>() {
         return None;
@@ -675,6 +691,8 @@ mod tests {
                 signing_key: "/tmp/keys/work.pub".to_owned(),
                 ssh_key: "/tmp/keys/work".to_owned(),
             }],
+            git_program: crate::engine::GitProgram::Chosen(b"/opt/git/bin/git".to_vec()),
+            ssh_command: "ssh -F /tmp/ssh/config".to_owned(),
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

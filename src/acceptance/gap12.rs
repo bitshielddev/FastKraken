@@ -192,7 +192,8 @@ impl Replay<'_> {
         self.a_commit_signed_by_an_unknown_key(&signpost).await?;
         self.sign_one_commit_from_the_commit_box(&signpost).await?;
         self.generate_an_ssh_key(&signpost).await?;
-        self.open_a_conflict_in_a_merge_tool(dir).await
+        self.open_a_conflict_in_a_merge_tool(dir).await?;
+        self.use_the_systems_git(dir).await
     }
 
     async fn until_tab_total(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
@@ -1616,6 +1617,251 @@ impl Replay<'_> {
         fs::remove_file(&tool)?;
         fs::remove_file(&arguments)?;
         self.looked_for_tools(false).await?;
+        self.pass();
+        Ok(())
+    }
+
+    fn engine_looked(&mut self) -> Result<Option<crate::engine::Looked>> {
+        Ok(self.tab.read_with(self.cx, |tab, _| tab.ui.engine.looked.clone())?)
+    }
+
+    async fn looked_again(&mut self, description: &str, ready: impl Fn(&crate::engine::Looked) -> bool) -> Result<crate::engine::Looked> {
+        self.action(Action::Engine(crate::engine::Action::Look))?;
+        self.until(description, move |tab| {
+            let state = &tab.ui.engine;
+            !state.switching && !state.saving && !state.reading() && state.looked.as_ref().is_some_and(&ready)
+        })
+        .await?;
+        self.engine_looked()?.ok_or_else(|| "Preferences forgot what it read".into())
+    }
+
+    async fn switched(&mut self) -> Result<()> {
+        self.until("the Git switch checked", |tab| !tab.ui.engine.switching && !tab.ui.busy()).await
+    }
+
+    fn type_proxy(&mut self, text: &str) -> Result<()> {
+        let text = text.to_owned();
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.engine.proxy.update(cx, |field, cx| field.set_text(&text, cx)))?;
+        Ok(())
+    }
+
+    async fn proxy_saved(&mut self) -> Result<()> {
+        self.action(Action::Engine(crate::engine::Action::SaveProxy))?;
+        self.until("the proxy saved and read again", |tab| !tab.ui.engine.saving && !tab.ui.engine.reading()).await
+    }
+
+    async fn use_the_systems_git(&mut self, dir: &Path) -> Result<()> {
+        use crate::engine::{Action as E, GitProgram, MacProxy};
+        self.start("GAP1212");
+        if repository::git_in_use().is_some() {
+            return Err("The replay started with a Git other than the bundled one".into());
+        }
+        let sandbox = super::sandbox().ok_or("The replay has no sandbox")?;
+        let global = super::global_config(&sandbox);
+        let global_before = fs::read(&global)?;
+        let proxy_of = |file: &Path| -> Result<Option<String>> {
+            let output = repository::bundled_command(Path::new("/"))?.args(["config", "--file"]).arg(file).args(["--get", "http.proxy"]).output()?;
+            Ok(output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned()))
+        };
+        let root = init(dir, "Hill-git")?;
+        record(&root, "trail.txt", "Up the hill\n", "Start the trail")?;
+        git(&root, &["remote", "add", "origin", "ssh://cedar@trail.invalid/cedar/hill-git.git"])?;
+        let bundled_version = repository::bundled_version()?;
+        let bundled_bin = repository::bundled_bin().ok_or("The bundled Git was not found")?;
+        let bundled_root = bundled_bin.parent().ok_or("The bundled Git has no runtime folder")?;
+        let bin = sandbox.join("bin");
+        fs::create_dir_all(&bin)?;
+        let wrapper = bin.join("git");
+        let calls = sandbox.join("system-git.log");
+        super::gap04::script(
+            &wrapper,
+            &format!(
+                "printf '%s|%s|%s|%s|%s\\n' \"${{GIT_EXEC_PATH-unset}}\" \"${{GIT_TEMPLATE_DIR-unset}}\" \"${{PATH%%:*}}\" \"${{GIT_SSH_COMMAND-unset}}\" \"$*\" >> '{}'\nGIT_EXEC_PATH='{}' exec '{}' \"$@\"\n",
+                calls.display(),
+                bundled_root.join("libexec/git-core").display(),
+                bundled_bin.join("git").display()
+            ),
+        )?;
+        let old = sandbox.join("old-git");
+        fs::create_dir_all(&old)?;
+        let old_git = old.join("git");
+        super::gap04::script(&old_git, "echo 'git version 2.39.5 (Apple Git-154)'\n")?;
+
+        self.open(&root)?;
+        self.until("Hill-git open", |tab| tab.ui.repo == "Hill-git" && tab.ui.branch == "main").await?;
+        self.action(Action::Preferences(preferences::Action::Open(Some(preferences::Section::Git))))?;
+        let wanted = wrapper.clone();
+        let looked = self
+            .looked_again("This Mac's Git found in the sandbox", move |looked| looked.system.as_ref().is_some_and(|found| found.path == wanted))
+            .await?;
+        let system = looked.system.clone().ok_or("No system Git was found")?;
+        if system.version.as_deref() != Ok(bundled_version.as_str()) || looked.bundled.as_deref() != Ok(bundled_version.as_str()) {
+            return Err(format!("Preferences read the system Git as {:?} and the bundled one as {:?}", system.version, looked.bundled).into());
+        }
+        fs::remove_file(&calls)?;
+
+        self.action(Action::Engine(E::Use(GitProgram::System)))?;
+        self.switched().await?;
+        let (detail, _) = self.noticed(&format!("Using Git {bundled_version}")).await?;
+        if detail != format!("FastKraken now runs {} for every repository.", wrapper.display()) {
+            return Err(format!("Switching to the system Git says {detail:?}").into());
+        }
+        if repository::git_in_use().as_deref() != Some(wrapper.as_path()) {
+            return Err(format!("FastKraken runs {:?}", repository::git_in_use()).into());
+        }
+        let saved = self.cx.update(|cx| crate::settings::settings(cx).git_program)?;
+        if saved != GitProgram::System {
+            return Err(format!("The Git choice was saved as {saved:?}").into());
+        }
+        self.action(Action::Preferences(preferences::Action::Close))?;
+        let before = oid(&root, "HEAD")?;
+        self.stage_for_commit(&root, "summit.txt", "Reach the summit").await?;
+        self.key("cmd-enter")?;
+        let after = self.committed_as(&root, &before, "Reach the summit").await?;
+        git_is(&root, &["rev-parse", "HEAD^"], &format!("{before}\n"))?;
+        git_is(&root, &["status", "--porcelain"], "")?;
+        if after == before {
+            return Err("No commit was made".into());
+        }
+        let logged = fs::read_to_string(&calls)?;
+        let lines: Vec<Vec<&str>> = logged.lines().map(|line| line.splitn(5, '|').collect()).collect();
+        let bin_text = bin.to_str().ok_or("The sandbox path is not UTF-8")?;
+        if lines.is_empty() || lines.iter().any(|fields| fields.len() != 5 || fields[..3] != ["unset", "unset", bin_text]) {
+            return Err(format!("The system Git was run as {logged:?}").into());
+        }
+        if !lines.iter().any(|fields| fields[4].contains(" commit")) || !lines.iter().any(|fields| fields[4].contains(" status")) {
+            return Err(format!("The commit and the status did not go through the system Git: {logged:?}").into());
+        }
+
+        self.action(Action::Preferences(preferences::Action::Open(Some(preferences::Section::Git))))?;
+        self.action(Action::Engine(E::Use(GitProgram::of(&old_git))))?;
+        self.switched().await?;
+        let refused = format!("{} is Git 2.39.5 (Apple Git-154), and FastKraken needs Git 2.46 or newer.", old_git.display());
+        self.notice_appears(&refused).await?;
+        let problem = self.tab.read_with(self.cx, |tab, _| tab.ui.engine.problem.clone())?;
+        if problem.as_deref() != Some(refused.as_str()) {
+            return Err(format!("Preferences shows the refusal as {problem:?}").into());
+        }
+        let saved = self.cx.update(|cx| crate::settings::settings(cx).git_program)?;
+        if saved != GitProgram::System || repository::git_in_use().as_deref() != Some(wrapper.as_path()) {
+            return Err(format!("After the refusal the choice is {saved:?} running {:?}", repository::git_in_use()).into());
+        }
+
+        let ssh = bin.join("trail-ssh");
+        let dialled = sandbox.join("trail-ssh.log");
+        super::gap04::script(&ssh, &format!("printf '%s\\n' \"$*\" >> '{}'\nexit 255\n", dialled.display()))?;
+        let command = "trail-ssh -o BatchMode=yes";
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.engine.ssh.update(cx, |field, cx| field.set_text(command, cx)))?;
+        self.action(Action::Engine(E::OwnSsh))?;
+        let (detail, _) = self.noticed("SSH program set").await?;
+        if detail != format!("Git connects with {command}.") {
+            return Err(format!("Choosing the SSH program says {detail:?}").into());
+        }
+        let saved = self.cx.update(|cx| crate::settings::settings(cx).ssh_command)?;
+        if saved != command || repository::ssh_program().as_deref() != Some(command) {
+            return Err(format!("The SSH program was saved as {saved:?}").into());
+        }
+        self.action(Action::Preferences(preferences::Action::Close))?;
+        let heard = fs::read_to_string(&calls)?.lines().count();
+        self.action(Action::Sync(sync::Action::FetchRemote("origin".into())))?;
+        self.until("the fetch through trail-ssh finished", |tab| tab.ui.jobs.network.is_none() && !tab.ui.busy() && dialled.exists()).await?;
+        let dialled_text = fs::read_to_string(&dialled)?;
+        if !dialled_text.lines().any(|line| line.contains("cedar@trail.invalid")) {
+            return Err(format!("trail-ssh was run as {dialled_text:?}").into());
+        }
+        let fetches: Vec<String> = fs::read_to_string(&calls)?.lines().skip(heard).filter(|line| line.contains(" fetch")).map(str::to_owned).collect();
+        if fetches.is_empty() || fetches.iter().any(|line| line.split('|').nth(3) != Some(command)) {
+            return Err(format!("The fetch ran with the SSH program as {fetches:?}").into());
+        }
+        self.action(Action::Engine(E::SystemSsh))?;
+        if self.cx.update(|cx| crate::settings::settings(cx).ssh_command)? != "" || repository::ssh_program().is_some() {
+            return Err("Choosing the system's ssh kept the own command".into());
+        }
+
+        self.action(Action::Preferences(preferences::Action::Open(Some(preferences::Section::Git))))?;
+        self.looked_again("the proxy read", |looked| looked.proxy.as_ref().is_ok_and(|proxy| proxy.configured.is_none())).await?;
+        self.type_proxy("http://user:secret@proxy.invalid:3128")?;
+        self.proxy_saved().await?;
+        let problem = self.tab.read_with(self.cx, |tab, _| tab.ui.engine.proxy_problem.clone())?;
+        if problem.as_deref() != Some("Leave the password out: Git keeps its settings as plain text. Git asks for it when the proxy wants one.") || proxy_of(&global)?.is_some() {
+            return Err(format!("A proxy with a password was answered with {problem:?}").into());
+        }
+        self.type_proxy("http://proxy.invalid:3128")?;
+        self.proxy_saved().await?;
+        let (detail, _) = self.noticed("Proxy saved").await?;
+        if detail != "Git uses http://proxy.invalid:3128 for every repository." || proxy_of(&global)?.as_deref() != Some("http://proxy.invalid:3128") {
+            return Err(format!("Saving the proxy says {detail:?} and wrote {:?}", proxy_of(&global)?).into());
+        }
+        let looked = self
+            .looked_again("the saved proxy shown", |looked| looked.proxy.as_ref().is_ok_and(|proxy| proxy.global.as_deref() == Some("http://proxy.invalid:3128")))
+            .await?;
+        let used = looked.proxy.as_ref().ok().and_then(|proxy| proxy.used());
+        if used != Some(("http://proxy.invalid:3128".to_owned(), "Set by http.proxy in your Git settings for every repository.".to_owned())) {
+            return Err(format!("Preferences shows the proxy Git uses as {used:?}").into());
+        }
+
+        git(Path::new("/"), &["config", "--file", global.to_str().ok_or("The sandbox path is not UTF-8")?, "http.proxy", "http://other.invalid:8080"])?;
+        self.type_proxy("http://proxy.invalid:9000")?;
+        self.proxy_saved().await?;
+        let changed = "The proxy in your Git settings changed since Preferences read it. Check it and save again.";
+        self.notice_appears(changed).await?;
+        if proxy_of(&global)?.as_deref() != Some("http://other.invalid:8080") {
+            return Err(format!("The refused save wrote {:?}", proxy_of(&global)?).into());
+        }
+
+        let scutil = bin.join("scutil");
+        super::gap04::script(&scutil, "[ \"$1\" = --proxy ] || exit 2\nprintf '<dictionary> {\\n  HTTPSEnable : 1\\n  HTTPSPort : 8443\\n  HTTPSProxy : corp.invalid\\n}\\n'\n")?;
+        let looked = self
+            .looked_again("the macOS proxy read", |looked| looked.proxy.as_ref().is_ok_and(|proxy| proxy.mac != MacProxy::Direct && proxy.global.as_deref() == Some("http://other.invalid:8080")))
+            .await?;
+        let mac = looked.proxy.as_ref().ok().map(|proxy| proxy.mac.clone());
+        if mac != Some(MacProxy::Server("http://corp.invalid:8443".to_owned())) {
+            return Err(format!("The macOS proxy was read as {mac:?}").into());
+        }
+        self.action(Action::Engine(E::UseMacProxy))?;
+        self.until("the macOS proxy saved", |tab| !tab.ui.engine.saving && !tab.ui.engine.reading()).await?;
+        self.noticed("Proxy saved").await?;
+        if proxy_of(&global)?.as_deref() != Some("http://corp.invalid:8443") {
+            return Err(format!("Use it wrote {:?}", proxy_of(&global)?).into());
+        }
+        self.looked_again("the macOS proxy in use", |looked| looked.proxy.as_ref().is_ok_and(|proxy| proxy.global.as_deref() == Some("http://corp.invalid:8443"))).await?;
+        self.type_proxy("")?;
+        self.proxy_saved().await?;
+        let (detail, _) = self.noticed("Proxy removed").await?;
+        if detail != "Your Git settings no longer name a proxy." || proxy_of(&global)?.is_some() {
+            return Err(format!("Removing the proxy says {detail:?} and left {:?}", proxy_of(&global)?).into());
+        }
+        if !fs::read_to_string(&calls)?.lines().any(|line| line.contains("config set --global")) {
+            return Err("The proxy was not written through the chosen Git".into());
+        }
+
+        self.action(Action::Engine(E::Use(GitProgram::Bundled)))?;
+        self.switched().await?;
+        let (detail, _) = self.noticed("Using the bundled Git").await?;
+        if detail != format!("FastKraken runs its own Git {bundled_version} again.") || repository::git_in_use().is_some() {
+            return Err(format!("Switching back says {detail:?}").into());
+        }
+        if self.cx.update(|cx| crate::settings::settings(cx).git_program)? != GitProgram::Bundled {
+            return Err("The bundled Git was not saved as the choice".into());
+        }
+        self.action(Action::Preferences(preferences::Action::Close))?;
+        self.until("the status read again", |tab| !tab.ui.busy()).await?;
+        let commands = || -> Result<usize> { Ok(fs::read_to_string(&calls)?.lines().filter(|line| !line.ends_with("|--no-pager --version")).count()) };
+        let heard = commands()?;
+        self.action(Action::Refresh)?;
+        self.stage_for_commit(&root, "descent.txt", "Walk back down").await?;
+        if commands()? != heard {
+            return Err("The system Git still ran after switching back".into());
+        }
+        git(&root, &["reset", "-q", "--", "descent.txt"])?;
+        fs::remove_file(root.join("descent.txt"))?;
+
+        for file in [&wrapper, &ssh, &scutil, &calls, &dialled] {
+            fs::remove_file(file)?;
+        }
+        fs::remove_dir_all(&old)?;
+        fs::write(&global, &global_before)?;
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.input.update(cx, |field, cx| field.clear(cx)))?;
         self.pass();
         Ok(())
     }

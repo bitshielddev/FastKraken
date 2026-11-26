@@ -217,7 +217,7 @@ fn value(mut command: Command, key: &str) -> Result<Option<String>> {
 pub(crate) fn configured(repo: Option<&Repository>) -> Result<Configured> {
     let command = || match repo {
         Some(repo) => Ok(repo.read_command()),
-        None => repository::bundled_command(Path::new("/")),
+        None => repository::git_command(Path::new("/")),
     };
     let merge = value(command()?, "merge.tool")?;
     let diff = value(command()?, "diff.tool")?.or_else(|| merge.clone());

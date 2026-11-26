@@ -146,7 +146,7 @@ pub(crate) fn of(repo: &Repository) -> Result<Identity, String> {
 }
 
 pub(crate) fn outside() -> Result<Identity, String> {
-    let mut command = repository::bundled_command(Path::new("/"))?;
+    let mut command = repository::git_command(Path::new("/"))?;
     command.arg("--no-optional-locks");
     read(command)
 }
@@ -205,7 +205,7 @@ pub(crate) fn save(repo: Option<&Repository>, change: &Change) -> Result<(Identi
         }
         let mut command = match (change.scope, repo) {
             (Scope::Local, Some(repo)) => repo.command(),
-            _ => repository::bundled_command(Path::new("/")).map_err(Refusal::Failed)?,
+            _ => repository::git_command(Path::new("/")).map_err(Refusal::Failed)?,
         };
         command.args(["config", "set", change.scope.flag(), "--all", "--end-of-options", key, value]);
         repository::checked(&mut command).map_err(Refusal::Failed)?;

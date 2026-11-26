@@ -619,7 +619,7 @@ pub(crate) fn read_signing(repo: Option<&Repository>) -> Result<Signing, String>
     match repo {
         Some(repo) => listing(repo.read_command()),
         None => {
-            let mut command = repository::bundled_command(Path::new("/"))?;
+            let mut command = repository::git_command(Path::new("/"))?;
             command.arg("--no-optional-locks");
             listing(command)
         }
@@ -652,7 +652,7 @@ pub(crate) fn change(repo: Option<&Repository>, change: &Change) -> Result<Signi
     }
     let mut command = match (change.scope, repo) {
         (Scope::Local, Some(repo)) => repo.command(),
-        _ => repository::bundled_command(Path::new("/"))?,
+        _ => repository::git_command(Path::new("/"))?,
     };
     match &change.value {
         Some(value) => command.args(["config", "set", change.scope.flag(), "--all", "--end-of-options", change.setting.key(), value]),

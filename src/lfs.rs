@@ -247,7 +247,7 @@ pub(crate) fn helper(repo: &Repository, again: bool) -> Option<String> {
 }
 
 pub(crate) fn helper_on_path() -> bool {
-    crate::repository::bundled_command(Path::new("/")).is_ok_and(|command| cached(command, false).is_some())
+    crate::repository::git_command(Path::new("/")).is_ok_and(|command| cached(command, false).is_some())
 }
 
 fn cached(command: Command, again: bool) -> Option<String> {

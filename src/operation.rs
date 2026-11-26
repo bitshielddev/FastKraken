@@ -1214,6 +1214,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::AutoFetch(_)
         | A::Tools(_)
         | A::DiffTool(_)
+        | A::Engine(_)
         | A::Tabs(_)
         | A::Cli(_)
         | A::CommitOptions(_)

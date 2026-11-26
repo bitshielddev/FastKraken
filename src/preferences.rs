@@ -93,7 +93,6 @@ pub(crate) struct State {
     page_scroll: gpui::ScrollHandle,
     saved: Option<Result<Vec<Entry>, String>>,
     saved_ticket: u64,
-    git: Option<Result<String, String>>,
 }
 
 impl State {
@@ -111,7 +110,6 @@ impl State {
             page_scroll: gpui::ScrollHandle::new(),
             saved: None,
             saved_ticket: 0,
-            git: None,
         }
     }
 
@@ -240,12 +238,7 @@ fn show(tab: &mut Tab, section: Section, cx: &mut Context<Tab>) {
         Section::Git => {
             crate::identity::read_global(tab, cx);
             crate::profiles::read_locals(tab, cx);
-            if tab.ui.preferences.git.is_none() {
-                Tab::work(cx, crate::repository::bundled_version, |tab, version, cx| {
-                    tab.ui.preferences.git = Some(version);
-                    cx.notify();
-                });
-            }
+            crate::engine::read(tab, cx);
         }
         _ => {}
     }
@@ -614,11 +607,6 @@ fn accounts<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
 }
 
 fn git<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
-    let version = match &ui.preferences.git {
-        None => "Reading its version…".to_owned(),
-        Some(Ok(version)) => version.clone(),
-        Some(Err(error)) => error.clone(),
-    };
     div()
         .flex()
         .flex_col()
@@ -633,11 +621,7 @@ fn git<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             view::Action::Preferences(Action::ToggleLoginPath),
             cx,
         ))
-        .child(setting(
-            "Bundled Git",
-            Some("FastKraken runs its own copy of Git, whatever else is installed.".into()),
-            div().text_size(px(12.5)).text_color(rgb(TEXT_2)).child(version),
-        ))
+        .child(crate::engine::preferences(ui, cx))
 }
 
 fn repository<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
@@ -754,6 +738,7 @@ pub(crate) fn field_focused(ui: &Ui, window: &Window, cx: &App) -> bool {
                 || ui.identity.global_email.focus_handle(cx).is_focused(window)))
         || crate::tools::field_focused(ui, window, cx)
         || crate::profiles::field_focused(ui, window, cx)
+        || crate::engine::field_focused(ui, window, cx)
         || crate::diff_text::field_focused(ui, window, cx)
 }
 

@@ -193,7 +193,7 @@ pub(crate) fn create(request: &Request) -> Result<Created, String> {
         },
         Mode::Existing => false,
     };
-    let result = repository::bundled_command(&folder).and_then(|mut command| {
+    let result = repository::git_command(&folder).and_then(|mut command| {
         command.arg("init").arg(format!("--initial-branch={}", request.branch)).arg("--").arg(&folder);
         repository::checked(&mut command)
     });
@@ -235,7 +235,7 @@ fn readme(root: &Path, branch: &str) -> Result<(), String> {
 
 pub(crate) fn identity_problem(root: &Path) -> Option<String> {
     let known = |variable: &str| {
-        repository::bundled_command(root)
+        repository::git_command(root)
             .and_then(|mut command| {
                 command.args(["-c", "user.useConfigOnly=true", "var", variable]);
                 repository::run(&mut command).map_err(|error| error.to_string())
@@ -249,7 +249,7 @@ pub(crate) fn identity_problem(root: &Path) -> Option<String> {
 
 pub(crate) fn first_commit(root: &Path, branch: &str) -> Result<(), String> {
     let git = |args: &[&str]| {
-        repository::bundled_command(root).map(|mut command| {
+        repository::git_command(root).map(|mut command| {
             command.args(args);
             command
         })
@@ -286,7 +286,7 @@ impl Unopenable {
             return Self::Other(error);
         }
         let folder = if path.is_file() { path.parent().unwrap_or(path) } else { path };
-        let asked = repository::bundled_command(folder).and_then(|mut command| {
+        let asked = repository::git_command(folder).and_then(|mut command| {
             command.args(["--no-optional-locks", "rev-parse", "--is-bare-repository", "--is-inside-git-dir"]);
             repository::checked(&mut command)
         });
