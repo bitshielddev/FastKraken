@@ -304,13 +304,13 @@ impl Repository {
             [] => {}
             [one] => {
                 return Err(format!(
-                    "{} changed since the discard, so Restore would overwrite it. Commit, stash or discard it first.",
+                    "{} changed since the discard, so Undo would overwrite it. Commit, stash or discard it first.",
                     one.display()
                 ));
             }
             [first, rest @ ..] => {
                 return Err(format!(
-                    "{} and {} changed since the discard, so Restore would overwrite them. Commit, stash or discard them first.",
+                    "{} and {} changed since the discard, so Undo would overwrite them. Commit, stash or discard them first.",
                     first.display(),
                     files(rest.len()).replace("file", "other file")
                 ));

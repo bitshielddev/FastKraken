@@ -1322,7 +1322,7 @@ impl Replay<'_> {
         let expected = (
             Tone::Success,
             format!("2 commits were rewritten. feature/ridge is at {}.", notice::short(&head)),
-            vec!["Force push…".to_owned()],
+            vec!["Force push…".to_owned(), "Undo".to_owned()],
         );
         if said.as_ref() != Some(&expected) {
             return Err(format!("After the rebase the notice is {said:?}").into());

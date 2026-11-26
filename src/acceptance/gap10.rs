@@ -77,6 +77,10 @@ impl Replay<'_> {
             .await?;
         let committed = oid(&root, "main")?;
         git_is(&root, &["log", "-1", "--format=%s", "main"], "Fix the date parser\n")?;
+        let said = self.settled_notice("Changes committed").await?;
+        if said.3 != ["Undo"] {
+            return Err(format!("The commit notice reads {said:?}").into());
+        }
         let rows = self.menu_rows_now()?;
         if rows[0] != ("Undo Commit 'Fix the date parser'".to_owned(), true) || rows[1] != ("Redo".to_owned(), false) {
             return Err(format!("After the commit the Edit menu reads {rows:?}").into());

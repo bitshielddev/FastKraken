@@ -400,7 +400,7 @@ impl Replay<'_> {
         .await?;
         let said = self.said()?;
         let detail = "origin/feature/map keeps its name. Push trail/map to publish it under the new name.";
-        let expected = (Tone::Success, "Renamed feature/map to trail/map".to_owned(), detail.to_owned(), Vec::new());
+        let expected = (Tone::Success, "Renamed feature/map to trail/map".to_owned(), detail.to_owned(), vec!["Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("Renaming feature/map said {said:?}").into());
         }
@@ -477,7 +477,7 @@ impl Replay<'_> {
         })
         .await?;
         let said = self.said()?;
-        let expected = (Tone::Success, "Switched to feature/bridge".to_owned(), "A new branch that tracks origin/feature/bridge.".to_owned(), Vec::new());
+        let expected = (Tone::Success, "Switched to feature/bridge".to_owned(), "A new branch that tracks origin/feature/bridge.".to_owned(), vec!["Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("Checking out origin/feature/bridge said {said:?}").into());
         }
@@ -731,7 +731,7 @@ impl Replay<'_> {
         .await?;
         let said = self.said()?;
         let detail = format!("You are not on a branch. HEAD is at {}.", notice::short(&base));
-        let expected = (Tone::Success, "Checked out the commit at v1.0".to_owned(), detail, vec!["Create branch here…".to_owned()]);
+        let expected = (Tone::Success, "Checked out the commit at v1.0".to_owned(), detail, vec!["Create branch here…".to_owned(), "Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("Checking out v1.0 said {said:?}").into());
         }
@@ -789,7 +789,7 @@ impl Replay<'_> {
         .await?;
         let said = self.said()?;
         let title = format!("Checked out {}", notice::short(&tip));
-        let expected = (Tone::Success, title, "You are not on a branch.".to_owned(), vec!["Create branch here…".to_owned()]);
+        let expected = (Tone::Success, title, "You are not on a branch.".to_owned(), vec!["Create branch here…".to_owned(), "Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("Checking out main's tip said {said:?}").into());
         }
@@ -965,7 +965,7 @@ impl Replay<'_> {
         let shown = self.reset_asked("Reset main to origin/main?").await?;
         let lines = vec![
             format!("origin/main is at {short}  Start the quarry"),
-            "1 commit leaves main. Undo, in the notice that follows, brings them back.".to_owned(),
+            "1 commit leaves main. Undo, in the notice that follows, brings it back.".to_owned(),
             format!("{}  Cut a wrong stone", notice::short(&wrong)),
             "Your untracked file is kept.".to_owned(),
         ];
@@ -1057,7 +1057,7 @@ impl Replay<'_> {
         .await?;
         let said = self.said()?;
         let detail = "2 commits left main. Their changes are in your files, unstaged.".to_owned();
-        let expected = (Tone::Success, format!("Reset main to {short}"), detail, Vec::new());
+        let expected = (Tone::Success, format!("Reset main to {short}"), detail, vec!["Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("The mixed reset said {said:?}").into());
         }
@@ -1092,7 +1092,8 @@ impl Replay<'_> {
         })
         .await?;
         let said = self.said()?;
-        let expected = (Tone::Success, title.to_owned(), detail.to_owned(), Vec::new());
+        let offers = if title == "Already up to date" { Vec::new() } else { vec!["Undo".to_owned()] };
+        let expected = (Tone::Success, title.to_owned(), detail.to_owned(), offers);
         if said.as_ref() != Some(&expected) {
             return Err(format!("The merge said {said:?}").into());
         }
@@ -1336,7 +1337,7 @@ impl Replay<'_> {
         })
         .await?;
         let said = self.said()?;
-        let expected = (Tone::Success, "Annotated base-camp".to_owned(), format!("It still marks {}.", notice::short(&camp)), Vec::new());
+        let expected = (Tone::Success, "Annotated base-camp".to_owned(), format!("It still marks {}.", notice::short(&camp)), vec!["Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("Annotating base-camp said {said:?}").into());
         }
@@ -1748,7 +1749,7 @@ impl Replay<'_> {
         .await?;
         let said = self.said()?;
         let detail = format!("2 commits from origin/main. Now at {}.", notice::short(&ahead));
-        let expected = (Tone::Success, "Fast-forwarded main".to_owned(), detail, Vec::new());
+        let expected = (Tone::Success, "Fast-forwarded main".to_owned(), detail, vec!["Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("Fast-forwarding said {said:?}").into());
         }
@@ -1773,7 +1774,7 @@ impl Replay<'_> {
         self.choose(&branch, "branch.pull")?;
         self.until("main pulled", |tab| !tab.ui.busy() && tab.ui.notices.newest().is_some_and(|n| n.title == "Pulled main")).await?;
         let said = self.said()?;
-        let expected = (Tone::Success, "Pulled main".to_owned(), "Fast-forwarded main by 1 commit from origin/main.".to_owned(), Vec::new());
+        let expected = (Tone::Success, "Pulled main".to_owned(), "Fast-forwarded main by 1 commit from origin/main.".to_owned(), vec!["Undo".to_owned()]);
         if said.as_ref() != Some(&expected) {
             return Err(format!("Pulling main said {said:?}").into());
         }

@@ -762,6 +762,7 @@ pub(crate) fn record(
         let undo = ("Undo".into(), view::Action::Journal(Action::Undo(Some(id))));
         match result {
             Ok(outcome) if outcome.journal.offered => outcome.actions.insert(0, undo),
+            Ok(outcome) => outcome.actions.push(undo),
             Err(failure) if failure.journal.offered => failure.actions.insert(0, undo),
             _ => {}
         }
@@ -982,6 +983,7 @@ pub(crate) fn replay(repo: &Repository, entry: &Entry, way: Way) -> Result<Repla
         Way::Undo => (0..entry.changes.len()).rev().collect(),
         Way::Redo => (0..entry.changes.len()).collect(),
     };
+    let mut applied = Vec::new();
     for (step, index) in order.into_iter().enumerate() {
         let change = entry.changes[index].clone();
         let result = match way {
@@ -994,8 +996,10 @@ pub(crate) fn replay(repo: &Repository, entry: &Entry, way: Way) -> Result<Repla
                     entry.changes[index] = replaced;
                 }
                 said.extend(sentence);
+                applied.push(index);
             }
             Err(failure) if step == 0 => return Err(failure),
+            Err(failure) if put_back(repo, &entry, way, &applied) => return Err(failure),
             Err(failure) => {
                 let _ = keep(repo, entry.id, &entry.objects());
                 let text = format!(
@@ -1013,6 +1017,20 @@ pub(crate) fn replay(repo: &Repository, entry: &Entry, way: Way) -> Result<Repla
         keep(repo, entry.id, &entry.objects())?;
     }
     Ok(Replayed { entry, detail: said.join(" ") })
+}
+
+fn put_back(repo: &Repository, entry: &Entry, way: Way, applied: &[usize]) -> bool {
+    let restored_files = applied.iter().any(|&index| matches!(entry.changes[index], Change::Discard { .. }));
+    if way == Way::Undo && restored_files {
+        return false;
+    }
+    applied.iter().rev().all(|&index| {
+        let change = &entry.changes[index];
+        match way {
+            Way::Undo => redo_one(repo, change).is_ok(),
+            Way::Redo => undo_one(repo, entry, change).is_ok(),
+        }
+    })
 }
 
 fn branch_name(reference: &str) -> Option<&str> {
@@ -1394,6 +1412,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_undo_stopped_by_an_edit_in_the_way_moves_nothing_and_can_be_tried_again() {
+        let f = base();
+        let start = oid(&f, "HEAD");
+        let tip = commit(&f, "camp.txt", "Camp\n", "Pitch the camp");
+        write(&f, "trail.txt", "Trail, edited\n");
+        let mut journal = Journal::new();
+        let saved = f.repo.save_tracked().unwrap().unwrap();
+        let report = Report {
+            mode: Some(Mode::Keep),
+            changes: vec![Change::Discard { saved, discarded: Discarded::Tracked }],
+            ..Report::default()
+        };
+        journal.run(&f, report, |f| {
+            f.git(&["reset", "-q", "--hard", &start]);
+        });
+        write(&f, "trail.txt", "Trail, edited again\n");
+        let before = snapshot(&f);
+        let refused = journal.undo(&f).unwrap_err();
+        assert!(autostash::in_the_way(&refused), "{}", refused.text);
+        assert_eq!(snapshot(&f), before);
+        assert_eq!(oid(&f, "HEAD"), start);
+        f.git(&["checkout", "--", "trail.txt"]);
+        journal.undo(&f).unwrap();
+        assert_eq!(oid(&f, "HEAD"), tip);
+        assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "Trail, edited\n");
+    }
+
+    #[test]
     fn a_branch_switch_is_undone_by_switching_back() {
         let f = base();
         f.git(&["branch", "ridge"]);
@@ -1530,7 +1576,10 @@ pub(crate) mod tests {
         assert_eq!(f.git(&["status", "--porcelain=v1"]), b"");
         write(&f, "lake.txt", "Lake, edited elsewhere\n");
         let refused = journal.undo(&f).unwrap_err();
-        assert!(refused.text.contains("lake.txt changed since the discard"), "{}", refused.text);
+        assert_eq!(
+            refused.text,
+            "lake.txt changed since the discard, so Undo would overwrite it. Commit, stash or discard it first."
+        );
         assert_eq!(fs::read_to_string(f.dir.join("trail.txt")).unwrap(), "Trail\n");
     }
 

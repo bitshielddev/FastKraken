@@ -489,9 +489,10 @@ fn spec(ask: &Ask) -> Spec {
                 0 => String::new(),
                 n => format!(" Changes in {} will be discarded.", files(n)),
             };
+            let back = if ask.worktree.changed == 0 && ask.leaving == 1 { "it" } else { "them" };
             let mut spec = Spec::new(title, confirm)
                 .line(commit)
-                .line(format!("{}{discarded} Undo, in the notice that follows, brings them back.", ask.leaving_line()));
+                .line(format!("{}{discarded} Undo, in the notice that follows, brings {back} back.", ask.leaving_line()));
             for (short, subject) in &ask.listed {
                 spec = spec.line(format!("{short}  {subject}"));
             }
@@ -1103,7 +1104,7 @@ mod tests {
         let shown = spec(&ask);
         assert_eq!(shown.title, "Reset main to origin/main?");
         assert_eq!(shown.confirm.as_ref(), "Reset to origin/main");
-        assert_eq!(shown.lines[..2], ["origin/main is at bbbbbbb  Start notebook", "1 commit leaves main. Undo, in the notice that follows, brings them back."]);
+        assert_eq!(shown.lines[..2], ["origin/main is at bbbbbbb  Start notebook", "1 commit leaves main. Undo, in the notice that follows, brings it back."]);
         ask.operation = Operation::SoftReset;
         ask.upstream = None;
         ask.target = head.clone();
