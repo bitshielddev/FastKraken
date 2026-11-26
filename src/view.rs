@@ -629,6 +629,7 @@ pub enum Action {
     Rewrite(crate::rewrite::Action),
     RebaseEditor(crate::rebase_editor::Action),
     Autostash(crate::autostash::Action),
+    Appearance(crate::appearance::Action),
     Explain(crate::explain::Action),
     Select(Selection),
     More,

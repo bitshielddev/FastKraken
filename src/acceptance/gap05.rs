@@ -820,6 +820,7 @@ impl Replay<'_> {
             || listed
                 != [
                     Section::General,
+                    Section::Appearance,
                     Section::Accounts,
                     Section::Git,
                     Section::Signing,
@@ -836,11 +837,16 @@ impl Replay<'_> {
             return Err(format!("Preferences opened with the branch {branch:?} and the sections {listed:?}").into());
         }
         self.key("down")?;
+        if self.preferences_at()? != Some(Section::Appearance) {
+            return Err(format!("Down from General went to {:?}", self.preferences_at()?).into());
+        }
+        self.key("down")?;
         self.until("Accounts with nothing saved", |tab| {
             tab.ui.preferences.section() == Section::Accounts
                 && tab.ui.preferences.saved().is_some_and(|saved| saved.as_ref().is_ok_and(Vec::is_empty))
         })
         .await?;
+        self.key("up")?;
         self.key("up")?;
         if self.preferences_at()? != Some(Section::General) {
             return Err(format!("Up went to {:?}", self.preferences_at()?).into());
@@ -934,6 +940,7 @@ impl Replay<'_> {
             return Err(format!("With no repository open the prune tick left {ticked:?}, from {prune}").into());
         }
         self.action(Action::Sync(crate::sync::Action::TogglePrune))?;
+        self.key("down")?;
         self.key("down")?;
         self.until("Accounts read on the start screen", |tab| {
             tab.ui.preferences.section() == Section::Accounts

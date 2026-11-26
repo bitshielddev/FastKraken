@@ -1,5 +1,6 @@
 mod acceptance;
 mod activity;
+mod appearance;
 mod address;
 mod askpass;
 mod assets;
@@ -1735,6 +1736,7 @@ impl Tab {
             Action::Rewrite(action) => rewrite::dispatch(self, action, window, cx),
             Action::RebaseEditor(action) => rebase_editor::dispatch(self, action, window, cx),
             Action::Autostash(action) => autostash::dispatch(self, action, window, cx),
+            Action::Appearance(action) => appearance::dispatch(self, action, window, cx),
             Action::Explain(action) => explain::dispatch(self, action, window, cx),
             Action::Stash(action) => stash::dispatch(self, action, window, cx),
             Action::Sync(action) => sync::dispatch(self, action, window, cx),
@@ -2077,7 +2079,7 @@ fn main() {
     };
     if path.as_deref() == Some("--help".as_ref()) {
         println!(
-            "fastkraken [repository]           Open the repository, in a tab of the FastKraken already running\nfastkraken                        Through the installed command: open the folder you are in\nfastkraken --acceptance-wave-1    Replay the first 16 core Git scenarios in temporary repositories\nfastkraken --acceptance-wave-2    Replay 13 stash, merge, reset and revert scenarios\nfastkraken --acceptance-wave-3    Replay five sync scenarios against local bare remotes\nfastkraken --acceptance-gap-NN    Run additional acceptance suite NN (01 to 12)\nfastkraken --measure repository   Measure a read-only walkthrough\nfastkraken --measure-edits        Measure staging and committing in a new temporary repo\nAppend -offscreen to a measure option to time native scene builds without display presentation."
+            "fastkraken [repository]           Open the repository, in a tab of the FastKraken already running\nfastkraken                        Through the installed command: open the folder you are in\nfastkraken --acceptance-wave-1    Replay the first 16 core Git scenarios in temporary repositories\nfastkraken --acceptance-wave-2    Replay 13 stash, merge, reset and revert scenarios\nfastkraken --acceptance-wave-3    Replay five sync scenarios against local bare remotes\nfastkraken --acceptance-gap-NN    Run additional acceptance suite NN (01 to 13)\nfastkraken --measure repository   Measure a read-only walkthrough\nfastkraken --measure-edits        Measure staging and committing in a new temporary repo\nAppend -offscreen to a measure option to time native scene builds without display presentation."
         );
         return;
     }
@@ -2195,6 +2197,7 @@ mod tests {
         assert_eq!(unknown(&["--acceptance-gap-01"]), None);
         assert_eq!(unknown(&["--acceptance-gap-11"]), None);
         assert_eq!(unknown(&["--acceptance-gap-12"]), None);
+        assert_eq!(unknown(&["--acceptance-gap-13"]), None);
     }
 
     #[test]

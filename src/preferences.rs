@@ -19,13 +19,14 @@ pub(crate) const COMMANDS: &[Command] = &[Command::new(
     |_, target, _| if *target == Target::Repo { Availability::Enabled } else { Availability::Hidden },
     |_, _| Some(view::Action::Preferences(Action::Open(None))),
 )
-.words(&["settings", "options", "configure", "accounts", "general"])
+.words(&["settings", "options", "configure", "accounts", "general", "appearance"])
 .keys("cmd-,")
 .bar(Bar::App)];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Section {
     General,
+    Appearance,
     Accounts,
     Git,
     Signing,
@@ -41,6 +42,7 @@ impl Section {
     fn title(self, ui: &Ui) -> String {
         match self {
             Section::General => "General".into(),
+            Section::Appearance => "Appearance".into(),
             Section::Accounts => "Accounts".into(),
             Section::Git => "Git".into(),
             Section::Signing => "Signing".into(),
@@ -57,6 +59,7 @@ impl Section {
 pub(crate) fn sections(repository: bool) -> Vec<Section> {
     let mut listed = vec![
         Section::General,
+        Section::Appearance,
         Section::Accounts,
         Section::Git,
         Section::Signing,
@@ -364,6 +367,7 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         section => {
             let body = match section {
                 Section::General => general(ui, cx),
+                Section::Appearance => crate::appearance::preferences(cx),
                 Section::Accounts => accounts(app, cx),
                 Section::Git => git(ui, cx),
                 Section::Signing => crate::keys::signing_page(ui, cx),
@@ -754,6 +758,7 @@ mod tests {
             sections(false),
             [
                 Section::General,
+                Section::Appearance,
                 Section::Accounts,
                 Section::Git,
                 Section::Signing,
@@ -765,14 +770,15 @@ mod tests {
             ]
         );
         assert_eq!(sections(true).last(), Some(&Section::Repository));
-        assert_eq!(sections(true).len(), 10);
+        assert_eq!(sections(true).len(), 11);
     }
 
     #[test]
     fn movement_keys_step_through_the_sections_and_stop_at_the_ends() {
         let listed = sections(true);
-        assert_eq!(moved(&listed, Section::General, N::Step(1)), Some(Section::Accounts));
-        assert_eq!(moved(&listed, Section::Accounts, N::Step(-1)), Some(Section::General));
+        assert_eq!(moved(&listed, Section::General, N::Step(1)), Some(Section::Appearance));
+        assert_eq!(moved(&listed, Section::Appearance, N::Step(1)), Some(Section::Accounts));
+        assert_eq!(moved(&listed, Section::Accounts, N::Step(-1)), Some(Section::Appearance));
         assert_eq!(moved(&listed, Section::General, N::Step(-1)), None);
         assert_eq!(moved(&listed, Section::Repository, N::Step(1)), None);
         assert_eq!(moved(&listed, Section::Git, N::Step(1)), Some(Section::Signing));

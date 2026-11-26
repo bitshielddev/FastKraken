@@ -1218,6 +1218,7 @@ pub(crate) fn disturbs(action: &view::Action) -> bool {
         | A::Init(_)
         | A::Start(_)
         | A::Preferences(_)
+        | A::Appearance(_)
         | A::Identity(_)
         | A::AutoFetch(_)
         | A::Tools(_)

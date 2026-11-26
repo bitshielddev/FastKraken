@@ -352,6 +352,8 @@ impl Workspace {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>, bench: Option<perf::Run>) -> Self {
         cx.set_global(Strip { tabs: Vec::new(), front: 0, desk: Some((window.window_handle(), cx.weak_entity())) });
         let mut desk = Self { tabs: Vec::new(), watching: Vec::new(), front: 0, saved: None };
+        cx.observe_window_appearance(window, |_, window, cx| crate::appearance::system_changed(window.appearance(), cx))
+            .detach();
         desk.add(bench, cx);
         desk
     }

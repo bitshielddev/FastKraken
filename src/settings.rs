@@ -80,6 +80,8 @@ pub(crate) struct Settings {
     pub(crate) git_program: crate::engine::GitProgram,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) ssh_command: String,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) appearance: crate::appearance::Choice,
 }
 
 impl Settings {
@@ -137,6 +139,7 @@ impl Default for Settings {
             profiles: Vec::new(),
             git_program: crate::engine::GitProgram::Bundled,
             ssh_command: String::new(),
+            appearance: crate::appearance::Choice::default(),
         }
     }
 }
@@ -402,6 +405,7 @@ pub(crate) fn load(dir: Option<PathBuf>, cx: &mut App) {
         written,
         startup_notice: notice,
     });
+    crate::appearance::start(cx);
 }
 
 fn read(dir: &Path) -> (Settings, Memory, Option<String>) {
@@ -693,6 +697,7 @@ mod tests {
             }],
             git_program: crate::engine::GitProgram::Chosen(b"/opt/git/bin/git".to_vec()),
             ssh_command: "ssh -F /tmp/ssh/config".to_owned(),
+            appearance: crate::appearance::Choice::System,
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

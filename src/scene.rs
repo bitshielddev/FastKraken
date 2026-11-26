@@ -258,6 +258,7 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
         "preferences" => {
             use crate::preferences::{Action as P, Section};
             let section = match argument {
+                "appearance" => Section::Appearance,
                 "accounts" => Section::Accounts,
                 "git" => Section::Git,
                 "diff" => Section::Diff,
@@ -267,6 +268,15 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
                 _ => Section::General,
             };
             Some(Action::Preferences(P::Open(Some(section))))
+        }
+        "theme" => {
+            use crate::appearance::{Action as Appearance, Choice};
+            let choice = match argument {
+                "light" => Choice::Light,
+                "system" => Choice::System,
+                _ => Choice::Dark,
+            };
+            Some(Action::Appearance(Appearance::Choose(choice)))
         }
         "shortcuts" => {
             tab.dispatch(Action::Help(crate::help::Action::Shortcuts), window, cx);

@@ -310,6 +310,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::palette::COMMANDS,
         crate::help::COMMANDS,
         crate::preferences::COMMANDS,
+        crate::appearance::COMMANDS,
         crate::identity::COMMANDS,
         crate::keys::COMMANDS,
         crate::credentials::COMMANDS,

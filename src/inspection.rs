@@ -22,8 +22,8 @@ pub(crate) struct Message {
 
 impl Message {
     pub(crate) fn new(cx: &mut Context<Tab>) -> Self {
-        let subject = Look { size: 14., line: 20., weight: FontWeight::SEMIBOLD, color: palette().text };
-        let body = Look { size: TEXT_SMALL, line: 18., weight: FontWeight::NORMAL, color: palette().text_2 };
+        let subject = Look { size: 14., line: 20., weight: FontWeight::SEMIBOLD, secondary: false };
+        let body = Look { size: TEXT_SMALL, line: 18., weight: FontWeight::NORMAL, secondary: true };
         Self {
             subject: cx.new(|cx| CommitInput::reader(cx, "Commit subject", subject)),
             body: cx.new(|cx| CommitInput::reader(cx, "Commit message", body)),

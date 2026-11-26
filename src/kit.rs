@@ -362,7 +362,7 @@ impl Btn {
 
     fn base(self) -> Stateful<Div> {
         let (fg, bg, border, hover) = match self.tone {
-            Tone::Primary => (palette().accent_ink, rgb(palette().accent), rgb(palette().accent), rgb(palette().accent_hover)),
+            Tone::Primary => (palette().accent_ink, rgb(palette().accent_fill), rgb(palette().accent), rgb(palette().accent_fill_hover)),
             Tone::Normal if self.selected => (palette().text, rgb(palette().selected), rgb(palette().line_strong), rgb(palette().selected)),
             Tone::Normal => (palette().text, rgb(palette().raised), rgb(palette().line_strong), rgb(palette().hover)),
             Tone::Ghost if self.selected => (palette().text, rgb(palette().selected), clear(), rgb(palette().selected)),
@@ -641,7 +641,7 @@ pub fn chip(kind: Chip, text: impl Into<SharedString>) -> Div {
 
 pub fn chip_marked(kind: Chip, text: impl Into<SharedString>, marks: &[&'static str]) -> Div {
     let (fg, bg, lead) = match kind {
-        Chip::Head => (palette().accent_ink, rgb(palette().accent), Some("check")),
+        Chip::Head => (palette().accent_ink, rgb(palette().accent_fill), Some("check")),
         Chip::Local => (palette().accent, soft(palette().accent, 0x24), None),
         Chip::Remote => (palette().remote, soft(palette().remote, 0x26), Some("cloud")),
         Chip::Tag => (palette().tag, soft(palette().tag, 0x26), Some("tag")),
@@ -730,7 +730,7 @@ pub fn moved_from(status: &str, from: &std::path::Path) -> String {
 
 pub struct Avatar {
     initials: SharedString,
-    color: u32,
+    tint: usize,
     size: Pixels,
     text: Pixels,
 }
@@ -748,7 +748,6 @@ impl Avatar {
 }
 
 pub fn avatar(name: &str) -> Avatar {
-    const COLORS: [u32; 6] = [0x7fb3e6, 0xd9a55a, 0xa898f0, 0x8fd0a0, 0xe88fb0, 0x6fc9c9];
     let hash = name
         .bytes()
         .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
@@ -758,7 +757,7 @@ pub fn avatar(name: &str) -> Avatar {
         .take(2)
         .flat_map(char::to_uppercase)
         .collect();
-    Avatar { initials: initials.into(), color: COLORS[hash as usize % COLORS.len()], size: px(16.), text: px(8.) }
+    Avatar { initials: initials.into(), tint: hash as usize, size: px(16.), text: px(8.) }
 }
 
 impl IntoElement for Avatar {
@@ -806,7 +805,8 @@ impl Element for Avatar {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.paint_quad(gpui::fill(bounds, rgb(self.color)).corner_radii(self.size / 2.));
+        let avatars = palette().avatars;
+        window.paint_quad(gpui::fill(bounds, rgb(avatars[self.tint % avatars.len()])).corner_radii(self.size / 2.));
         if self.initials.is_empty() {
             return;
         }
@@ -815,7 +815,7 @@ impl Element for Avatar {
         let run = TextRun {
             len: self.initials.len(),
             font,
-            color: rgb(palette().canvas).into(),
+            color: rgb(palette().avatar_ink).into(),
             background_color: None,
             underline: None,
             strikethrough: None,
@@ -841,7 +841,7 @@ pub fn checkbox(checked: bool) -> Div {
         .rounded(px(3.5))
         .border_1()
         .when(checked, |d| {
-            d.bg(rgb(palette().accent))
+            d.bg(rgb(palette().accent_fill))
                 .border_color(rgb(palette().accent))
                 .child(icon("check").size(px(10.)).text_color(rgb(palette().accent_ink)))
         })
@@ -1008,7 +1008,7 @@ pub fn segmented() -> Div {
         .rounded(px(RADIUS))
         .border_1()
         .border_color(rgb(palette().line))
-        .bg(rgb(palette().canvas))
+        .bg(rgb(palette().well))
 }
 
 pub fn segment<T: Desk>(

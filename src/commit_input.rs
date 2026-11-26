@@ -99,7 +99,7 @@ pub(crate) struct Look {
     pub(crate) size: f32,
     pub(crate) line: f32,
     pub(crate) weight: FontWeight,
-    pub(crate) color: u32,
+    pub(crate) secondary: bool,
 }
 
 pub(crate) fn links(text: &str) -> Vec<Range<usize>> {
@@ -727,7 +727,7 @@ impl CommitInput {
         let text_system = window.text_system();
         let font_size = px(look.map_or(12.5, |look| look.size));
         let line_height = px(look.map_or(LINE_HEIGHT, |look| look.line));
-        let ink = look.map_or(palette().text, |look| look.color);
+        let ink = if look.is_some_and(|look| look.secondary) { palette().text_2 } else { palette().text };
         let run = |len, color| TextRun {
             len,
             font: font.clone(),
