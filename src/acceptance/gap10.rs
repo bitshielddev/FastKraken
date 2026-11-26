@@ -452,7 +452,7 @@ impl Replay<'_> {
         let third = oid(&root, "main~2")?;
         let untouched = (oid(&root, "main~3")?, oid(&root, "main~4")?);
         self.open(&root)?;
-        self.until("Reword-trail open with five commits", |tab| tab.ui.repo == "Reword-trail" && tab.ui.history.len() == 5).await?;
+        self.until("Reword-trail open with five commits", |tab| tab.ui.repo == "Reword-trail" && tab.ui.history.len() == 5 && crate::rebase::on_branch(&tab.ui)).await?;
         self.select_commit(&third).await?;
         let button = self.tab.read_with(self.cx, |tab, cx| {
             rewrite::offered(&tab.ui, "commit.reword", std::slice::from_ref(&third), cx)
@@ -518,7 +518,7 @@ impl Replay<'_> {
         record(&root, "lake.txt", "Cold\n", "Swim in the lake")?;
         let tip = oid(&root, "HEAD")?;
         self.open(&root)?;
-        self.until("Drop-trail open with four commits", |tab| tab.ui.repo == "Drop-trail" && tab.ui.history.len() == 4).await?;
+        self.until("Drop-trail open with four commits", |tab| tab.ui.repo == "Drop-trail" && tab.ui.history.len() == 4 && crate::rebase::on_branch(&tab.ui)).await?;
         self.select_commit(&ridge).await?;
         self.choose(&Target::Commit(ridge.clone()), "commit.drop")?;
         let short = notice::short(&ridge).to_owned();
@@ -572,7 +572,7 @@ impl Replay<'_> {
         record(&root, "summit.txt", "Flag\n", "Reach the summit")?;
         let summit = git(&root, &["rev-parse", "main^{tree}"])?;
         self.open(&root)?;
-        self.until("Squash-trail open with five commits", |tab| tab.ui.repo == "Squash-trail" && tab.ui.history.len() == 5).await?;
+        self.until("Squash-trail open with five commits", |tab| tab.ui.repo == "Squash-trail" && tab.ui.history.len() == 5 && crate::rebase::on_branch(&tab.ui)).await?;
         self.action(Action::Select(Selection::Commit(lake.clone())))?;
         self.until("Swim in the lake selected", |tab| tab.ui.selection == Some(Selection::Commit(lake.clone()))).await?;
         for oid in [&ridge, &map] {
