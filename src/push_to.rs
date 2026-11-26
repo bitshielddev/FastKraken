@@ -154,6 +154,7 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<
 }
 
 fn push(tab: &mut Tab, branch: OsString, tip: String, remote: String, destination: OsString, cx: &mut Context<Tab>) {
+    let offer = (destination == branch).then(|| crate::pull_request::offer(&tab.ui, &branch)).flatten();
     tab.run_network(
         cx,
         crate::jobs::Spec::push(Some(remote.clone())),
@@ -162,7 +163,7 @@ fn push(tab: &mut Tab, branch: OsString, tip: String, remote: String, destinatio
         false,
         move |repo| {
             send(&repo, &branch, &tip, &remote, &destination)
-                .map(|sent| sent.outcome(&branch, &remote, &destination))
+                .map(|sent| crate::pull_request::offered(sent.outcome(&branch, &remote, &destination), offer))
                 .map_err(|why| Failure::from(format!("Push Failed — {why}")))
         },
         |_, _| {},
@@ -216,7 +217,7 @@ pub(crate) enum Sent {
 }
 
 impl Sent {
-    fn outcome(self, branch: &OsStr, remote: &str, destination: &OsStr) -> Outcome {
+    pub(crate) fn outcome(self, branch: &OsStr, remote: &str, destination: &OsStr) -> Outcome {
         let (shown, there) = (branch.to_string_lossy(), format!("{remote}/{}", destination.to_string_lossy()));
         match self {
             Sent::Created => Outcome::titled(format!("Pushed {shown}"), format!("Created {there}.")),
@@ -242,6 +243,17 @@ fn expect_remote(repo: &Repository, remote: &str) -> Result<(), String> {
 }
 
 pub(crate) fn send(repo: &Repository, branch: &OsStr, tip: &str, remote: &str, destination: &OsStr) -> Result<Sent, String> {
+    send_tracked(repo, branch, tip, remote, destination, false)
+}
+
+pub(crate) fn send_tracked(
+    repo: &Repository,
+    branch: &OsStr,
+    tip: &str,
+    remote: &str,
+    destination: &OsStr,
+    set_upstream: bool,
+) -> Result<Sent, String> {
     plain(branch)?;
     validate_oid(tip)?;
     remotes::validate_name(remote)?;
@@ -261,7 +273,7 @@ pub(crate) fn send(repo: &Repository, branch: &OsStr, tip: &str, remote: &str, d
     let mut tracking = OsString::from(format!("refs/remotes/{remote}/"));
     tracking.push(destination);
     let before = repo.resolve(&tracking).ok();
-    let request = PushRequest { remote: remote.into(), refspecs: vec![refspec], lease: None, set_upstream: false };
+    let request = PushRequest { remote: remote.into(), refspecs: vec![refspec], lease: None, set_upstream };
     let shown = branch.to_string_lossy();
     let report = remotes::push(repo, &request, |repo| {
         expect_remote(repo, remote)?;

@@ -1530,7 +1530,7 @@ impl Replay<'_> {
         Ok(())
     }
 
-    async fn dropped(&mut self, dragged: Target, onto: Target, onto_also: Option<Target>) -> Result<Vec<(String, &'static str, bool, Option<Action>)>> {
+    pub(super) async fn dropped(&mut self, dragged: Target, onto: Target, onto_also: Option<Target>) -> Result<Vec<(String, &'static str, bool, Option<Action>)>> {
         let at = point(px(420.), px(240.));
         let drop = drag::Action::Drop { dragged: dragged.clone(), dragged_also: None, onto: onto.clone(), onto_also, at };
         self.action(Action::Drag(drop))?;
@@ -1553,7 +1553,7 @@ impl Replay<'_> {
         })?)
     }
 
-    fn pick_dropped(rows: &[(String, &'static str, bool, Option<Action>)], title: &str) -> Result<Action> {
+    pub(super) fn pick_dropped(rows: &[(String, &'static str, bool, Option<Action>)], title: &str) -> Result<Action> {
         match rows.iter().find(|row| row.0 == title) {
             Some((_, _, false, Some(action))) => Ok(action.clone()),
             _ => {

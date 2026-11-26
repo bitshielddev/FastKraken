@@ -274,6 +274,7 @@ pub struct State {
     pub remotes: Vec<String>,
     pub github: Vec<String>,
     pub addresses: std::collections::BTreeMap<String, crate::remotes::Addresses>,
+    pub(crate) defaults: std::collections::BTreeMap<String, String>,
     pub draft: Option<Draft>,
     pub list_open: bool,
     pub show_labels: bool,
@@ -308,6 +309,7 @@ impl State {
             remotes: Vec::new(),
             github: Vec::new(),
             addresses: Default::default(),
+            defaults: Default::default(),
             draft: None,
             list_open: false,
             show_labels,
@@ -638,18 +640,20 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
         cx,
         move || {
             let addresses = crate::remotes::addresses(&repo).unwrap_or_default();
-            Ok::<_, String>((list(&repo)?, remote_names(&repo)?, crate::connect::unbound_among(&repo, addresses.clone()), addresses))
+            let defaults = crate::pull_request::defaults(&repo).unwrap_or_default();
+            Ok::<_, String>((list(&repo)?, remote_names(&repo)?, crate::connect::unbound_among(&repo, addresses.clone()), addresses, defaults))
         },
         move |tab, result, cx| {
             if tab.epoch != epoch || tab.ui.refs.ticket != ticket {
                 return;
             }
             match result {
-                Ok((items, remotes, github, addresses)) => {
+                Ok((items, remotes, github, addresses, defaults)) => {
                     tab.ui.refs.items = items;
                     tab.ui.refs.remotes = remotes;
                     tab.ui.refs.github = github;
                     tab.ui.refs.addresses = addresses;
+                    tab.ui.refs.defaults = defaults;
                     crate::pin::refs_loaded(&mut tab.ui);
                     crate::graph_view::follow_upstream(tab, cx);
                     crate::forecast::refs_loaded(tab, cx);

@@ -517,6 +517,7 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<
             Some(_) => {}
         },
         Ask::Force(forced) => {
+            let offer = crate::pull_request::offer(&tab.ui, std::ffi::OsStr::new(&forced.branch));
             tab.run_network(
                 cx,
                 jobs::Spec::push(Some(forced.remote.clone())),
@@ -526,7 +527,8 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<
                 move |repo| {
                     let (detail, replaced, said) = backend::force_push(&repo, &forced).map_err(|err| force_refused(err, &forced))?;
                     if !replaced {
-                        return Ok(told(Outcome::titled(format!("Pushed {}", forced.branch), detail), said));
+                        let outcome = told(Outcome::titled(format!("Pushed {}", forced.branch), detail), said);
+                        return Ok(crate::pull_request::offered(outcome, offer));
                     }
                     let restore = Action::RestoreForced {
                         remote: forced.remote.clone(),
@@ -535,12 +537,13 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<
                         old: forced.expect.clone(),
                         new: forced.tip.clone(),
                     };
-                    Ok::<_, Failure>(told(
+                    let outcome = told(
                         Outcome::titled(format!("Force pushed {}", forced.branch), detail)
                             .offer(format!("Restore {}", forced.upstream()), view::Action::Sync(restore))
                             .sticky(),
                         said,
-                    ))
+                    );
+                    Ok::<_, Failure>(crate::pull_request::offered(outcome, offer))
                 },
                 |_, _| {},
             );
@@ -610,6 +613,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::PushBranch { name, tip } => {
             let Some(branch) = utf8(tab, &name, cx) else { return };
             let remote = remote_of(tab, tab.ui.refs.local(&name).and_then(|item| item.upstream.as_deref()));
+            let offer = crate::pull_request::offer(&tab.ui, &name);
             tab.run_network(
                 cx,
                 jobs::Spec::push(remote),
@@ -619,6 +623,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
                 move |repo| {
                     backend::push_named(&repo, &branch, &tip)
                         .map(|(detail, said)| told(crate::notice::Outcome::titled(format!("Pushed {branch}"), detail), said))
+                        .map(|outcome| crate::pull_request::offered(outcome, offer))
                         .map_err(|err| refused_push(&repo, &branch, &tip, false, err))
                 },
                 |_, _| {},
@@ -931,6 +936,7 @@ pub(crate) fn push_tip(tab: &mut Tab, branch: String, head: String, cx: &mut Con
         return;
     }
     let remote = remote_of(tab, tab.ui.upstream.as_deref());
+    let offer = crate::pull_request::offer(&tab.ui, std::ffi::OsStr::new(&branch));
     tab.run_network(
         cx,
         jobs::Spec::push(remote),
@@ -940,6 +946,7 @@ pub(crate) fn push_tip(tab: &mut Tab, branch: String, head: String, cx: &mut Con
         move |repo| {
             backend::push(&repo, &branch, &head)
                 .map(|(detail, said)| told(crate::notice::Outcome::detail(detail), said))
+                .map(|outcome| crate::pull_request::offered(outcome, offer))
                 .map_err(|err| refused_push(&repo, &branch, &head, true, err))
         },
         |_, _| {},

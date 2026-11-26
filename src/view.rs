@@ -588,6 +588,7 @@ pub enum Action {
     Cleanup(crate::cleanup::Action),
     Drag(crate::drag::Action),
     PushTo(crate::push_to::Action),
+    PullRequest(crate::pull_request::Action),
     Stash(crate::stash::Action),
     Sync(crate::sync::Action),
     Publish(crate::publish::Action),
