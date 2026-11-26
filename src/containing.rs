@@ -6,7 +6,8 @@ use crate::{
     theme::*,
     view::{self, Desk},
 };
-use gpui::{Context, Div, div, prelude::*, px, rgb};
+use gpui::{Context, Div, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{ffi::OsString, time::Duration};
 
 const SETTLE: Duration = Duration::from_millis(120);

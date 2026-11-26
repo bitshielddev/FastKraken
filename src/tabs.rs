@@ -8,8 +8,9 @@ use crate::{
 };
 use gpui::{
     AnyWindowHandle, App, AppContext, Context, Entity, EntityId, FontWeight, Global, IntoElement, MouseButton, Render,
-    Subscription, WeakEntity, Window, WindowHandle, div, prelude::*, px, rgb,
+    Subscription, WeakEntity, Window, WindowHandle, div, prelude::*, rgb,
 };
+use crate::theme::px;
 use std::path::{Path, PathBuf};
 
 pub(crate) const NUMBERED: usize = 9;

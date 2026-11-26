@@ -10,8 +10,9 @@ use crate::{
 };
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, MouseButton, MouseDownEvent, PathPromptOptions, Window, div,
-    prelude::*, px, rgb,
+    prelude::*, rgb,
 };
+use crate::theme::px;
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},

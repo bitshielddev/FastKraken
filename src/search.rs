@@ -6,8 +6,9 @@ use crate::{
 };
 use gpui::{
     Context, Div, Entity, Focusable, ScrollStrategy, UniformListScrollHandle, Window, div,
-    prelude::*, px, rgb, uniform_list,
+    prelude::*, rgb, uniform_list,
 };
+use crate::theme::px;
 use std::{collections::HashSet, ops::Range, time::Duration};
 
 pub(crate) const COMMANDS: &[crate::commands::Command] = &[crate::commands::Command::new(

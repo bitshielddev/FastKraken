@@ -8,8 +8,9 @@ use crate::{
 };
 use gpui::{
     Context, CursorStyle, Div, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, UniformListScrollHandle, Window,
-    prelude::*, px,
+    prelude::*,
 };
+use crate::theme::px;
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc, time::Duration};
 use unicode_segmentation::UnicodeSegmentation;
 

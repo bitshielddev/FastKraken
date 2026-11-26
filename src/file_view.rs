@@ -9,7 +9,8 @@ use crate::{
     theme::*,
     view::{self, DiffChange, Selection, Ui},
 };
-use gpui::{Context, Div, ImageFormat, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, ImageFormat, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     io::Read as _,
     path::{Path, PathBuf},

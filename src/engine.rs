@@ -6,7 +6,8 @@ use crate::{
     theme::*,
     view::{self, CommitInput, Desk, Tone, Ui},
 };
-use gpui::{App, Context, Div, Entity, Focusable, KeyDownEvent, PathPromptOptions, Window, div, prelude::*, px, rgb};
+use gpui::{App, Context, Div, Entity, Focusable, KeyDownEvent, PathPromptOptions, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsStr,

@@ -3,8 +3,9 @@ use gpui::{
     App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
     Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, Position, ScrollHandle, Style, Task, UniformListScrollHandle, Window,
-    fill, point, px, rgb, size,
+    fill, point, rgb, size,
 };
+use crate::theme::px;
 use std::{
     cell::RefCell,
     rc::Rc,

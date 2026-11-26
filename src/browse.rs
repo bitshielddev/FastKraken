@@ -12,8 +12,9 @@ use crate::{
 };
 use gpui::{
     Context, Div, Entity, FontWeight, Focusable, Pixels, Point, ScrollStrategy, SharedString, UniformListScrollHandle,
-    Window, div, prelude::*, px, relative, rgb, uniform_list,
+    Window, div, prelude::*, relative, rgb, uniform_list,
 };
+use crate::theme::px;
 use std::{
     collections::{BTreeSet, HashMap},
     ffi::OsString,

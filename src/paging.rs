@@ -6,7 +6,8 @@ use crate::{
     theme::ROW,
     view::{Selection, Ui},
 };
-use gpui::{point, px};
+use gpui::{point};
+use crate::theme::px;
 use std::{
     collections::HashSet,
     io::{self, BufRead, BufReader, Read},

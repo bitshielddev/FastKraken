@@ -11,9 +11,10 @@ use crate::{
     view::{self, CommitInput, Desk, Selection, Ui},
 };
 use gpui::{
-    Context, Div, Entity, Focusable, FontWeight, KeyDownEvent, Window, div, prelude::*, px, rgb,
+    Context, Div, Entity, Focusable, FontWeight, KeyDownEvent, Window, div, prelude::*, rgb,
     uniform_list,
 };
+use crate::theme::px;
 use std::{
     collections::{BTreeSet, HashMap},
     ffi::OsStr,

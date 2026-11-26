@@ -10,9 +10,10 @@ use crate::{
     view::{self, CommitInput, Desk, Tone, Ui},
 };
 use gpui::{
-    App, Context, Entity, Focusable, ScrollStrategy, UniformListScrollHandle, Window, div, prelude::*, px,
+    App, Context, Entity, Focusable, ScrollStrategy, UniformListScrollHandle, Window, div, prelude::*,
     rgb, uniform_list,
 };
+use crate::theme::px;
 use std::{
     ops::Range,
     path::{Path, PathBuf},

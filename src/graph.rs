@@ -1,8 +1,9 @@
 use crate::theme::{palette, soft};
 use gpui::{
     BorderStyle, Bounds, ContentMask, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, fill,
-    linear_color_stop, linear_gradient, point, px, quad, rgb, size,
+    linear_color_stop, linear_gradient, point, quad, rgb, size,
 };
+use crate::theme::px;
 
 pub const LEFT: f32 = 16.;
 pub const LANE: f32 = 14.;

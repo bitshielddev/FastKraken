@@ -8,8 +8,9 @@ use std::{
 
 use gpui::{
     App, Context, Div, Entity, Focusable, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
-    Window, div, prelude::*, px, rgb, uniform_list,
+    Window, div, prelude::*, rgb, uniform_list,
 };
+use crate::theme::px;
 
 use crate::{
     Tab, kit,

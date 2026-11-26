@@ -6,7 +6,8 @@ use crate::{
     theme::*,
     view::{self, CommitInput, Desk, Selection, Tone, Ui},
 };
-use gpui::{App, Context, Div, Entity, Focusable, KeyDownEvent, Window, div, prelude::*, px, rgb};
+use gpui::{App, Context, Div, Entity, Focusable, KeyDownEvent, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{path::Path, process::Command as Process};
 
 pub(crate) const COMMANDS: &[Command] = &[Command::new(

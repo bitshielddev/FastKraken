@@ -10,7 +10,8 @@ use crate::{
     theme::*,
     view::{self, Desk, HistoryRow, Menu, Selection, Ui},
 };
-use gpui::{Context, Div, FontWeight, SharedString, Window, div, prelude::*, px, rgb, uniform_list};
+use gpui::{Context, Div, FontWeight, SharedString, Window, div, prelude::*, rgb, uniform_list};
+use crate::theme::px;
 use std::{
     collections::HashSet,
     ops::Range,

@@ -1,4 +1,4 @@
-use gpui::{Rgba, rgba};
+use gpui::{Pixels, Rgba, rgba};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 pub struct Palette {
@@ -190,6 +190,10 @@ pub const MONO: &str = if cfg!(target_os = "macos") {
 } else {
     "DejaVu Sans Mono"
 };
+
+pub fn px(value: f32) -> Pixels {
+    gpui::px(value)
+}
 
 pub const TEXT_TITLE: f32 = 15.;
 pub const TEXT_BASE: f32 = 13.;

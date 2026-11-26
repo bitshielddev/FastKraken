@@ -9,9 +9,10 @@ use crate::{
 };
 use gpui::{
     Context, Div, ElementId, FontWeight, HighlightStyle, ListHorizontalSizingBehavior, MouseButton,
-    MouseDownEvent, Pixels, SharedString, Stateful, StyledText, Window, div, prelude::*, px, rgb,
+    MouseDownEvent, Pixels, SharedString, Stateful, StyledText, Window, div, prelude::*, rgb,
     uniform_list,
 };
+use crate::theme::px;
 use std::ops::Range;
 
 pub(crate) const WHOLE_RENAME: &str = "Unstage the file to stage parts of it";

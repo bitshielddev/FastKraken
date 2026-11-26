@@ -10,7 +10,8 @@ use crate::{
     theme::*,
     view::{self, Desk, Menu, Selection, Tone, Ui},
 };
-use gpui::{AnyElement, ClickEvent, Context, Div, FontWeight, MouseButton, MouseDownEvent, div, prelude::*, px, rgb};
+use gpui::{AnyElement, ClickEvent, Context, Div, FontWeight, MouseButton, MouseDownEvent, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     fs,
     path::{Component, Path, PathBuf},

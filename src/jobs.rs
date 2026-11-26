@@ -5,7 +5,8 @@ use crate::{
     theme::*,
     view::{self, Ui},
 };
-use gpui::{Context, Div, Window, div, prelude::*, px, relative, rgb};
+use gpui::{Context, Div, Window, div, prelude::*, relative, rgb};
+use crate::theme::px;
 use std::{
     cell::RefCell,
     sync::{

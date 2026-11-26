@@ -11,7 +11,8 @@ use crate::{
     tools::{Detected, Found, Known, Lines},
     view::{self, Desk, Selection, Tone, Ui},
 };
-use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     path::{Path, PathBuf},
     process::{Command, Output},

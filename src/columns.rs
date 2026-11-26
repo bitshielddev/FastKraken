@@ -6,7 +6,8 @@ use crate::{
     theme::{MONO, TEXT_SMALL, palette},
     view::{self, Desk, Selection, Ui},
 };
-use gpui::{App, Context, Pixels, TextRun, Window, px, rgb};
+use gpui::{App, Context, Pixels, TextRun, Window, rgb};
+use crate::theme::px;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 

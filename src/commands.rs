@@ -4,7 +4,8 @@ use crate::{
     view::{self, Action, Desk, Selection, Tone, Ui},
 };
 use crate::theme::ROW;
-use gpui::{App, Context, Div, ElementId, KeyBinding, SharedString, Window, div, prelude::*, px};
+use gpui::{App, Context, Div, ElementId, KeyBinding, SharedString, Window, div, prelude::*};
+use crate::theme::px;
 use std::{ffi::OsString, path::PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

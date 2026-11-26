@@ -9,7 +9,8 @@ use crate::{
     theme::*,
     view::{self, Desk, Tone, Ui},
 };
-use gpui::{Context, Div, UniformListScrollHandle, div, prelude::*, px, rgb, uniform_list};
+use gpui::{Context, Div, UniformListScrollHandle, div, prelude::*, rgb, uniform_list};
+use crate::theme::px;
 use std::{
     collections::{BTreeSet, HashMap},
     ffi::{OsStr, OsString},

@@ -13,8 +13,9 @@ use crate::{
 };
 use gpui::{
     Context, Div, ElementId, FontWeight, IntoElement, ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString,
-    Stateful, Styled, UniformListScrollHandle, Window, div, prelude::*, px, rgb, uniform_list,
+    Stateful, Styled, UniformListScrollHandle, Window, div, prelude::*, rgb, uniform_list,
 };
+use crate::theme::px;
 use std::{
     ffi::{OsStr, OsString},
     ops::Range,

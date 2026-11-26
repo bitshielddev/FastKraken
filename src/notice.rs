@@ -3,7 +3,8 @@ use crate::{
     theme::*,
     view::{self, Desk},
 };
-use gpui::{Context, FontWeight, SharedString, Window, deferred, div, prelude::*, px, rgb};
+use gpui::{Context, FontWeight, SharedString, Window, deferred, div, prelude::*, rgb};
+use crate::theme::px;
 use std::time::{Duration, Instant};
 
 const SHOWN: usize = 4;

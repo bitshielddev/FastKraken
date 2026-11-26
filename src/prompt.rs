@@ -5,8 +5,9 @@ use crate::{
 };
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseButton, NoAction, SharedString, Window,
-    actions, deferred, div, prelude::*, px, rgb,
+    actions, deferred, div, prelude::*, rgb,
 };
+use crate::theme::px;
 
 actions!(fastkraken_prompt, [Return, Accept]);
 

@@ -6,7 +6,8 @@ use crate::{
     theme::*,
     view::{self, CommitInput, Desk, Tone},
 };
-use gpui::{App, Context, Entity, Focusable, KeyDownEvent, PathPromptOptions, Window, div, prelude::*, px, rgb};
+use gpui::{App, Context, Entity, Focusable, KeyDownEvent, PathPromptOptions, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     fs,
     path::{Path, PathBuf},

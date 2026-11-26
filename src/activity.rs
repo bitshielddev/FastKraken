@@ -5,8 +5,9 @@ use crate::{
 };
 use gpui::{
     Context, Div, FontWeight, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div,
-    prelude::*, px, rgb, uniform_list,
+    prelude::*, rgb, uniform_list,
 };
+use crate::theme::px;
 use std::{
     cell::Cell,
     collections::VecDeque,

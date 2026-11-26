@@ -5,7 +5,8 @@ use crate::{
     theme::*,
     view::{self, CommitDraft, CommitInput, Desk, Tone, Ui},
 };
-use gpui::{App, Context, Div, Entity, Focusable, SharedString, Stateful, Window, deferred, div, prelude::*, px, rgb};
+use gpui::{App, Context, Div, Entity, Focusable, SharedString, Stateful, Window, deferred, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     collections::HashMap,
     io::Read,

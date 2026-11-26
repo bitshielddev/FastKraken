@@ -8,7 +8,8 @@ use crate::{
 };
 use crate::view::commit_input::{CommitInput, Look};
 use crate::file_list::{self, Row, Which};
-use gpui::{Context, Div, Focusable, FontWeight, SharedString, Window, div, prelude::*, px, rgb, uniform_list};
+use gpui::{Context, Div, Focusable, FontWeight, SharedString, Window, div, prelude::*, rgb, uniform_list};
+use crate::theme::px;
 use std::{
     collections::HashMap,
     ops::Range,

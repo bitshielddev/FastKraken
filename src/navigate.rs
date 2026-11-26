@@ -4,7 +4,8 @@ use crate::{
     theme::{FILE_ROW, ROW, TREE_ROW},
     view::{self, Desk, HistoryRow, Selection, Tone},
 };
-use gpui::{Context, Point, ScrollStrategy, UniformListScrollHandle, Window, px};
+use gpui::{Context, Point, ScrollStrategy, UniformListScrollHandle, Window};
+use crate::theme::px;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Zone {

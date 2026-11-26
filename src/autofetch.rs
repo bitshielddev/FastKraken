@@ -6,7 +6,8 @@ use crate::{
     theme::*,
     view::{self, Desk, Ui},
 };
-use gpui::{Context, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 const CHECK: Duration = Duration::from_secs(15);

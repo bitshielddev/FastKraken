@@ -8,9 +8,10 @@ use crate::{
     view::{self, CommitInput, Desk, DiffMode, Tone, Ui},
 };
 use gpui::{
-    App, Context, Div, Entity, Focusable, Pixels, SharedString, StyledText, TextSystem, Window, div, prelude::*, px,
+    App, Context, Div, Entity, Focusable, Pixels, SharedString, StyledText, TextSystem, Window, div, prelude::*,
     rgb,
 };
+use crate::theme::px;
 use std::{borrow::Cow, ops::Range, sync::Arc};
 
 pub(crate) const SMALLEST: u32 = 9;

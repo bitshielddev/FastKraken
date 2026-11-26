@@ -9,7 +9,8 @@ use crate::{
     theme::*,
     view::{self, Desk, Tone, Ui},
 };
-use gpui::{Context, Div, FontWeight, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, FontWeight, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,

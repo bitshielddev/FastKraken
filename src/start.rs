@@ -11,8 +11,9 @@ use crate::{
 };
 use gpui::{
     App, Context, Div, Entity, Focusable, FontWeight, ScrollStrategy, UniformListScrollHandle, Window, div, prelude::*,
-    px, rgb, uniform_list,
+    rgb, uniform_list,
 };
+use crate::theme::px;
 use std::{
     ops::Range,
     path::{Path, PathBuf},

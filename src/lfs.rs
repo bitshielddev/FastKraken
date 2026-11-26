@@ -11,7 +11,8 @@ use crate::{
     theme::*,
     view::{self, Desk, Selection, Tone, Ui},
 };
-use gpui::{Context, Div, div, prelude::*, px, rgb};
+use gpui::{Context, Div, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::OsStr,

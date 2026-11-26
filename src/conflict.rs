@@ -13,7 +13,8 @@ use crate::{
 };
 use backend::named;
 pub(crate) use backend::{Shown, Tooled, merge_in_tool};
-use gpui::{Context, Div, FontWeight, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, FontWeight, MouseButton, MouseDownEvent, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::path::{Path, PathBuf};
 
 pub(crate) const COMMANDS: &[commands::Command] = {

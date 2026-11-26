@@ -8,8 +8,9 @@ use crate::{
 };
 use gpui::{
     App, Context, Div, Entity, Focusable, FontWeight, PathPromptOptions, SharedString, UniformListScrollHandle,
-    Window, div, prelude::*, px, rgb,
+    Window, div, prelude::*, rgb,
 };
+use crate::theme::px;
 use std::{os::unix::ffi::OsStrExt, path::PathBuf};
 
 pub(crate) const COMMANDS: &[Command] = &[Command::new(

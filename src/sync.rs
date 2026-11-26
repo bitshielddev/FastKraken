@@ -10,7 +10,8 @@ use crate::{
     theme::*,
     view::{self, Desk},
 };
-use gpui::{Context, Div, SharedString, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, SharedString, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::ffi::{OsStr, OsString};
 
 pub(crate) const COMMANDS: &[crate::commands::Command] = {

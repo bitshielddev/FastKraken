@@ -10,7 +10,8 @@ use crate::{
     theme::*,
     view::{self, Desk, DiffLayout, Selection, Ui},
 };
-use gpui::{Context, Div, FontWeight, Pixels, Point, Stateful, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, FontWeight, Pixels, Point, Stateful, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

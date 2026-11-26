@@ -18,9 +18,10 @@ use crate::diff_doc::{DiffDoc, PatchState};
 use gpui::{
     App, ClipboardItem, Context, CursorStyle, Div, DragMoveEvent, Entity, FocusHandle, Focusable,
     FontWeight, KeyBinding, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle,
-    UniformListScrollHandle, Window, actions, anchored, deferred, div, prelude::*, px, rgb,
+    UniformListScrollHandle, Window, actions, anchored, deferred, div, prelude::*, rgb,
     uniform_list,
 };
+use crate::theme::px;
 use graph::Graph;
 use std::{
     ffi::OsString,

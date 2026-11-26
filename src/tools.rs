@@ -5,7 +5,8 @@ use crate::{
     theme::*,
     view::{self, CommitInput, Desk, Tone, Ui},
 };
-use gpui::{App, Context, Div, Entity, Focusable, Window, div, prelude::*, px, rgb};
+use gpui::{App, Context, Div, Entity, Focusable, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     ffi::OsString,
     io::{Read, Seek, SeekFrom},

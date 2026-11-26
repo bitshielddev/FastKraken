@@ -7,7 +7,8 @@ use crate::{
     theme::*,
     view::{self, CommitInput, Desk, Selection, Ui},
 };
-use gpui::{App, Context, Div, Entity, Focusable, Window, div, prelude::*, px, rgb};
+use gpui::{App, Context, Div, Entity, Focusable, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},

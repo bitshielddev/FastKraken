@@ -11,7 +11,8 @@ use crate::{
     theme::*,
     view::{self, Desk, Tone, Ui},
 };
-use gpui::{Context, Div, SharedString, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, SharedString, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

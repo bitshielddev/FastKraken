@@ -10,8 +10,9 @@ use crate::{
 };
 use gpui::{
     Asset, Context, Div, FontWeight, Image, ImageAssetLoader, ImageFormat, ImageSource, ObjectFit, Pixels,
-    RenderImage, Resource, StyledImage, Window, div, img, prelude::*, px, rgb,
+    RenderImage, Resource, StyledImage, Window, div, img, prelude::*, rgb,
 };
+use crate::theme::px;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

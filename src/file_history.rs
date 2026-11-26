@@ -8,9 +8,10 @@ use crate::{
     view::{self, Desk, Menu, Selection, Ui},
 };
 use gpui::{
-    Context, Div, FontWeight, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*, px,
+    Context, Div, FontWeight, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*,
     relative, rgb, uniform_list,
 };
+use crate::theme::px;
 use std::{
     ops::Range,
     path::{Path, PathBuf},

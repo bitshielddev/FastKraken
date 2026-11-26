@@ -6,7 +6,8 @@ use crate::{
     theme::*,
     view::{self, CommitInput, Desk, Menu, Selection, Ui, commit_input::FieldCommand},
 };
-use gpui::{Context, Div, Entity, FontWeight, Focusable, Stateful, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Entity, FontWeight, Focusable, Stateful, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,

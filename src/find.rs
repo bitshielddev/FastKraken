@@ -8,8 +8,9 @@ use crate::{
 };
 use gpui::{
     App, Context, Div, Entity, Focusable, HighlightStyle, KeyBinding, Pixels, ScrollStrategy, Window, actions, div,
-    point, prelude::*, px, rgb,
+    point, prelude::*, rgb,
 };
+use crate::theme::px;
 use std::{ops::Range, path::PathBuf};
 
 actions!(find, [NextMatch, PreviousMatch]);

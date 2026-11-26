@@ -7,8 +7,9 @@ use gpui::{
     Div, Element, ElementId, FocusHandle, FontWeight, GlobalElementId, Hsla, InspectorElementId,
     IntoElement, LayoutId, MouseButton, MouseDownEvent, Pixels, Position, Render, ShapedLine,
     SharedString, Stateful, Style, Svg, TextRun, Transformation, Window, canvas, deferred, div,
-    percentage, point, prelude::*, px, rgb, rgba, svg,
+    percentage, point, prelude::*, rgb, rgba, svg,
 };
+use crate::theme::px;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 pub use crate::scrollbar::scrollbar;

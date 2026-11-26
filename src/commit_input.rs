@@ -5,8 +5,9 @@ use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler, EntityId, EntityInputHandler,
     FocusHandle, Focusable, FontWeight, Global, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
     Point, ShapedLine, ScrollWheelEvent, TextRun, UTF16Selection, UnderlineStyle, WeakEntity, Window, actions, anchored,
-    canvas, deferred, div, fill, point, prelude::*, px, rgb, size,
+    canvas, deferred, div, fill, point, prelude::*, rgb, size,
 };
+use crate::theme::px;
 use crate::theme::*;
 use editing::{Edit, Editor, Unit};
 use std::{ops::Range, time::Instant};

@@ -9,8 +9,9 @@ use backend::{Choices, Document, LinePair, Place, Preview, ResultRow};
 use crate::operation::{Kind, Snapshot};
 use gpui::{
     Context, Div, FontWeight, ScrollHandle, ScrollStrategy, UniformListScrollHandle, Window, div, prelude::*,
-    px, rgb, uniform_list,
+    rgb, uniform_list,
 };
+use crate::theme::px;
 use crate::{
     diff_select::Column,
     diff_text::Face,

@@ -6,9 +6,10 @@ use crate::{
     view::{self, CommitInput, Desk, Tone, Ui},
 };
 use gpui::{
-    Context, Entity, Focusable, FontWeight, UniformListScrollHandle, Window, div, prelude::*, px, rgb,
+    Context, Entity, Focusable, FontWeight, UniformListScrollHandle, Window, div, prelude::*, rgb,
     uniform_list,
 };
+use crate::theme::px;
 use std::{ops::Range, path::PathBuf};
 
 pub(crate) const COMMANDS: &[commands::Command] = {

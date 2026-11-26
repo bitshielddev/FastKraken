@@ -7,7 +7,8 @@ use crate::{
     theme::*,
     view::{self, Desk, DiscardAsk, Selection, Ui},
 };
-use gpui::{Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, Window, div, prelude::*, rgb};
+use crate::theme::px;
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

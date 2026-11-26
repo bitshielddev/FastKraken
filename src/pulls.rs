@@ -9,8 +9,9 @@ use crate::{
 };
 use gpui::{
     AnyElement, ClickEvent, Context, Div, ElementId, FontWeight, MouseButton, MouseDownEvent, Stateful, Window, div,
-    prelude::*, px, rgb,
+    prelude::*, rgb,
 };
+use crate::theme::px;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},

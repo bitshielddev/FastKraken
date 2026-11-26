@@ -12,8 +12,9 @@ use crate::{
 };
 use gpui::{
     BoxShadow, Context, Div, IntoElement, ParentElement, Pixels, Point, Render, Stateful, StatefulInteractiveElement,
-    Styled, Window, div, point, prelude::*, px, rgb,
+    Styled, Window, div, point, prelude::*, rgb,
 };
+use crate::theme::px;
 use std::{
     cell::Cell,
     ffi::{OsStr, OsString},

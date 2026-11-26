@@ -4,7 +4,8 @@ use crate::{
     theme::*,
     view::{self, Desk, Selection, Ui},
 };
-use gpui::{Context, Div, SharedString, Stateful, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, SharedString, Stateful, Window, div, prelude::*, rgb};
+use crate::theme::px;
 
 pub(crate) const TAGS_CHECKED: usize = 3;
 pub(crate) const PINENTRY_PAGE: &str = "https://formulae.brew.sh/formula/pinentry-mac";

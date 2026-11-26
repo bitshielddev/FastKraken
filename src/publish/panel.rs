@@ -1,6 +1,7 @@
 use super::*;
 use crate::{kit, theme::*, view::Desk};
-use gpui::{Div, FontWeight, SharedString, div, px, rgb};
+use gpui::{Div, FontWeight, SharedString, div, rgb};
+use crate::theme::px;
 
 fn act<T: Desk>(button: kit::Btn, action: Action, cx: &Context<T>) -> gpui::Stateful<Div> {
     button.on(view::Action::Publish(action), cx)
