@@ -363,10 +363,10 @@ fn base_of(ui: &Ui, start: Start) -> Result<Base, String> {
     }
 }
 
-pub(crate) fn describe(ask: &Ask, _: &Ui) -> Spec {
+pub(crate) fn describe(ask: &Ask, ui: &Ui) -> Spec {
     match ask {
         Ask::Add { base, folder } => add_spec(base, folder),
-        Ask::Remove(removal) => remove_spec(removal),
+        Ask::Remove(removal) => remove_spec(removal, ui.prompt.ticked()),
         Ask::Lock { name, .. } => {
             let mut spec = Spec::new(format!("Lock worktree {name}"), "Lock worktree").line(
                 "Git will not prune or remove a locked worktree, for example while its folder is on a disk that is not connected.",
@@ -436,7 +436,7 @@ fn add_spec(base: &Base, folder: &Path) -> Spec {
     spec
 }
 
-fn remove_spec(removal: &Removal) -> Spec {
+fn remove_spec(removal: &Removal, deleting_branch: bool) -> Spec {
     let mut spec = Spec::new(format!("Remove worktree {}?", removal.name), "Remove worktree");
     let folder = removal.path.display();
     spec = match removal.changes {
@@ -462,6 +462,9 @@ fn remove_spec(removal: &Removal) -> Spec {
         n => spec = spec.line(format!("and {n} more commits")),
     }
     spec.tick = Some((format!("Also delete branch {branch}").into(), false));
+    if deleting_branch && removal.only > 0 {
+        spec = spec.danger();
+    }
     spec
 }
 
@@ -484,6 +487,9 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<
             );
         }
         Ask::Remove(removal) => {
+            if open_in_another_tab(&removal.path, cx) {
+                return open_elsewhere_refused(tab, &removal.name, cx);
+            }
             let delete_branch = answer.tick && removal.branch.is_some();
             tab.run_operation_then(
                 cx,
@@ -999,6 +1005,15 @@ fn open_in_another_tab(path: &Path, cx: &Context<Tab>) -> bool {
     })
 }
 
+fn open_elsewhere_refused(tab: &mut Tab, name: &str, cx: &mut Context<Tab>) {
+    tab.ui.notices.show(Notice::new(
+        Tone::Info,
+        format!("Worktree {name} is open in another tab"),
+        "Close that tab first, then remove the worktree.",
+    ));
+    cx.notify();
+}
+
 fn ask_remove(tab: &mut Tab, path: PathBuf, cx: &mut Context<Tab>) {
     let Some(worktree) = listed(tab, &path, cx) else { return };
     if let Some(reason) = removal_refusal(&worktree) {
@@ -1007,13 +1022,7 @@ fn ask_remove(tab: &mut Tab, path: PathBuf, cx: &mut Context<Tab>) {
         return;
     }
     if open_in_another_tab(&worktree.path, cx) {
-        tab.ui.notices.show(Notice::new(
-            Tone::Info,
-            format!("Worktree {} is open in another tab", worktree.name()),
-            "Close that tab first, then remove the worktree.",
-        ));
-        cx.notify();
-        return;
+        return open_elsewhere_refused(tab, &worktree.name(), cx);
     }
     let Some(repo) = tab.repo.clone() else { return };
     tab.ui.menu = None;
@@ -1645,7 +1654,7 @@ mod tests {
             only: 0,
             subjects: Vec::new(),
         };
-        let clean = remove_spec(&removal);
+        let clean = remove_spec(&removal, false);
         assert_eq!(clean.title, "Remove worktree ridge?");
         assert!(!clean.danger);
         assert_eq!(clean.lines[0], "Its folder /trail/ridge is deleted, with any ignored files in it.");
@@ -1653,7 +1662,7 @@ mod tests {
         removal.changes = 3;
         removal.only = 7;
         removal.subjects = vec![("abc1234".into(), "Climb the ridge".into())];
-        let dirty = remove_spec(&removal);
+        let dirty = remove_spec(&removal, false);
         assert!(dirty.danger);
         assert_eq!(dirty.confirm.as_ref(), "Remove worktree");
         assert_eq!(
@@ -1666,7 +1675,15 @@ mod tests {
                 "and 6 more commits",
             ]
         );
+        removal.changes = 0;
+        assert!(!remove_spec(&removal, false).danger);
+        let deleting = remove_spec(&removal, true);
+        assert!(deleting.danger);
+        assert_eq!(deleting.confirm.as_ref(), "Remove worktree");
+        removal.only = 0;
+        removal.subjects.clear();
+        assert!(!remove_spec(&removal, true).danger);
         removal.branch = None;
-        assert!(remove_spec(&removal).tick.is_none());
+        assert!(remove_spec(&removal, false).tick.is_none());
     }
 }
