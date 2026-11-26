@@ -591,6 +591,7 @@ pub enum Action {
     PullRequest(crate::pull_request::Action),
     Pulls(crate::pulls::Action),
     Forks(crate::forks::Action),
+    Signing(crate::signing::Action),
     Stash(crate::stash::Action),
     Sync(crate::sync::Action),
     Publish(crate::publish::Action),
@@ -811,6 +812,7 @@ pub struct Ui {
     pub(crate) worktree: crate::worktree::State,
     pub(crate) pulls: crate::pulls::State,
     pub(crate) forks: crate::forks::State,
+    pub(crate) signing: crate::signing::State,
     pub(crate) submodule: crate::submodule::State,
     pub(crate) lfs: crate::lfs::State,
     pub(crate) sparse: crate::sparse::State,
@@ -917,6 +919,7 @@ impl Ui {
             worktree: Default::default(),
             pulls: Default::default(),
             forks: Default::default(),
+            signing: Default::default(),
             submodule: Default::default(),
             lfs: Default::default(),
             sparse: Default::default(),
@@ -2902,7 +2905,14 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     )
                 })
                 .children(crate::identity::form(ui, cx))
-                .child(commit.on(Action::Commit, cx))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().child(commit.on(Action::Commit, cx)))
+                        .children(crate::signing::commit_chip(ui)),
+                )
                 .children(crate::identity::committing_as(ui, cx)),
         )
 }

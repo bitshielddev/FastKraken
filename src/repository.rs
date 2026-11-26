@@ -355,7 +355,9 @@ impl Engine {
                 .env_remove("GIT_SSH_COMMAND")
                 .env_remove("GIT_SSH")
                 .env_remove("GIT_ASKPASS")
-                .env_remove("SSH_ASKPASS");
+                .env_remove("SSH_ASKPASS")
+                .env_remove("SSH_AUTH_SOCK")
+                .env("GNUPGHOME", tests::NO_KEYRING);
         }
         for variable in [
             "GIT_DIR",
@@ -482,7 +484,13 @@ impl Repository {
     }
 
     pub(crate) fn command(&self) -> Command {
-        self.engine.command(&self.root)
+        let mut command = self.engine.command(&self.root);
+        if let Some(link) = crate::jobs::Link::current()
+            && let Some(session) = link.session()
+        {
+            crate::askpass::configure(&mut command, Some(session));
+        }
+        command
     }
 
     pub(crate) fn network_command(&self) -> Result<Command> {
@@ -1199,14 +1207,15 @@ impl Repository {
         self.commit_with(message, Hooks::Run)
     }
 
-    pub(crate) fn commit_with(&self, message: &str, hooks: Hooks) -> std::result::Result<Committed, Failure> {
+    pub(crate) fn commit_with(&self, message: &str, choices: impl Into<Choices>) -> std::result::Result<Committed, Failure> {
+        let choices = choices.into();
         self.ensure_index_writable()?;
         if message.trim().is_empty() {
             return Err("Enter a commit message.".to_owned().into());
         }
         let mut command = self.command();
-        command.args(["-c", "user.useConfigOnly=true", "commit"]).args(hooks.flag()).args(["-m", message]);
-        self.committing(&mut command, &hooks.events(crate::hooks::COMMIT), false)
+        command.args(["-c", "user.useConfigOnly=true", "commit"]).args(choices.flags()).args(["-m", message]);
+        self.committing(&mut command, &choices.hooks.events(crate::hooks::COMMIT), false)
     }
 
     fn tip(&self) -> Option<Vec<u8>> {
@@ -1292,8 +1301,9 @@ impl Repository {
         oid: &str,
         reference: Option<&OsStr>,
         message: Option<&str>,
-        hooks: Hooks,
+        choices: impl Into<Choices>,
     ) -> std::result::Result<Committed, Failure> {
+        let choices = choices.into();
         self.ensure_index_writable()?;
         validate_oid(oid)?;
         if message.is_some_and(|message| message.trim().is_empty()) {
@@ -1305,13 +1315,13 @@ impl Repository {
             return Err("The checked-out branch or its tip changed. Reopen Amend last commit.".to_owned().into());
         }
         let mut command = self.command();
-        command.args(["-c", "user.useConfigOnly=true", "commit", "--amend", "--allow-empty"]).args(hooks.flag());
+        command.args(["-c", "user.useConfigOnly=true", "commit", "--amend", "--allow-empty"]).args(choices.flags());
         if let Some(message) = message {
             command.args(["-m", message]);
         } else {
             command.arg("--no-edit");
         }
-        self.committing(&mut command, &hooks.events(crate::hooks::AMEND), false)
+        self.committing(&mut command, &choices.hooks.events(crate::hooks::AMEND), false)
     }
 
     pub fn stage_all(&self) -> Result<()> {
@@ -1336,8 +1346,9 @@ impl Repository {
         head: Option<&str>,
         reference: Option<&OsStr>,
         message: &str,
-        hooks: Hooks,
+        choices: impl Into<Choices>,
     ) -> std::result::Result<Committed, Failure> {
+        let choices = choices.into();
         self.ensure_index_writable()?;
         if message.trim().is_empty() {
             return Err("Enter a commit message.".to_owned().into());
@@ -1351,8 +1362,8 @@ impl Repository {
         }
         checked(self.command().args(["add", "--all", "--", "."]))?;
         let mut command = self.command();
-        command.args(["-c", "user.useConfigOnly=true", "commit"]).args(hooks.flag()).args(["-m", message]);
-        self.committing(&mut command, &hooks.events(crate::hooks::COMMIT), true)
+        command.args(["-c", "user.useConfigOnly=true", "commit"]).args(choices.flags()).args(["-m", message]);
+        self.committing(&mut command, &choices.hooks.events(crate::hooks::COMMIT), true)
     }
 }
 
@@ -1377,6 +1388,30 @@ impl Hooks {
             .copied()
             .filter(|event| self == Hooks::Run || !crate::hooks::SKIPPED_BY_NO_VERIFY.contains(event))
             .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Choices {
+    pub hooks: Hooks,
+    pub sign: Option<bool>,
+}
+
+impl From<Hooks> for Choices {
+    fn from(hooks: Hooks) -> Self {
+        Self { hooks, sign: None }
+    }
+}
+
+impl Choices {
+    fn flags(self) -> Vec<&'static str> {
+        let mut flags = self.hooks.flag().to_vec();
+        match self.sign {
+            Some(true) => flags.push("-S"),
+            Some(false) => flags.push("--no-gpg-sign"),
+            None => {}
+        }
+        flags
     }
 }
 
@@ -1871,6 +1906,8 @@ pub(crate) mod tests {
     thread_local! {
         static GLOBAL_CONFIG: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
     }
+
+    pub(crate) const NO_KEYRING: &str = "/var/empty/fastkraken-test-gnupg";
 
     pub(crate) fn global_config() -> PathBuf {
         GLOBAL_CONFIG.with(|file| file.borrow().clone()).unwrap_or_else(|| PathBuf::from("/dev/null"))

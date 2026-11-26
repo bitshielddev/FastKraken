@@ -89,11 +89,39 @@ pub(crate) enum Cause {
     Locked { lock: Option<String> },
     Dubious { command: Option<String> },
     Signing { missing: Option<String> },
+    Unsigned { stop: Stop, tag: bool },
     Identity,
     NotFound { hook: Option<String>, command: Option<String> },
     NoRemote,
     HookSkipped { hook: String, path: String },
     InWorktree { branch: Option<String>, path: Option<String> },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Stop {
+    Pinentry,
+    Passphrase { key: Option<String> },
+    NoKey,
+    KeyUnreadable { key: Option<String> },
+}
+
+fn unsigned(said: &str, has: impl Fn(&str) -> bool) -> Option<Cause> {
+    let tag = has("unable to sign the tag");
+    if !tag && !has("gpg failed to sign the data") && !has("failed to write commit object") {
+        return None;
+    }
+    let stop = if has("Inappropriate ioctl for device") || has("No pinentry") || has("pinentry") || has("cannot open '/dev/tty'") {
+        Stop::Pinentry
+    } else if has("incorrect passphrase") {
+        Stop::Passphrase { key: between(said, "Load key \"", "\"") }
+    } else if has("user.signingKey needs to be set") {
+        Stop::NoKey
+    } else if has("Couldn't load public key") {
+        Stop::KeyUnreadable { key: between(said, "Couldn't load public key ", ": ") }
+    } else {
+        return None;
+    };
+    Some(Cause::Unsigned { stop, tag })
 }
 
 impl Cause {
@@ -134,7 +162,9 @@ pub(crate) fn classify(said: &str) -> Option<Cause> {
         || has("empty ident name")
     {
         Cause::Identity
-    } else if has("gpg failed to sign the data") || has("failed to write commit object") && has("cannot run ") {
+    } else if let Some(cause) = unsigned(said, has) {
+        cause
+    } else if has("gpg failed to sign the data") || has("unable to sign the tag") || has("failed to write commit object") && has("cannot run ") {
         Cause::Signing { missing: between(said, "cannot run ", ": No such file or directory") }
     } else if let Some((hook, command)) = not_found(said) {
         Cause::NotFound { hook, command }
@@ -609,6 +639,40 @@ fn words(cause: &Cause, host: &str, remote: &str, about: &About) -> (String, Str
             },
             command.clone().map(|command| copy("Copy the command that trusts it", command)).unwrap_or_default(),
         ),
+        Cause::Unsigned { stop, tag } => {
+            let title = if *tag { "The tag could not be signed" } else { "The commit could not be signed" }.to_owned();
+            match stop {
+                Stop::Pinentry => (
+                    title,
+                    "GPG could not ask for your passphrase. Install a graphical pinentry (pinentry-mac), or unlock the key first.".to_owned(),
+                    vec![(
+                        SharedString::from("About pinentry-mac"),
+                        view::Action::Handoff(crate::handoff::Action::OpenUrl(crate::signing::PINENTRY_PAGE.to_owned())),
+                    )],
+                ),
+                Stop::Passphrase { key } => (
+                    title,
+                    match key {
+                        Some(key) => format!("The SSH key {} was not unlocked: the passphrase was not given or did not match.", name_of(key)),
+                        None => "The SSH key was not unlocked: the passphrase was not given or did not match.".to_owned(),
+                    },
+                    retry(),
+                ),
+                Stop::NoKey => (
+                    title,
+                    "Git signs with SSH here, but has no key to sign with. Set user.signingKey to your public key's path.".to_owned(),
+                    Vec::new(),
+                ),
+                Stop::KeyUnreadable { key } => (
+                    title,
+                    match key {
+                        Some(key) => format!("Git could not read the signing key {key}. Check user.signingKey."),
+                        None => "Git could not read the signing key. Check user.signingKey.".to_owned(),
+                    },
+                    Vec::new(),
+                ),
+            }
+        }
         Cause::Identity => (
             "Git needs your name and email".to_owned(),
             "Set the name and email your commits carry, then try again.".to_owned(),
@@ -908,6 +972,11 @@ mod tests {
     const LFS_SMUDGE: &str = "git-lfs smudge -- 'a.bin': git-lfs: command not found\nerror: external filter 'git-lfs smudge -- %f' failed 127\nerror: external filter 'git-lfs smudge -- %f' failed\nfatal: a.bin: smudge filter lfs failed";
     const SSH_COMMAND: &str = "sh: ssh-with-agent: command not found\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.";
     const GPG_MISSING: &str = "error: cannot run gpg: No such file or directory\nerror: gpg failed to sign the data:\n(no gpg output)\nfatal: failed to write commit object";
+    const PINENTRY: &str = "gpg: signing failed: Inappropriate ioctl for device\ngpg: signing failed: Inappropriate ioctl for device\nerror: gpg failed to sign the data\nfatal: failed to write commit object";
+    const NO_PINENTRY: &str = "gpg: signing failed: No pinentry\nerror: gpg failed to sign the data\nerror: unable to sign the tag";
+    const SSH_PASSPHRASE: &str = "error: Load key \"/Users/me/.ssh/id_signing\": incorrect passphrase supplied to decrypt private key?\n\nfatal: failed to write commit object";
+    const SSH_NO_KEY: &str = "error: user.signingKey needs to be set for ssh signing\nfatal: failed to write commit object";
+    const SSH_KEY_GONE: &str = "error: Couldn't load public key /Users/me/.ssh/gone.pub: No such file or directory?\n\nfatal: failed to write commit object";
     const SSH_SIGNER_MISSING: &str = "error: cannot run nokeygen: No such file or directory\nerror: \nfatal: failed to write commit object";
     const SERVER_WITHOUT_GIT: &str = "bash: git-upload-pack: command not found\nfatal: Could not read from remote repository.";
 
@@ -967,6 +1036,11 @@ mod tests {
             (EMPTY_NAME, Cause::Identity),
             (GPG_MISSING, Cause::Signing { missing: Some("gpg".into()) }),
             (SSH_SIGNER_MISSING, Cause::Signing { missing: Some("nokeygen".into()) }),
+            (PINENTRY, Cause::Unsigned { stop: Stop::Pinentry, tag: false }),
+            (NO_PINENTRY, Cause::Unsigned { stop: Stop::Pinentry, tag: true }),
+            (SSH_PASSPHRASE, Cause::Unsigned { stop: Stop::Passphrase { key: Some("/Users/me/.ssh/id_signing".into()) }, tag: false }),
+            (SSH_NO_KEY, Cause::Unsigned { stop: Stop::NoKey, tag: false }),
+            (SSH_KEY_GONE, Cause::Unsigned { stop: Stop::KeyUnreadable { key: Some("/Users/me/.ssh/gone.pub".into()) }, tag: false }),
             (SKIPPED, Cause::HookSkipped { hook: "pre-commit".into(), path: ".git/hooks/pre-commit".into() }),
             (HOOK_SH, Cause::NotFound { hook: Some("pre-commit".into()), command: Some("npx".into()) }),
             (HOOK_ZSH, Cause::NotFound { hook: Some("pre-commit".into()), command: Some("npx".into()) }),
@@ -1095,6 +1169,10 @@ mod tests {
             ("Commit Failed", LOCKED, "Another Git process is using this repository", vec![]),
             ("Open Failed", DUBIOUS, "Git does not trust this folder because another user owns it", vec!["Copy the command that trusts it"]),
             ("Commit Failed", GPG, "The commit could not be signed", vec![]),
+            ("Commit Failed", PINENTRY, "The commit could not be signed", vec!["About pinentry-mac"]),
+            ("Tag Failed", NO_PINENTRY, "The tag could not be signed", vec!["About pinentry-mac"]),
+            ("Commit Failed", SSH_PASSPHRASE, "The commit could not be signed", vec![]),
+            ("Commit Failed", SSH_NO_KEY, "The commit could not be signed", vec![]),
             ("Push Failed", NO_PUSH_DESTINATION, "This repository has no remote", vec!["Add remote…"]),
         ];
         for (heading, said, title, steps) in table {
@@ -1312,6 +1390,17 @@ mod tests {
         let shebang = shown("Commit Failed", HOOK_SHEBANG, &commit);
         assert_eq!(shebang.title, "pre-commit could not start");
         assert!(shebang.actions.is_empty());
+        let pinentry = shown("Commit Failed", PINENTRY, &commit);
+        assert!(
+            pinentry.detail.contains("GPG could not ask for your passphrase. Install a graphical pinentry (pinentry-mac), or unlock the key first."),
+            "{}",
+            pinentry.detail
+        );
+        assert!(matches!(&pinentry.actions[0].1, view::Action::Handoff(crate::handoff::Action::OpenUrl(url)) if url == crate::signing::PINENTRY_PAGE));
+        let locked = shown("Commit Failed", SSH_PASSPHRASE, &commit);
+        assert!(locked.detail.contains("The SSH key id_signing was not unlocked"), "{}", locked.detail);
+        let gone = shown("Commit Failed", SSH_KEY_GONE, &commit);
+        assert!(gone.detail.contains("Git could not read the signing key /Users/me/.ssh/gone.pub."), "{}", gone.detail);
         let gpg = shown("Commit Failed", GPG_MISSING, &commit);
         assert_eq!(gpg.title, "The commit could not be signed");
         assert!(gpg.detail.contains("Git could not find gpg, which signs your commits."), "{}", gpg.detail);

@@ -147,6 +147,10 @@ impl Link {
         Self::with(true, askpass::Broker::global().map(|broker| broker.session()))
     }
 
+    pub(crate) fn answering() -> Self {
+        Self::with(false, askpass::Broker::global().map(|broker| broker.session()))
+    }
+
     fn with(cancellable: bool, asking: Option<Arc<askpass::Session>>) -> Self {
         Self(Arc::new(Shared {
             cancel: AtomicBool::new(false),

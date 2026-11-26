@@ -201,6 +201,7 @@ pub enum Action {
     NewAt(Kind, String),
     ToggleCheckout,
     TogglePush,
+    ToggleSign,
     ToggleLabels,
     Submit,
     Escape,
@@ -239,6 +240,7 @@ pub struct Draft {
     subject: String,
     checkout: bool,
     push: bool,
+    sign: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -353,6 +355,15 @@ impl State {
 
     pub(crate) fn draft_push(&self) -> Option<bool> {
         self.draft.as_ref().filter(|draft| draft.kind == Kind::Tag).map(|draft| draft.push)
+    }
+
+    pub(crate) fn draft_sign(&self) -> Option<bool> {
+        self.draft.as_ref().filter(|draft| draft.kind == Kind::Tag).map(|draft| draft.sign)
+    }
+
+    pub(crate) fn sign_problem(&self, cx: &App) -> Option<&'static str> {
+        let signing = self.draft_sign()? && self.message.read(cx).text().trim().is_empty();
+        signing.then_some(SIGNED_NEEDS_MESSAGE)
     }
 
     pub(crate) fn switcher_rows(ui: &view::Ui, cx: &App) -> (Vec<String>, Option<String>, Option<usize>) {
@@ -501,6 +512,7 @@ pub(crate) fn name_problem<'a>(
     None
 }
 
+#[cfg(test)]
 fn create(
     repo: &Repository,
     kind: Kind,
@@ -508,6 +520,20 @@ fn create(
     oid: &str,
     checkout: bool,
     message: &str,
+) -> Result<(), String> {
+    create_with(repo, kind, name, oid, checkout, message, false)
+}
+
+pub(crate) const SIGNED_NEEDS_MESSAGE: &str = "A signed tag needs a message";
+
+fn create_with(
+    repo: &Repository,
+    kind: Kind,
+    name: &str,
+    oid: &str,
+    checkout: bool,
+    message: &str,
+    sign: bool,
 ) -> Result<(), String> {
     if let Some(error) = name_problem(kind, name, []) {
         return Err(error);
@@ -519,6 +545,8 @@ fn create(
             cmd.args(["switch", "--no-guess", "--no-track", "-c", name, oid])
         }
         Kind::Branch => cmd.args(["branch", "--no-track", "--", name, oid]),
+        Kind::Tag if sign && message.trim().is_empty() => return Err(format!("{SIGNED_NEEDS_MESSAGE}.")),
+        Kind::Tag if sign => cmd.args(["tag", "--sign", "--cleanup=whitespace", "-m"]).arg(message).args(["--", name, oid]),
         Kind::Tag if message.trim().is_empty() => cmd.args(["tag", "--no-sign", "--", name, oid]),
         Kind::Tag => cmd
             .args(["tag", "--no-sign", "--annotate", "--cleanup=whitespace", "-m"])
@@ -708,6 +736,7 @@ fn start_draft(tab: &mut Tab, kind: Kind, oid: String, window: &mut Window, cx: 
         subject,
         checkout: true,
         push: kind == Kind::Tag && crate::settings::settings(cx).push_new_tags,
+        sign: kind == Kind::Tag && crate::signing::config(&tab.ui).tags,
     });
     tab.ui.refs.input.update(cx, |input, cx| input.clear(cx));
     tab.ui.refs.message.update(cx, |input, cx| input.clear(cx));
@@ -794,6 +823,11 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
                 draft.checkout = !draft.checkout;
             }
         }
+        Action::ToggleSign => {
+            if let Some(draft) = tab.ui.refs.draft.as_mut().filter(|draft| draft.kind == Kind::Tag) {
+                draft.sign = !draft.sign;
+            }
+        }
         Action::TogglePush => {
             if let Some(draft) = tab.ui.refs.draft.as_mut().filter(|draft| draft.kind == Kind::Tag) {
                 draft.push = !draft.push;
@@ -811,6 +845,10 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             }
             let (kind, target) = (draft.kind, draft.oid.clone());
             let checkout = kind == Kind::Branch && draft.checkout;
+            let sign = kind == Kind::Tag && draft.sign;
+            if tab.ui.refs.sign_problem(cx).is_some() {
+                return;
+            }
             let (message, push) = match kind {
                 Kind::Tag => (
                     tab.ui.refs.message.read(cx).text().to_owned(),
@@ -819,7 +857,7 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
                 _ => (String::new(), None),
             };
             view::focus(&tab.ui, window);
-            submit(tab, kind, name, target, checkout, Made { message, push }, cx);
+            submit(tab, kind, name, target, checkout, Made { message, push, sign }, cx);
         }
         Action::CreateBranch(name) => {
             let Some(head) = tab.ui.head.clone() else {
@@ -928,6 +966,7 @@ fn switched(
 struct Made {
     message: String,
     push: Option<String>,
+    sign: bool,
 }
 
 fn submit(
@@ -939,7 +978,7 @@ fn submit(
     made: Made,
     cx: &mut Context<Tab>,
 ) {
-    let Made { message, push } = made;
+    let Made { message, push, sign } = made;
     let pushed = push.map(|remote| (OsString::from(&name), remote));
     let (progress, notice) = match kind {
         Kind::Branch if checkout => ("Creating the branch…", "Branch created and checked out"),
@@ -953,9 +992,11 @@ fn submit(
         checkout,
         move |repo| {
             let old = (kind == Kind::Branch && checkout).then(|| crate::branch::detached_head(&repo)).flatten();
-            create(&repo, kind, &name, &target, checkout, &message)?;
+            create_with(&repo, kind, &name, &target, checkout, &message, sign)?;
             let short = crate::notice::short(&target);
-            let outcome = crate::notice::Outcome::detail(if kind == Kind::Tag && !message.trim().is_empty() {
+            let outcome = crate::notice::Outcome::detail(if kind == Kind::Tag && sign {
+                format!("{name} at {short}, signed")
+            } else if kind == Kind::Tag && !message.trim().is_empty() {
                 format!("{name} at {short}, annotated")
             } else {
                 format!("{name} at {short}")
@@ -2009,7 +2050,8 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
     let ui = app.ui();
     let draft = ui.refs.draft.as_ref()?;
     let error = ui.refs.validation(cx);
-    let allowed = !ui.busy() && !ui.refs.input.read(cx).text().is_empty() && error.is_none();
+    let unsigned = ui.refs.sign_problem(cx);
+    let allowed = !ui.busy() && !ui.refs.input.read(cx).text().is_empty() && error.is_none() && unsigned.is_none();
     let title = match draft.kind {
         Kind::Tag => "New tag",
         _ => "New branch",
@@ -2050,7 +2092,33 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
         })
         .when(draft.kind == Kind::Tag, |d| {
             let push = crate::tag::home_remote(ui).map(|remote| (remote, draft.push));
-            d.child(ui.refs.message.clone()).when_some(push, |d, (remote, ticked)| {
+            let config = crate::signing::config(ui);
+            let sign_tip = if config.tags {
+                format!("tag.gpgSign is on. {} Untick to make this tag unsigned.", config.described())
+            } else {
+                format!("Create a signed, annotated tag (-s). {}", config.described())
+            };
+            d.child(ui.refs.message.clone())
+                .when_some(unsigned, |d, hint| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(TEXT_3)).child(hint)))
+                .child(kit::pressable(
+                    div()
+                        .id("sign-new-tag")
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .rounded(px(RADIUS_CHIP))
+                        .text_size(px(12.5))
+                        .text_color(rgb(TEXT_2))
+                        .focusable()
+                        .focus(|s| s.text_color(rgb(TEXT)))
+                        .child(kit::checkbox(draft.sign))
+                        .child("Sign this tag")
+                        .tooltip(kit::tip(sign_tip)),
+                    view::Action::Refs(Action::ToggleSign),
+                    cx,
+                ))
+                .when_some(push, |d, (remote, ticked)| {
                 d.child(kit::pressable(
                     div()
                         .id("push-new-tag")
@@ -2116,10 +2184,14 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::repository::tests::Fixture;
     use std::fs;
+
+    pub(crate) fn create_signed(repo: &Repository, name: &str, oid: &str, message: &str, sign: bool) -> Result<(), String> {
+        create_with(repo, Kind::Tag, name, oid, false, message, sign)
+    }
 
     fn oid(f: &Fixture, revision: &str) -> String {
         String::from_utf8(f.git(&["rev-parse", "--verify", revision]))

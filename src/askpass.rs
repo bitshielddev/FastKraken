@@ -132,7 +132,7 @@ impl Question {
             return Self::Passphrase { key };
         }
         if let Some(rest) = trimmed.strip_prefix("Enter passphrase for ") {
-            let key = rest.trim_end_matches(':').trim().trim_matches('\'');
+            let key = rest.trim_end_matches(':').trim().trim_matches(['\'', '"']);
             if key.starts_with('/') || key.starts_with('~') {
                 return Self::Passphrase { key: key.to_owned() };
             }
@@ -566,10 +566,14 @@ pub(crate) fn poll(tab: &mut Tab, cx: &mut Context<Tab>) -> bool {
     if tab.ui.prompt.open() {
         return false;
     }
-    let Some(job) = tab.ui.jobs.network.as_ref() else { return false };
-    let connect = job.spec.kind != crate::jobs::Kind::Clone && tab.repo.is_some();
-    let Some(session) = job.link.session().cloned() else { return false };
-    let Some((id, question, tries)) = session.unshown() else { return false };
+    let jobs = [tab.ui.jobs.network.as_ref(), tab.ui.jobs.write.as_ref()];
+    let Some((kind, session, (id, question, tries))) = jobs.into_iter().flatten().find_map(|job| {
+        let session = job.link.session()?;
+        Some((job.spec.kind, session.clone(), session.unshown()?))
+    }) else {
+        return false;
+    };
+    let connect = !matches!(kind, crate::jobs::Kind::Clone | crate::jobs::Kind::Write) && tab.repo.is_some();
     prompt::ask(&mut tab.ui, prompt::Kind::Askpass(Ask { session, id, question, tries, connect }), cx);
     true
 }
@@ -737,6 +741,10 @@ pub(crate) mod tests {
         assert_eq!(
             Question::parse("Enter passphrase for key '/Users/cedar/.ssh/id_ed25519': "),
             Question::Passphrase { key: "/Users/cedar/.ssh/id_ed25519".into() }
+        );
+        assert_eq!(
+            Question::parse("Enter passphrase for \"/Users/cedar/.ssh/id_signing\": "),
+            Question::Passphrase { key: "/Users/cedar/.ssh/id_signing".into() }
         );
         let first = "The authenticity of host 'github.com (140.82.121.4)' can't be established.\nED25519 key fingerprint is SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU.\nThis key is not known by any other names.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ";
         assert_eq!(

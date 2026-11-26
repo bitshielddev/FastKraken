@@ -5,7 +5,8 @@ use crate::{
     github::{PullState, Tokens},
     notice, pulls, sync,
 };
-use std::ffi::OsStr;
+use crate::{commit_options, prompt, reveal, signing::{self, Grade, Signature}};
+use std::{ffi::OsStr, process::Stdio};
 
 const PULL_TRAIL: &str = "Pull-trail";
 const PUSH_TRAIL: &str = "Push-trail";
@@ -24,6 +25,86 @@ const SUMMIT_TRAIL: &str = "summit-trail";
 const CEDAR_SUMMIT: &str = "https://github.com/cedar/summit-trail";
 const FERN_SUMMIT: &str = "https://github.com/fern/summit-trail";
 const TEAM_SUMMIT: &str = "https://github.com/trailteam/summit-trail";
+
+const SIGNPOST: &str = "Signpost";
+const KEYGEN: &str = "/usr/bin/ssh-keygen";
+const SIGNER: &str = "cedar@example.invalid";
+const LANTERN_PASSPHRASE: &str = "ridge lantern";
+const UNLOCK_LANTERN: &str = "Unlock SSH key lantern";
+
+struct Signpost {
+    root: PathBuf,
+    keys: PathBuf,
+    allowed: PathBuf,
+    link: PathBuf,
+    raised: String,
+    painted: String,
+}
+
+fn keygen(args: &[&str], key: &Path, askpass: Option<&Path>) -> Result<String> {
+    let mut command = std::process::Command::new(KEYGEN);
+    command.args(args).arg(key).env_remove("SSH_AUTH_SOCK").stdin(Stdio::null());
+    if let Some(askpass) = askpass {
+        command.env("SSH_ASKPASS", askpass).env("SSH_ASKPASS_REQUIRE", "force");
+    }
+    let output = command.output()?;
+    if !output.status.success() {
+        return Err(format!("ssh-keygen {args:?}: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn utf8(path: &Path) -> Result<&str> {
+    path.to_str().ok_or_else(|| "A sandbox path is not UTF-8".into())
+}
+
+fn signpost(dir: &Path) -> Result<Signpost> {
+    let sandbox = super::sandbox().ok_or("The replay has no sandbox")?;
+    let bin = sandbox.join("bin");
+    fs::create_dir_all(&bin)?;
+    let link = bin.join("ssh-keygen");
+    std::os::unix::fs::symlink(KEYGEN, &link)?;
+    let keys = dir.join("signing-keys");
+    fs::create_dir(&keys)?;
+    for name in ["cedar", "stranger"] {
+        keygen(&["-q", "-t", "ed25519", "-N", "", "-C", name, "-f"], &keys.join(name), None)?;
+    }
+    let maker = keys.join("make-passphrase.sh");
+    super::gap04::script(&maker, &format!("echo '{LANTERN_PASSPHRASE}'\n"))?;
+    keygen(&["-q", "-t", "ed25519", "-C", "lantern", "-f"], &keys.join("lantern"), Some(&maker))?;
+    fs::remove_file(&maker)?;
+    let allowed = keys.join("allowed_signers");
+    let mut listed = String::new();
+    for name in ["cedar", "lantern"] {
+        listed.push_str(&format!("{SIGNER} {}\n", fs::read_to_string(keys.join(format!("{name}.pub")))?.trim()));
+    }
+    fs::write(&allowed, listed)?;
+    let root = init(dir, SIGNPOST)?;
+    for (key, value) in [
+        ("gpg.format", "ssh"),
+        ("user.signingKey", utf8(&keys.join("cedar.pub"))?),
+        ("gpg.ssh.allowedSignersFile", utf8(&allowed)?),
+    ] {
+        git(&root, &["config", "--local", key, value])?;
+    }
+    fs::write(root.join("signpost.txt"), TRAIL)?;
+    git(&root, &["add", "--", "signpost.txt"])?;
+    git(&root, &["commit", "-S", "-qm", "Raise the signpost"])?;
+    git(&root, &["tag", "-s", "-m", "Signpost v1", "v1"])?;
+    let raised = oid(&root, "HEAD")?;
+    record(&root, "signpost.txt", &format!("{TRAIL}Paint: yellow\n"), "Paint the signpost")?;
+    let painted = oid(&root, "HEAD")?;
+    Ok(Signpost { root, keys, allowed, link, raised, painted })
+}
+
+fn signed_object(root: &Path, kind: &str, revision: &str) -> Result<bool> {
+    let raw = git(root, &["cat-file", kind, revision])?;
+    Ok(if kind == "commit" {
+        signing::header_signature(raw.as_bytes()).is_some()
+    } else {
+        raw.contains("-----BEGIN SSH SIGNATURE-----")
+    })
+}
 
 struct Badges {
     root: PathBuf,
@@ -68,7 +149,10 @@ impl Replay<'_> {
         let badges = self.a_branch_with_an_open_pull_request_shows_its_number(dir, &hosting).await?;
         self.missing_permission_is_explained(&hosting, &badges).await?;
         self.check_out_a_pull_request_from_a_fork(dir, &hosting, &badges).await?;
-        self.clone_from_the_github_list(dir, &hosting).await
+        self.clone_from_the_github_list(dir, &hosting).await?;
+        let signpost = self.a_signed_commit_shows_as_verified(dir).await?;
+        self.a_commit_signed_by_an_unknown_key(&signpost).await?;
+        self.sign_one_commit_from_the_commit_box(&signpost).await
     }
 
     async fn until_tab_total(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
@@ -843,6 +927,272 @@ impl Replay<'_> {
         }
         git_is(&root, &["ls-remote", "--", &origin, "refs/heads/spur"], &format!("{cairn}\trefs/heads/spur\n"))?;
         git_is(&root, &["status", "--porcelain"], "")?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn signature_checked(&mut self, oid: &str) -> Result<(Option<Signature>, Vec<(String, Signature)>)> {
+        let wanted = oid.to_owned();
+        self.until(&format!("the signature of {oid} checked"), move |tab| {
+            tab.ui.selection == Some(Selection::Commit(wanted.clone())) && tab.ui.signing.checked(&wanted)
+        })
+        .await?;
+        let wanted = oid.to_owned();
+        Ok(self.tab.read_with(self.cx, move |tab, _| (tab.ui.signing.of(&wanted).cloned(), tab.ui.signing.tags.clone()))?)
+    }
+
+    async fn reveal_signature(&mut self, oid: &str) -> Result<(Option<Signature>, Vec<(String, Signature)>)> {
+        self.action(Action::Reveal(reveal::Action::Commit(oid.to_owned())))?;
+        self.signature_checked(oid).await
+    }
+
+    async fn check_again(&mut self, oid: &str) -> Result<Signature> {
+        self.action(Action::Signing(signing::Action::Recheck))?;
+        let (commit, _) = self.signature_checked(oid).await?;
+        commit.ok_or_else(|| format!("Checking {oid} again found no signature").into())
+    }
+
+    async fn a_signed_commit_shows_as_verified(&mut self, dir: &Path) -> Result<Signpost> {
+        self.start("GAP1207");
+        let signpost = signpost(dir)?;
+        let root = signpost.root.clone();
+        let before = snapshot(&root)?;
+        let printed = keygen(&["-lf"], &signpost.keys.join("cedar.pub"), None)?;
+        let fingerprint = printed.split_whitespace().nth(1).ok_or("ssh-keygen -lf printed no fingerprint")?.to_owned();
+        self.open(&root)?;
+        let painted = signpost.painted.clone();
+        self.until("Signpost open on Paint the signpost", |tab| {
+            tab.ui.repo == SIGNPOST && tab.ui.head.as_deref() == Some(painted.as_str())
+        })
+        .await?;
+        let (commit, tags) = self.reveal_signature(&signpost.raised).await?;
+        let Some(commit) = commit else {
+            return Err("Raise the signpost shows no signature badge".into());
+        };
+        if (commit.grade, commit.word(), commit.detail().as_str()) != (Grade::Verified, "Verified", SIGNER) {
+            return Err(format!("Raise the signpost shows {commit:?}").into());
+        }
+        let tip = commit.tip();
+        for line in [
+            format!("Verified, signed by {SIGNER}"),
+            "SSH signature".to_owned(),
+            format!("Signer: {SIGNER}"),
+            format!("Fingerprint: {fingerprint}"),
+        ] {
+            if !tip.lines().any(|shown| shown == line) {
+                return Err(format!("The badge's tooltip lacks {line:?}: {tip:?}").into());
+            }
+        }
+        let tagged: Vec<(&str, Grade)> = tags.iter().map(|(name, signature)| (name.as_str(), signature.grade)).collect();
+        if tagged != [("v1", Grade::Verified)] || tags[0].1.word() != "Verified" {
+            return Err(format!("The tags at Raise the signpost show {tags:?}").into());
+        }
+        git_is(&root, &["log", "-1", "--format=%G? %GS", &signpost.raised], &format!("G {SIGNER}\n"))?;
+        let again = self.check_again(&signpost.raised).await?;
+        if again.grade != Grade::Verified {
+            return Err(format!("Checking again shows {again:?}").into());
+        }
+        let (unsigned, tags) = self.reveal_signature(&signpost.painted).await?;
+        if unsigned.is_some() || !tags.is_empty() {
+            return Err(format!("Paint the signpost shows a badge: {unsigned:?} {tags:?}").into());
+        }
+        if snapshot(&root)? != before {
+            return Err("Checking signatures changed Signpost".into());
+        }
+        self.pass();
+        Ok(signpost)
+    }
+
+    async fn a_commit_signed_by_an_unknown_key(&mut self, signpost: &Signpost) -> Result<()> {
+        self.start("GAP1208");
+        let root = &signpost.root;
+        let stranger = format!("user.signingKey={}", utf8(&signpost.keys.join("stranger.pub"))?);
+        git(root, &["-c", &stranger, "commit", "--allow-empty", "-S", "-qm", "Visit the signpost"])?;
+        let visited = oid(root, "HEAD")?;
+        self.action(Action::Refresh)?;
+        let tip = visited.clone();
+        self.until("Signpost on Visit the signpost", |tab| tab.ui.head.as_deref() == Some(tip.as_str())).await?;
+        let (commit, _) = self.reveal_signature(&visited).await?;
+        let Some(commit) = commit else {
+            return Err("Visit the signpost shows no signature badge".into());
+        };
+        let reason = "The key is not one of the allowed signers in gpg.ssh.allowedSignersFile.";
+        if (commit.grade, commit.word(), commit.detail().as_str()) != (Grade::Unknown, "Signed", "cannot be checked here")
+            || !commit.tip().lines().any(|line| line == "Signed; cannot be checked here")
+            || !commit.tip().lines().any(|line| line == reason)
+        {
+            return Err(format!("Visit the signpost shows {commit:?}").into());
+        }
+        git_is(root, &["log", "-1", "--format=%G?", &visited], "U\n")?;
+
+        git(root, &["config", "--local", "--unset", "gpg.ssh.allowedSignersFile"])?;
+        self.reveal_signature(&signpost.raised).await?;
+        let unchecked = self.check_again(&signpost.raised).await?;
+        let said = unchecked.reason.clone().unwrap_or_default();
+        if unchecked.sentence() != "Signed; cannot be checked here"
+            || !said.starts_with("Git has no allowed signers file to check SSH signatures against")
+        {
+            return Err(format!("Without an allowed signers file Raise the signpost shows {unchecked:?}").into());
+        }
+        git(root, &["config", "--local", "gpg.ssh.allowedSignersFile", utf8(&signpost.allowed)?])?;
+        let restored = self.check_again(&signpost.raised).await?;
+        if restored.grade != Grade::Verified {
+            return Err(format!("With the allowed signers file back Raise the signpost shows {restored:?}").into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    fn signing_now(&mut self) -> Result<(bool, Option<bool>, bool)> {
+        Ok(self.tab.read_with(self.cx, |tab, _| {
+            (commit_options::signs(&tab.ui), tab.ui.commit_options.sign_chosen, signing::commit_chip(&tab.ui).is_some())
+        })?)
+    }
+
+    async fn stage_for_commit(&mut self, root: &Path, name: &str, summary: &str) -> Result<()> {
+        fs::write(root.join(name), format!("{name}\n"))?;
+        git(root, &["add", "--", name])?;
+        self.action(Action::Refresh)?;
+        self.until(&format!("{name} staged"), |tab| tab.ui.file_ranges().1.len() == 1).await?;
+        self.tab.update(self.cx, |tab, _, cx| {
+            tab.ui.input.update(cx, |field, cx| field.set_text(summary, cx));
+        })?;
+        Ok(())
+    }
+
+    async fn unlock_lantern(&mut self, waiting: bool) -> Result<()> {
+        self.during("the lantern key's passphrase asked for", |tab| {
+            matches!(tab.ui.prompt.asked(), Some(prompt::Kind::Askpass(_)))
+                && prompt::shown(&tab.ui).is_some_and(|spec| spec.title == UNLOCK_LANTERN)
+        })
+        .await?;
+        let (masked, progress) = self.tab.read_with(self.cx, |tab, _| {
+            let masked = prompt::shown(&tab.ui).and_then(|spec| spec.field.as_ref().map(|field| (field.label, field.masked)));
+            let progress = tab.ui.jobs.write.as_ref().and_then(|job| job.notice).and_then(|id| tab.ui.notices.get(id)).map(|notice| notice.detail.clone());
+            (masked, progress)
+        })?;
+        if masked != Some(("Passphrase", true)) || waiting && progress.as_deref() != Some("Waiting for your answer…") {
+            return Err(format!("The unlock prompt has the field {masked:?} and the job says {progress:?}").into());
+        }
+        let typed = self.tab.update(self.cx, |tab, window, cx| {
+            let Some(field) = tab.ui.prompt.field().cloned() else { return false };
+            field.update(cx, |field, cx| field.replace_text_in_range(None, LANTERN_PASSPHRASE, window, cx));
+            field.read(cx).text() == LANTERN_PASSPHRASE
+        })?;
+        if !typed {
+            return Err("The unlock prompt did not take the passphrase".into());
+        }
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        self.during("the unlock prompt closed", |tab| !tab.ui.prompt.open()).await
+    }
+
+    async fn committed_as(&mut self, root: &Path, before: &str, summary: &str) -> Result<String> {
+        let (from, wanted) = (before.to_owned(), summary.to_owned());
+        self.until(&format!("{summary} committed"), move |tab| {
+            tab.ui.head.as_deref().is_some_and(|head| head != from) && tab.ui.notices.newest().is_some_and(|notice| notice.detail == wanted)
+        })
+        .await?;
+        git_is(root, &["log", "-1", "--format=%s"], &format!("{summary}\n"))?;
+        oid(root, "HEAD")
+    }
+
+    async fn sign_one_commit_from_the_commit_box(&mut self, signpost: &Signpost) -> Result<()> {
+        self.start("GAP1209");
+        let root = &signpost.root;
+        let lantern = signpost.keys.join("lantern.pub");
+        git(root, &["config", "--local", "user.signingKey", utf8(&lantern)?])?;
+        self.stage_for_commit(root, "lantern.txt", "Light the lantern").await?;
+        let wanted = lantern.display().to_string();
+        self.until("the lantern key read from the configuration", move |tab| {
+            signing::config(&tab.ui).key.as_deref() == Some(wanted.as_str()) && !signing::config(&tab.ui).commits
+        })
+        .await?;
+        if self.signing_now()? != (false, None, false) {
+            return Err(format!("With commit.gpgSign off the commit box shows {:?}", self.signing_now()?).into());
+        }
+        self.action(Action::CommitOptions(commit_options::Action::ToggleOpen))?;
+        self.action(Action::CommitOptions(commit_options::Action::ToggleSign))?;
+        let described = self.tab.read_with(self.cx, |tab, _| signing::config(&tab.ui).described())?;
+        if self.signing_now()? != (true, Some(true), true) || !described.contains("lantern.pub") {
+            return Err(format!("After ticking Sign this commit the box shows {:?}, {described:?}", self.signing_now()?).into());
+        }
+        let asked = crate::askpass::shown_so_far();
+        let before = oid(root, "HEAD")?;
+        self.action(Action::Commit)?;
+        self.unlock_lantern(true).await?;
+        let lit = self.committed_as(root, &before, "Light the lantern").await?;
+        git_is(root, &["log", "-1", "--format=%G? %GS", &lit], &format!("G {SIGNER}\n"))?;
+        if self.signing_now()? != (false, None, false) {
+            return Err(format!("After the signed commit the box shows {:?}", self.signing_now()?).into());
+        }
+        if let Some(entry) = crate::activity::entries().iter().find(|entry| entry.command_line().contains(LANTERN_PASSPHRASE)) {
+            return Err(format!("A command had the passphrase in its arguments: {}", entry.command_line()).into());
+        }
+
+        let asked = asked + 1;
+        self.stage_for_commit(root, "notes.txt", "Note the lantern").await?;
+        self.action(Action::Commit)?;
+        let noted = self.committed_as(root, &lit, "Note the lantern").await?;
+        if signed_object(root, "commit", &noted)? || crate::askpass::shown_so_far() != asked {
+            return Err("Note the lantern was signed, or a prompt appeared".into());
+        }
+
+        git(root, &["config", "--local", "commit.gpgSign", "true"])?;
+        self.action(Action::Refresh)?;
+        self.until("commit.gpgSign read as on", |tab| signing::config(&tab.ui).commits).await?;
+        if self.signing_now()? != (true, None, true) {
+            return Err(format!("With commit.gpgSign on the box shows {:?}", self.signing_now()?).into());
+        }
+        self.action(Action::CommitOptions(commit_options::Action::ToggleSign))?;
+        if self.signing_now()? != (false, Some(false), false) {
+            return Err(format!("After unticking Sign this commit the box shows {:?}", self.signing_now()?).into());
+        }
+        self.stage_for_commit(root, "route.txt", "Mark the route").await?;
+        self.action(Action::Commit)?;
+        let routed = self.committed_as(root, &noted, "Mark the route").await?;
+        if signed_object(root, "commit", &routed)? || crate::askpass::shown_so_far() != asked {
+            return Err("Mark the route was signed, or a prompt appeared".into());
+        }
+        if self.signing_now()? != (true, None, true) {
+            return Err(format!("After the unsigned commit the box shows {:?}", self.signing_now()?).into());
+        }
+
+        git(root, &["config", "--local", "tag.gpgSign", "true"])?;
+        self.action(Action::Refresh)?;
+        self.until("tag.gpgSign read as on", |tab| signing::config(&tab.ui).tags).await?;
+        self.ref_action(refs::Action::NewAt(refs::Kind::Tag, lit.clone()))?;
+        self.type_ref("v2")?;
+        let held = self.tab.read_with(self.cx, |tab, cx| (tab.ui.refs.draft_sign(), tab.ui.refs.sign_problem(cx)))?;
+        if held != (Some(true), Some(refs::SIGNED_NEEDS_MESSAGE)) {
+            return Err(format!("The new tag dialog shows {held:?}").into());
+        }
+        self.ref_action(refs::Action::Submit)?;
+        if !git(root, &["tag", "--list", "v2"])?.is_empty() {
+            return Err("A signed tag was created with no message".into());
+        }
+        let typed = self.tab.update(self.cx, |tab, window, cx| {
+            tab.ui.refs.message.update(cx, |field, cx| field.replace_text_in_range(None, "Lantern release", window, cx));
+            tab.ui.refs.sign_problem(cx).is_none()
+        })?;
+        if !typed {
+            return Err("The tag message did not clear the hold".into());
+        }
+        self.ref_action(refs::Action::Submit)?;
+        self.unlock_lantern(false).await?;
+        let (detail, _) = self.noticed("Tag created").await?;
+        if detail != format!("v2 at {}, signed", crate::notice::short(&lit)) {
+            return Err(format!("The tag notice says {detail:?}").into());
+        }
+        if !signed_object(root, "tag", "refs/tags/v2")? {
+            return Err("Tag v2 has no SSH signature".into());
+        }
+        let (_, tags) = self.reveal_signature(&lit).await?;
+        let tagged: Vec<(&str, Grade, &str)> = tags.iter().map(|(name, signature)| (name.as_str(), signature.grade, signature.signer.as_str())).collect();
+        if tagged != [("v2", Grade::Verified, SIGNER)] {
+            return Err(format!("Light the lantern lists the tags {tags:?}").into());
+        }
+        fs::remove_file(&signpost.link)?;
+        git_is(root, &["status", "--porcelain"], "")?;
         self.pass();
         Ok(())
     }

@@ -85,6 +85,7 @@ mod scrollbar;
 mod search;
 mod settings;
 mod sidebar;
+mod signing;
 mod sparse;
 mod start;
 mod stash;
@@ -971,7 +972,7 @@ impl Tab {
         let kept = autostash::Kept::default();
         let left = kept.clone();
         let shown = self.ui.identity.effective().cloned();
-        let hooks = self.ui.commit_options.hooks();
+        let hooks = self.ui.commit_options.choices();
         let push = commit_options::push_after(&self.ui, cx);
         let landed = Arc::new(std::sync::Mutex::new(None));
         let head = landed.clone();
@@ -1024,7 +1025,7 @@ impl Tab {
         let kept = autostash::Kept::default();
         let left = kept.clone();
         let shown = self.ui.identity.effective().cloned();
-        let hooks = self.ui.commit_options.hooks();
+        let hooks = self.ui.commit_options.choices();
         let push = commit_options::push_after(&self.ui, cx);
         let landed = Arc::new(std::sync::Mutex::new(None));
         let tip = landed.clone();
@@ -1451,7 +1452,7 @@ impl Tab {
             return;
         };
         let watch = (!replaying).then(|| journal::begin(&mut self.ui, refresh_refs));
-        let link = jobs::Link::new(false);
+        let link = jobs::Link::answering();
         let spinner = notice.is_some().then(|| self.ui.notices.progress(progress));
         let id = self.ui.jobs.start_write(progress, link.clone(), spinner);
         if notice.is_none() {
@@ -1748,6 +1749,7 @@ impl Tab {
             Action::PullRequest(action) => pull_request::dispatch(self, action, window, cx),
             Action::Pulls(action) => pulls::dispatch(self, action, window, cx),
             Action::Forks(action) => forks::dispatch(self, action, window, cx),
+            Action::Signing(action) => signing::dispatch(self, action, window, cx),
             Action::ViewChanges => {
                 if let Some(first) = self.ui.files.first() {
                     self.follow = Follow::Nothing;
@@ -1995,17 +1997,17 @@ fn main() {
     let launched = Instant::now();
     let argv0 = std::env::args_os().next().unwrap_or_default();
     let all: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    if std::env::var_os(askpass::SOCKET).is_some()
-        && all.len() == 1
-        && !all[0].as_encoded_bytes().starts_with(b"--git-credential")
-    {
-        std::process::exit(askpass::helper(&all[0]));
-    }
     if let Some(prepared) = std::env::var_os(rewrite::TODO_FILE)
         && let [target] = all.as_slice()
         && let Some(code) = rewrite::edit_todo(&prepared, target)
     {
         std::process::exit(code);
+    }
+    if std::env::var_os(askpass::SOCKET).is_some()
+        && all.len() == 1
+        && !all[0].as_encoded_bytes().starts_with(b"--git-credential")
+    {
+        std::process::exit(askpass::helper(&all[0]));
     }
     let helper = matches!(
         all.first().and_then(|arg| arg.to_str()),

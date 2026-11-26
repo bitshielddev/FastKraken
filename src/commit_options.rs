@@ -1,6 +1,6 @@
 use crate::{
     Tab, kit,
-    repository::{Hooks, Repository, Run},
+    repository::{Choices, Hooks, Repository, Run},
     settings::{self, Memory, Settings},
     theme::*,
     view::{self, CommitDraft, CommitInput, Desk, Tone, Ui},
@@ -17,6 +17,7 @@ pub(crate) const SHOWN_AUTHORS: usize = 8;
 const COAUTHOR_KEY: &str = "Co-authored-by";
 const SKIP_HOOKS: &str = "Skip hooks";
 const PUSH_AFTER: &str = "Push after committing";
+const SIGN: &str = "Sign this commit";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Author {
@@ -40,6 +41,7 @@ pub(crate) enum Push {
 pub(crate) enum Action {
     ToggleOpen,
     ToggleSkipHooks,
+    ToggleSign,
     TogglePush,
     TogglePushDefault,
     ToggleTemplate,
@@ -51,6 +53,7 @@ pub(crate) enum Action {
 pub(crate) struct State {
     pub(crate) open: bool,
     pub(crate) skip_hooks: bool,
+    pub(crate) sign_chosen: Option<bool>,
     pub(crate) push_chosen: Option<bool>,
     pub(crate) template: Option<CommitDraft>,
     picking: bool,
@@ -66,6 +69,7 @@ impl State {
         Self {
             open: false,
             skip_hooks: false,
+            sign_chosen: None,
             push_chosen: None,
             template: None,
             picking: false,
@@ -82,6 +86,14 @@ impl State {
     pub(crate) fn hooks(&self) -> Hooks {
         if self.skip_hooks { Hooks::Skip } else { Hooks::Run }
     }
+
+    pub(crate) fn choices(&self) -> Choices {
+        Choices { hooks: self.hooks(), sign: self.sign_chosen }
+    }
+}
+
+pub(crate) fn signs(ui: &Ui) -> bool {
+    ui.commit_options.sign_chosen.unwrap_or_else(|| crate::signing::config(ui).commits)
 }
 
 pub(crate) fn wants_push(ui: &Ui, cx: &App) -> bool {
@@ -140,7 +152,7 @@ pub(crate) fn commit_label(ui: &Ui, cx: &App) -> String {
 }
 
 fn chosen(ui: &Ui, cx: &App) -> usize {
-    usize::from(ui.commit_options.skip_hooks) + usize::from(wants_push(ui, cx) && push_refusal(ui).is_none())
+    usize::from(ui.commit_options.skip_hooks) + usize::from(signs(ui)) + usize::from(wants_push(ui, cx) && push_refusal(ui).is_none())
 }
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
@@ -154,6 +166,14 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
                 return;
             }
             tab.ui.commit_options.skip_hooks = !tab.ui.commit_options.skip_hooks;
+        }
+        Action::ToggleSign => {
+            if !tab.ui.can_edit_index() {
+                return;
+            }
+            let on = !signs(&tab.ui);
+            let configured = crate::signing::config(&tab.ui).commits;
+            tab.ui.commit_options.sign_chosen = (on != configured).then_some(on);
         }
         Action::TogglePush => {
             if push_refusal(&tab.ui).is_some() {
@@ -267,6 +287,7 @@ pub(crate) fn replaceable(shown: &CommitDraft, template: Option<&CommitDraft>) -
 
 pub(crate) fn committed(tab: &mut Tab, head: Option<String>, push: Option<Push>, cx: &mut Context<Tab>) {
     tab.ui.commit_options.skip_hooks = false;
+    tab.ui.commit_options.sign_chosen = None;
     fill(tab, cx);
     match push {
         Some(Push::Upstream(_)) => match head {
@@ -479,7 +500,7 @@ pub(crate) fn disclosure<T: Desk>(app: &T, cx: &mut Context<T>) -> Stateful<Div>
         .focus(|s| s.border_color(rgb(ACCENT)))
         .child(label)
         .child(kit::icon(if open { "chevron-down" } else { "chevron-right" }).size(px(11.)).text_color(rgb(TEXT_3)))
-        .tooltip(kit::tip(if open { "Hide the commit options" } else { "Skip hooks, or push after committing" }));
+        .tooltip(kit::tip(if open { "Hide the commit options" } else { "Skip hooks, sign, or push after committing" }));
     kit::pressable(toggle, view::Action::CommitOptions(Action::ToggleOpen), cx)
 }
 
@@ -499,6 +520,21 @@ pub(crate) fn options<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<Div> {
         editable.then_some(view::Action::CommitOptions(Action::ToggleSkipHooks)),
         cx,
     );
+    let config = crate::signing::config(ui);
+    let sign_tip: SharedString = match (signs(ui), config.commits) {
+        (true, true) => format!("{} Untick to commit this one unsigned (--no-gpg-sign).", config.described()).into(),
+        (true, false) => format!("{} Only this commit is signed (-S).", config.described()).into(),
+        (false, true) => "commit.gpgSign is on, but this commit will not be signed. Cleared after each commit.".into(),
+        (false, false) => "Sign only this commit, with -S. Cleared after each commit.".into(),
+    };
+    let sign = tick(
+        "commit-sign",
+        signs(ui),
+        SIGN,
+        sign_tip,
+        editable.then_some(view::Action::CommitOptions(Action::ToggleSign)),
+        cx,
+    );
     let refusal = push_refusal(ui);
     let push_tip: SharedString = match (refusal, &ui.upstream) {
         (Some(reason), _) => reason.into(),
@@ -514,7 +550,7 @@ pub(crate) fn options<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<Div> {
         refusal.is_none().then_some(view::Action::CommitOptions(Action::TogglePush)),
         cx,
     );
-    Some(div().flex().flex_wrap().items_center().gap_x_4().child(skip).child(push))
+    Some(div().flex().flex_wrap().items_center().gap_x_4().child(skip).child(sign).child(push))
 }
 
 pub(crate) fn coauthor_row<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {

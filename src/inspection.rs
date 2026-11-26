@@ -218,6 +218,7 @@ pub enum Action {
 
 pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
     crate::containing::selected(tab, oid, cx);
+    crate::signing::selected(tab, oid, cx);
     let state = &mut tab.ui.inspection;
     state.path = None;
     state.opening = None;
@@ -551,6 +552,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     row
                 }),
         )
+        .children(crate::signing::lines(ui, oid, cx))
         .child(
             div()
                 .pt(px(2.))

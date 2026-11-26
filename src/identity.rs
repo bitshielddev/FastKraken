@@ -63,6 +63,7 @@ pub(crate) struct Identity {
     pub effective: Values,
     pub global: Values,
     pub local: Values,
+    pub signing: crate::signing::Config,
 }
 
 impl Identity {
@@ -111,8 +112,12 @@ pub(crate) fn parse(listed: &[u8]) -> Identity {
     let mut parts = listed.split(|&byte| byte == 0);
     while let (Some(scope), Some(entry)) = (parts.next(), parts.next()) {
         let entry = String::from_utf8_lossy(entry);
-        let (key, value) = entry.split_once('\n').unwrap_or((&entry, ""));
-        let value = Some(value.trim().to_owned()).filter(|value| !value.is_empty());
+        let (key, given) = match entry.split_once('\n') {
+            Some((key, value)) => (key, Some(value)),
+            None => (entry.as_ref(), None),
+        };
+        identity.signing.read(key, given);
+        let value = Some(given.unwrap_or_default().trim().to_owned()).filter(|value| !value.is_empty());
         let pick = |values: &mut Values| match key {
             "user.name" => values.name = value.clone(),
             "user.email" => values.email = value.clone(),
