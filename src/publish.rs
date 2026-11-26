@@ -489,9 +489,10 @@ fn completed(tab: &mut Tab, notice: impl Into<String>) {
     tab.ui.notices.show(shown);
 }
 
-fn pushed(tab: &mut Tab, branch: &str, notice: String, said: remotes::Said) {
+fn pushed(tab: &mut Tab, target: &FirstPush, notice: String, said: remotes::Said) {
     close(tab);
-    let offer = crate::pull_request::offer(&tab.ui, std::ffi::OsStr::new(branch));
+    let (branch, destination) = (std::ffi::OsStr::new(&target.branch), std::ffi::OsStr::new(&target.destination));
+    let offer = crate::pull_request::offer(&tab.ui, branch, &target.remote, destination);
     let outcome = crate::pull_request::offered(crate::sync::told(crate::notice::Outcome::titled(notice, ""), said), offer);
     tab.ui.notices.show(outcome.notice().logged(tab.trail.entry(false)));
 }
@@ -760,7 +761,7 @@ fn first_push(tab: &mut Tab, cx: &mut Context<Tab>) {
         |tab, (target, outcome), cx| match outcome {
             PushOutcome::Tracking(said) => pushed(
                 tab,
-                &target.branch,
+                &target,
                 format!(
                     "{} now tracks {}/{}.",
                     target.branch, target.remote, target.destination

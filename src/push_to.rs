@@ -154,7 +154,7 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<
 }
 
 fn push(tab: &mut Tab, branch: OsString, tip: String, remote: String, destination: OsString, cx: &mut Context<Tab>) {
-    let offer = (destination == branch).then(|| crate::pull_request::offer(&tab.ui, &branch)).flatten();
+    let offer = crate::pull_request::offer(&tab.ui, &branch, &remote, &destination);
     tab.run_network(
         cx,
         crate::jobs::Spec::push(Some(remote.clone())),

@@ -9,6 +9,7 @@ const PUSH_TRAIL: &str = "Push-trail";
 const CEDAR_PULL: &str = "https://github.com/cedar/pull-trail";
 const TEAM_PULL: &str = "https://github.com/trailteam/pull-trail";
 const CEDAR_PUSH: &str = "https://github.com/cedar/push-trail";
+const CEDAR_BACKUP: &str = "https://github.com/cedar/push-trail-backup";
 
 fn hosted(dir: &Path, name: &str, remote: &str, page: &str) -> Result<String> {
     let bare = dir.join(format!("{name}-{remote}.git"));
@@ -197,6 +198,30 @@ impl Replay<'_> {
         let offered = self.newest_notice()?;
         self.action(Action::Notice(notice::Action::Take(offered, index)))?;
         self.opened_after(opened, &page).await?;
+        git_is(&root, &["ls-remote", "--", &origin, "refs/heads/spur"], &format!("{cairn}\trefs/heads/spur\n"))?;
+
+        let backup = hosted(dir, PUSH_TRAIL, "backup", CEDAR_BACKUP)?;
+        record(&root, "spur.txt", "Spur\nCairn\nSummit\n", "Reach the summit of the spur")?;
+        let summit = oid(&root, "spur")?;
+        self.action(Action::Refresh)?;
+        self.until("spur one commit ahead of origin/spur with backup listed", |tab| {
+            tab.ui.refs.addresses.contains_key("backup")
+                && tab.ui.refs.local(std::ffi::OsStr::new("spur")).is_some_and(|item| item.oid.as_deref() == Some(summit.as_str()) && item.ahead == 1)
+        })
+        .await?;
+        let opened = crate::handoff::opened().len();
+        let elsewhere = crate::push_to::Action::Push { branch: "spur".into(), tip: summit.clone(), remote: "backup".into(), destination: "spur".into() };
+        self.action(Action::PushTo(elsewhere))?;
+        let (detail, offers) = self.noticed("Pushed spur").await?;
+        if detail != "Created backup/spur." {
+            return Err(format!("The push to backup says {detail:?}").into());
+        }
+        if offers.iter().any(|offer| offer == crate::pull_request::OFFER) {
+            return Err(format!("A push to backup offers a pull request that would push to origin first: {offers:?}").into());
+        }
+        if tip_at(&root, &backup, "refs/heads/spur")?.as_deref() != Some(summit.as_str()) || crate::handoff::opened().len() != opened {
+            return Err("The push to backup did not land, or opened a page".into());
+        }
         git_is(&root, &["ls-remote", "--", &origin, "refs/heads/spur"], &format!("{cairn}\trefs/heads/spur\n"))?;
         git_is(&root, &["status", "--porcelain"], "")?;
         self.pass();

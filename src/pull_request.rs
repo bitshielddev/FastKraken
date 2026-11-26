@@ -274,9 +274,18 @@ pub(crate) fn resolve(ui: &Ui, branch: &OsStr, onto: Option<&Onto>) -> Option<Re
     Some(Request { branch: branch.to_owned(), tip, remote, there, push, page })
 }
 
-pub(crate) fn offer(ui: &Ui, branch: &OsStr) -> Option<(SharedString, view::Action)> {
-    resolve(ui, branch, None)?;
+pub(crate) fn offer(ui: &Ui, branch: &OsStr, remote: &str, destination: &OsStr) -> Option<(SharedString, view::Action)> {
+    let request = resolve(ui, branch, None)?;
+    if request.remote != remote || OsStr::new(&request.there) != destination {
+        return None;
+    }
     Some((OFFER.into(), view::Action::PullRequest(Action::Open { branch: branch.to_owned(), onto: None })))
+}
+
+pub(crate) fn offer_upstream(ui: &Ui, branch: &OsStr) -> Option<(SharedString, view::Action)> {
+    let upstream = ui.refs.local(branch)?.upstream.as_deref()?;
+    let (remote, there) = crate::branch::split_remote(&ui.refs.remotes, OsStr::new(upstream))?;
+    offer(ui, branch, remote, &there)
 }
 
 pub(crate) fn offered(mut outcome: Outcome, offer: Option<(SharedString, view::Action)>) -> Outcome {

@@ -517,7 +517,7 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, cx: &mut Context<
             Some(_) => {}
         },
         Ask::Force(forced) => {
-            let offer = crate::pull_request::offer(&tab.ui, std::ffi::OsStr::new(&forced.branch));
+            let offer = crate::pull_request::offer_upstream(&tab.ui, std::ffi::OsStr::new(&forced.branch));
             tab.run_network(
                 cx,
                 jobs::Spec::push(Some(forced.remote.clone())),
@@ -613,7 +613,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::PushBranch { name, tip } => {
             let Some(branch) = utf8(tab, &name, cx) else { return };
             let remote = remote_of(tab, tab.ui.refs.local(&name).and_then(|item| item.upstream.as_deref()));
-            let offer = crate::pull_request::offer(&tab.ui, &name);
+            let offer = crate::pull_request::offer_upstream(&tab.ui, &name);
             tab.run_network(
                 cx,
                 jobs::Spec::push(remote),
@@ -936,7 +936,7 @@ pub(crate) fn push_tip(tab: &mut Tab, branch: String, head: String, cx: &mut Con
         return;
     }
     let remote = remote_of(tab, tab.ui.upstream.as_deref());
-    let offer = crate::pull_request::offer(&tab.ui, std::ffi::OsStr::new(&branch));
+    let offer = crate::pull_request::offer_upstream(&tab.ui, std::ffi::OsStr::new(&branch));
     tab.run_network(
         cx,
         jobs::Spec::push(remote),
