@@ -986,7 +986,7 @@ pub(crate) fn folder_row<T: Desk>(
     let tip = path.to_string_lossy().into_owned();
     kit::row(id, false)
         .group("folder-row")
-        .h(px(FILE_ROW))
+        .h(whole_px(FILE_ROW))
         .pl(px(ROW_START + *depth as f32 * INDENT))
         .pr_2()
         .gap(px(5.))

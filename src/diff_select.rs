@@ -10,7 +10,7 @@ use gpui::{
     Context, CursorStyle, Div, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, UniformListScrollHandle, Window,
     prelude::*,
 };
-use crate::theme::px;
+use crate::theme::{pitch, px, unzoomed, whole_px};
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc, time::Duration};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -574,18 +574,19 @@ fn step(tab: &mut Tab, cx: &mut Context<Tab>) -> bool {
 fn scrolled(handle: &UniformListScrollHandle, edge: Edge, rows: usize, line: f32) -> Option<usize> {
     let state = handle.0.borrow();
     let base = &state.base_handle;
-    let height = f32::from(base.bounds().size.height);
+    let height = unzoomed(base.bounds().size.height);
     if rows == 0 || height <= 0. {
         return None;
     }
     let bottom = -base.max_offset().height;
     let mut offset = base.offset();
     offset.y = match edge {
-        Edge::Above => (offset.y + px(line)).min(px(0.)),
-        _ => (offset.y - px(line)).max(bottom),
+        Edge::Above => (offset.y + whole_px(line)).min(px(0.)),
+        _ => (offset.y - whole_px(line)).max(bottom),
     };
     base.set_offset(offset);
-    let top = -f32::from(offset.y);
+    let line = pitch(line);
+    let top = -unzoomed(offset.y);
     let visual = match edge {
         Edge::Above => (top / line).floor(),
         _ => ((top + height) / line).ceil() - 1.,
@@ -608,7 +609,7 @@ fn pointed(handle: &UniformListScrollHandle, y: Pixels, rows: usize, line: f32) 
         Edge::Inside
     };
     let inside = y.max(bounds.top()).min(bounds.bottom() - px(1.));
-    let visual = f32::from(inside - bounds.top() - base.offset().y) / line;
+    let visual = unzoomed(inside - bounds.top() - base.offset().y) / pitch(line);
     Some(((visual.max(0.) as usize).min(rows - 1), edge))
 }
 

@@ -1195,7 +1195,7 @@ impl Item {
         };
         let dimmed = !self.enabled;
         let inner = div()
-            .h(px(ROW))
+            .h(whole_px(ROW))
             .w_full()
             .px_2()
             .flex()

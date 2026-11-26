@@ -7,7 +7,7 @@ use crate::{
     view::{Selection, Ui},
 };
 use gpui::{point};
-use crate::theme::px;
+use crate::theme::{pitch, px, unzoomed, zoom};
 use std::{
     collections::HashSet,
     io::{self, BufRead, BufReader, Read},
@@ -231,11 +231,12 @@ pub(crate) fn anchor(top: f32, height: f32, items: usize, selected: Option<usize
     if items == 0 || top < 1. {
         return None;
     }
-    let at = |item: usize| item as f32 * ROW - top;
-    if let Some(item) = selected.filter(|&item| item < items && at(item) + ROW > 0. && at(item) < height) {
+    let row = pitch(ROW);
+    let at = |item: usize| item as f32 * row - top;
+    if let Some(item) = selected.filter(|&item| item < items && at(item) + row > 0. && at(item) < height) {
         return Some(item);
     }
-    Some(((top / ROW).floor() as usize).min(items - 1))
+    Some(((top / row).floor() as usize).min(items - 1))
 }
 
 fn key(ui: &Ui, item: usize) -> Option<Key> {
@@ -261,8 +262,8 @@ pub(crate) fn reload(ui: &Ui) -> Reload {
     let (top, height, pending) = {
         let scroll = ui.history_scroll.0.borrow();
         (
-            -f32::from(scroll.base_handle.offset().y),
-            f32::from(scroll.base_handle.bounds().size.height),
+            -unzoomed(scroll.base_handle.offset().y),
+            unzoomed(scroll.base_handle.bounds().size.height),
             scroll.deferred_scroll_to_item.map(|deferred| deferred.item_index),
         )
     };
@@ -286,7 +287,7 @@ pub(crate) fn reload(ui: &Ui) -> Reload {
     wanted.extend(anchor.clone());
     wanted.dedup();
     let bottom = (height > 0. && items > 0)
-        .then(|| (((top.max(0.) + height) / ROW).ceil() as usize).saturating_sub(1).min(items - 1));
+        .then(|| (((top.max(0.) + height) / pitch(ROW)).ceil() as usize).saturating_sub(1).min(items - 1));
     let deepest = [selected, place.as_ref().map(|place| place.item), bottom].into_iter().flatten().max();
     Reload { rows: rows(ui.history.len(), deepest), wanted, anchor, place }
 }
@@ -304,8 +305,8 @@ pub(crate) fn restore(ui: &Ui, place: Option<Place>) {
         return;
     }
     let offset = scroll.base_handle.offset();
-    let moved = (item as f32 - place.item as f32) * ROW;
-    scroll.base_handle.set_offset(point(offset.x, (offset.y - px(moved)).min(px(0.))));
+    let moved = (item as f32 - place.item as f32) * (ROW * zoom()).round();
+    scroll.base_handle.set_offset(point(offset.x, (offset.y - gpui::px(moved)).min(px(0.))));
 }
 
 pub(crate) fn grouped(count: usize) -> String {

@@ -827,7 +827,7 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     let target = side.clone().map(|side| crate::commands::Target::File { path: file.path.clone(), side });
                     Some(
                         kit::row(("compared-file", i), open)
-                            .h(px(FILE_ROW))
+                            .h(whole_px(FILE_ROW))
                             .pl(px(file_list::indent(mode, depth)))
                             .pr_3()
                             .gap_2()

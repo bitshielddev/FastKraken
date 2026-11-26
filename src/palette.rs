@@ -608,7 +608,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
     };
     let reason = at.and_then(|at| shown.into_iter().nth(at)).and_then(|entry| entry.disabled);
     let footer = div()
-        .h(px(ROW))
+        .h(whole_px(ROW))
         .px_3()
         .flex()
         .items_center()

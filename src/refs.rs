@@ -1382,7 +1382,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             div()
                                 .id(("side-header", i))
                                 .group("side-header")
-                                .h(px(TREE_ROW))
+                                .h(whole_px(TREE_ROW))
                                 .w_full()
                                 .pl(px(12.))
                                 .pr(px(8.))
@@ -1520,7 +1520,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .id(("side-folder", i))
                                 .when(*remote, |d| crate::drag::target(d, dropped_on, None, crate::drag::Look::Row, cx))
                                 .group("side-folder")
-                                .h(px(TREE_ROW))
+                                .h(whole_px(TREE_ROW))
                                 .w_full()
                                 .pl(indent(*depth))
                                 .pr(px(10.))
@@ -1623,7 +1623,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let row = crate::drag::source(div().id(("side-ref", i)), carried);
                             crate::drag::target(row, shown_ref, None, crate::drag::Look::Row, cx)
                                 .group("side-ref")
-                                .h(px(TREE_ROW))
+                                .h(whole_px(TREE_ROW))
                                 .w_full()
                                 .pl(indent(*depth))
                                 .pr(px(10.))
@@ -1718,7 +1718,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             let menu_oid = oid.clone();
                             let selected = matches!(&ui.selection, Some(Selection::Stash(s)) if s == &oid);
                             kit::row(("side-stash", i), selected)
-                                .h(px(TREE_ROW))
+                                .h(whole_px(TREE_ROW))
                                 .pl(px(27.))
                                 .pr(px(10.))
                                 .gap_2()
@@ -1760,7 +1760,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                         SideRow::PullNote(index) => crate::pulls::note_row(ui, *index, i, cx),
                         SideRow::Note => div()
                             .id(("side-note", i))
-                            .h(px(TREE_ROW))
+                            .h(whole_px(TREE_ROW))
                             .w_full()
                             .pl(px(29.))
                             .pr(px(10.))

@@ -1061,7 +1061,7 @@ pub(crate) fn heading(ui: &Ui) -> String {
 fn entry_row<T: Desk>(index: usize, row: &Row, chosen: bool, at: bool, cx: &mut Context<T>) -> gpui::AnyElement {
     match row {
         Row::Note { depth, text, loading } => div()
-            .h(px(FILE_ROW))
+            .h(whole_px(FILE_ROW))
             .flex()
             .items_center()
             .gap_2()
@@ -1097,7 +1097,7 @@ fn entry_row<T: Desk>(index: usize, row: &Row, chosen: bool, at: bool, cx: &mut 
                 _ => div().w(px(12.)).flex_shrink_0().into_any_element(),
             };
             kit::cursor(kit::row(("browse-row", index), chosen), at && !chosen)
-                .h(px(FILE_ROW))
+                .h(whole_px(FILE_ROW))
                 .pl(px(ROW_START + *depth as f32 * STEP_INDENT))
                 .pr_2()
                 .gap(px(5.))

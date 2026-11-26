@@ -21,7 +21,7 @@ use gpui::{
     UniformListScrollHandle, Window, actions, anchored, deferred, div, prelude::*, rgb,
     uniform_list,
 };
-use crate::theme::px;
+use crate::theme::{px, unzoomed};
 use graph::Graph;
 use std::{
     ffi::OsString,
@@ -631,6 +631,7 @@ pub enum Action {
     RebaseEditor(crate::rebase_editor::Action),
     Autostash(crate::autostash::Action),
     Appearance(crate::appearance::Action),
+    Zoom(crate::zoom::Action),
     Explain(crate::explain::Action),
     Select(Selection),
     More,
@@ -1401,6 +1402,9 @@ pub(crate) fn menu_bar(ui: &Ui, recents: &[(String, PathBuf)], field: bool, cx: 
     let mut view = bar_items(ui, Bar::View);
     let at = bar_index(Bar::View, "view.sidebar").map_or(view.len(), |at| (at + 1).min(view.len()));
     view.insert(at, MenuItem::submenu(Menu { name: "Sidebar Sections".into(), items: crate::sidebar::bar_items(ui) }));
+    if let Some(zoom) = bar_index(Bar::View, "view.zoom-in").map(|zoom| if zoom >= at { zoom + 1 } else { zoom }) {
+        view.insert(zoom.min(view.len()), MenuItem::separator());
+    }
     view.extend([MenuItem::separator(), MenuItem::action("Enter Full Screen", FullScreen)]);
     let mut file = bar_items(ui, Bar::File);
     let at = bar_index(Bar::File, "repo.open").map_or(file.len(), |at| (at + 1).min(file.len()));
@@ -1656,7 +1660,7 @@ fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap(px(6.))
-        .pl(px(if cfg!(target_os = "macos") { 78. } else { 12. }))
+        .pl(if cfg!(target_os = "macos") { gpui::px(78.) } else { px(12.) })
         .pr(px(10.))
         .bg(rgb(palette().panel))
         .border_b_1()
@@ -2126,8 +2130,8 @@ pub(crate) fn pointed_item(handle: &UniformListScrollHandle, row: f32, window: &
     if !bounds.contains(&mouse) {
         return None;
     }
-    let y = f32::from(mouse.y - bounds.top() - state.base_handle.offset().y);
-    (y >= 0.).then(|| (y / row) as usize)
+    let y = unzoomed(mouse.y - bounds.top() - state.base_handle.offset().y);
+    (y >= 0.).then(|| (y / pitch(row)) as usize)
 }
 
 fn graph_cell<T: Desk>(
@@ -2147,7 +2151,7 @@ fn graph_cell<T: Desk>(
             let tab = cx.weak_entity();
             d.on_scroll_wheel(cx.listener(move |app, event: &gpui::ScrollWheelEvent, _, cx| {
                 let delta = event.delta.pixel_delta(px(ROW));
-                let (across, down) = (f32::from(delta.x), f32::from(delta.y));
+                let (across, down) = (unzoomed(delta.x), unzoomed(delta.y));
                 if across == 0. {
                     return;
                 }
@@ -2166,7 +2170,7 @@ fn graph_cell<T: Desk>(
 fn history_tail<T: Desk>(ui: &Ui, graph_width: Pixels, cx: &Context<T>) -> gpui::Stateful<Div> {
     div()
         .id("history-tail")
-        .h(px(ROW))
+        .h(whole_px(ROW))
         .w_full()
         .flex()
         .flex_shrink_0()
@@ -2337,8 +2341,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
         )
         .on_drag_move(cx.listener(|app, event: &DragMoveEvent<crate::columns::HeaderDrag>, _, cx| {
             let column = event.drag(cx).0;
-            let x = f32::from(event.event.position.x - event.bounds.left());
-            crate::columns::drag(app, column, x, f32::from(event.bounds.size.width), cx);
+            crate::columns::drag(app, column, event.event.position.x - event.bounds.left(), event.bounds.size.width, cx);
         }))
         .when(shown_graph, |d| d.child(heading_cell(Column::Graph, widths.graph, graph_heading(ui, cx), cx)))
         .child(div().flex_1().min_w_0().overflow_hidden().child(kit::label("Description")))
@@ -2402,7 +2405,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                             let oid = entry.oid.clone();
                             let active = matches!(&ui.selection, Some(Selection::Stash(id)) if id == &oid);
                             return kit::row(("stash-graph", stash), active)
-                                .h(px(ROW))
+                                .h(whole_px(ROW))
                                 .when(shown_graph, |d| {
                                     d.child(lanes_here(kit::any(ui.graph.stash_element(base, first_at_base, active, lanes))))
                                 })
@@ -2462,7 +2465,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                         shown_row
                     };
                     shown_row
-                        .h(px(ROW))
+                        .h(whole_px(ROW))
                         .when(marked && !active, |d| d.bg(soft(palette().find_match, 0x8c)).border_color(rgb(palette().find_current)))
                         .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
                             if !cx.has_active_drag() {
@@ -2554,7 +2557,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                 }
             });
             kit::row("working-directory-row", ui.working() || ui.compare.picks_working_tree())
-                    .h(px(ROW))
+                    .h(whole_px(ROW))
                     .when(shown_graph, |d| {
                         d.child(
                             div()
@@ -2682,7 +2685,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             )
                         };
                         return div()
-                            .h(px(FILE_ROW))
+                            .h(whole_px(FILE_ROW))
                             .w_full()
                             .pl_3()
                             .pr_2()
@@ -2767,7 +2770,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     let picked_row = group.is_some();
                     kit::row(("file", index), selected)
                         .group("file-row")
-                        .h(px(FILE_ROW))
+                        .h(whole_px(FILE_ROW))
                         .pl(px(file_list::indent(mode, depth)))
                         .pr_2()
                         .gap_2()
@@ -3118,9 +3121,9 @@ pub(crate) fn resize_column<T: Desk>(
     window: &Window,
     cx: &mut Context<T>,
 ) {
-    let viewport = f32::from(window.viewport_size().width);
+    let viewport = unzoomed(window.viewport_size().width);
     let before = app.ui().columns.fit(viewport);
-    let after = before.dragged(column, viewport, f32::from(x));
+    let after = before.dragged(column, viewport, unzoomed(x));
     if before != after {
         app.ui_mut().columns = after;
         crate::settings::Memory::update(cx, |memory| memory.columns = Some(after));
@@ -3189,7 +3192,7 @@ pub fn render<T: Desk>(
     crate::refs::rebuild_rows(app.ui_mut(), cx);
     crate::find::settle(app.ui_mut());
     {
-        let viewport = f32::from(window.viewport_size().width);
+        let viewport = unzoomed(window.viewport_size().width);
         let centre = app.ui().columns_drawn(viewport).1;
         crate::columns::settle(app.ui_mut(), centre);
     }
@@ -3449,7 +3452,7 @@ pub fn render<T: Desk>(
     } else if !open {
         crate::start::screen(app, cx)
     } else {
-        let viewport = f32::from(window.viewport_size().width);
+        let viewport = unzoomed(window.viewport_size().width);
         let widths = ui.columns.fit(viewport);
         let shown = ui.shown();
         let sidebar = div()

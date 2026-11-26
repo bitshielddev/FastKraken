@@ -1605,7 +1605,7 @@ pub(crate) fn side_row<T: Desk>(ui: &Ui, index: usize, row: usize, pointed: bool
         lines.join("\n")
     };
     kit::row(("side-submodule", row), false)
-        .h(px(TREE_ROW))
+        .h(whole_px(TREE_ROW))
         .pl(px(12.))
         .pr(px(10.))
         .gap(px(6.))

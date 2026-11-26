@@ -749,7 +749,7 @@ fn tree_row<T: Desk>(index: usize, row: &Row, enabled: bool, cx: &mut Context<T>
     match row {
         Row::Note { depth, text } => div()
             .w_full()
-            .h(px(TREE_ROW))
+            .h(whole_px(TREE_ROW))
             .flex()
             .items_center()
             .pl(indent(*depth) + px(20.))
@@ -784,7 +784,7 @@ fn tree_row<T: Desk>(index: usize, row: &Row, enabled: bool, cx: &mut Context<T>
             div()
                 .id(("sparse-folder", index))
                 .w_full()
-                .h(px(TREE_ROW))
+                .h(whole_px(TREE_ROW))
                 .flex()
                 .items_center()
                 .gap_1()

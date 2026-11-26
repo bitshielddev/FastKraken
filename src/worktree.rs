@@ -1152,7 +1152,7 @@ pub(crate) fn side_row<T: Desk>(ui: &Ui, index: usize, row: usize, pointed: bool
     let shown = matches!((&ui.selection, &worktree.head), (Some(view::Selection::Commit(id)), Some(oid)) if id == oid);
     let dirty = if current { ui.changed_count() > 0 } else { matches!(ui.worktree.count(&worktree.path), Some(Ok(count)) if *count > 0) };
     kit::row(("side-worktree", row), false)
-        .h(px(TREE_ROW))
+        .h(whole_px(TREE_ROW))
         .pl(px(12.))
         .pr(px(10.))
         .gap(px(6.))

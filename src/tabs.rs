@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const NUMBERED: usize = 9;
 pub(crate) const STRIP: f32 = 30.;
+const REM: f32 = 16.;
 
 pub(crate) const COMMANDS: &[Command] = {
     fn anywhere(_: &Ui, target: &Target, _: &App) -> Availability {
@@ -540,6 +541,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(px(REM));
         div()
             .size_full()
             .bg(rgb(palette().canvas))

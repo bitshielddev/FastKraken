@@ -11,7 +11,7 @@ use gpui::{
     Context, Div, FontWeight, ScrollHandle, ScrollStrategy, UniformListScrollHandle, Window, div, prelude::*,
     rgb, uniform_list,
 };
-use crate::theme::px;
+use crate::theme::{px, unzoomed};
 use crate::{
     diff_select::Column,
     diff_text::Face,
@@ -1038,17 +1038,17 @@ fn follow_scroll(state: &State, editor: &Editor, face: &Face) {
         state.synced.set(None);
         return;
     }
-    let top = -f32::from(state.source_scroll.0.borrow().base_handle.offset().y);
+    let top = -unzoomed(state.source_scroll.0.borrow().base_handle.offset().y);
     let seen = state.synced.replace(Some(top));
     if seen.is_none_or(|seen| (seen - top).abs() < 0.5) {
         return;
     }
-    let height = source_height(face);
+    let height = pitch(source_height(face));
     let first = (top / height).floor().max(0.);
     let Some(&row) = editor.preview.sources.get(first as usize) else { return };
     let result = state.result_scroll.0.borrow();
     let mut offset = result.base_handle.offset();
-    offset.y = px(-(row as f32 + top / height - first) * result_height(face));
+    offset.y = px(-(row as f32 + top / height - first) * pitch(result_height(face)));
     result.base_handle.set_offset(offset);
 }
 
@@ -1060,7 +1060,7 @@ fn source_rows<T: Desk>(state: &State, face: &Face, cx: &mut Context<T>) -> impl
         cx.processor(move |app, range: Range<usize>, _, cx| {
             range.map(|line| {
                 div()
-                    .h(px(height))
+                    .h(whole_px(height))
                     .w_full()
                     .flex()
                     .child(source_cell(app, line, Side::Current, cx))
@@ -1088,7 +1088,7 @@ fn result_rows<T: Desk>(state: &State, editor: &Editor, face: &Face, cx: &mut Co
             let face = &ui.diff_text.face;
             range.map(|i| {
                 let base = div().id(("merge-result", i))
-                    .h(px(height))
+                    .h(whole_px(height))
                     .w_full()
                     .flex()
                     .items_center()
@@ -1159,7 +1159,7 @@ fn original_pane<T: Desk>(state: &State, editor: &Editor, face: &Face, cx: &mut 
             let ui = app.ui();
             range.map(|i| {
                 div()
-                    .h(px(line))
+                    .h(whole_px(line))
                     .w_full()
                     .flex()
                     .items_center()

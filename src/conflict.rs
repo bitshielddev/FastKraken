@@ -519,7 +519,7 @@ pub(crate) fn conflict_row<T: Desk>(app: &T, index: usize, conflict: &Conflict, 
     let menu = target.clone();
     let open = ui.merge.editing() == Some(conflict.path.as_path()) || ui.conflict.showing() == Some(conflict.path.as_path());
     let head = kit::row(("merge-open", index), open)
-        .h(px(FILE_ROW))
+        .h(whole_px(FILE_ROW))
         .pl(px(10.))
         .pr_3()
         .gap_2()
@@ -570,7 +570,7 @@ pub(crate) fn resolved_row<T: Desk>(app: &T, index: usize, path: &Path, cx: &mut
     });
     div()
         .id(("resolved", index))
-        .h(px(FILE_ROW))
+        .h(whole_px(FILE_ROW))
         .flex_shrink_0()
         .pl_3()
         .pr_2()

@@ -12,7 +12,7 @@ use gpui::{
     MouseDownEvent, Pixels, SharedString, Stateful, StyledText, Window, div, prelude::*, rgb,
     uniform_list,
 };
-use crate::theme::px;
+use crate::theme::{px, unzoomed};
 use std::ops::Range;
 
 pub(crate) const WHOLE_RENAME: &str = "Unstage the file to stage parts of it";
@@ -122,8 +122,8 @@ const NARROWEST: usize = 8;
 
 impl Columns {
     pub(crate) fn fitting(width: Pixels, cell: Pixels, face: &Face, beside: f32) -> Self {
-        let cell = f32::from(cell).max(1.);
-        let width = f32::from(width);
+        let cell = unzoomed(cell).max(1.);
+        let width = unzoomed(width);
         let fit = |room: f32| ((room / cell).floor().max(0.) as usize).max(NARROWEST);
         Self {
             unified: fit(width - face.unified_gutter() - beside - WRAP_MARGIN),
@@ -661,7 +661,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
         lines.style().restrict_scroll_to_axis = Some(true);
     }
     let marks = showing_marks(ui);
-    let measured = ui.diff_options.measured;
+    let measured = (ui.diff_options.measured, ui.diff_options.measured_zoom);
     let face_measured = ui.diff_text.face.clone();
     let beside = crate::blame::width(ui);
     let desk = cx.entity().downgrade();
@@ -697,7 +697,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                 .child(lines)
                 .on_children_prepainted(move |bounds, window, cx| {
                     let Some(width) = bounds.first().map(|bounds| bounds.size.width) else { return };
-                    if width == measured || width <= px(0.) {
+                    if (width, zoom()) == measured || width <= px(0.) {
                         return;
                     }
                     let columns = measure(window, width, &face_measured, beside);
@@ -998,7 +998,7 @@ fn line_menu<T: Desk>(row: Div, at: u32, rows: [Option<usize>; 2], cx: &Context<
 }
 
 fn base_row(face: &Face) -> Div {
-    div().h(px(face.line())).w_full().flex().items_center()
+    div().h(whole_px(face.line())).w_full().flex().items_center()
 }
 
 fn split_divider() -> Div {
@@ -1254,7 +1254,7 @@ fn hunk_row<T: Desk>(
                 .child(format!("@@ {range} @@")),
         )
         .when(split, |d| {
-            d.child(kit::fit(context.to_owned()).family(face.family.clone()).size(f32::from(hunk_size)).color(palette().text_2).grow())
+            d.child(kit::fit(context.to_owned()).family(face.family.clone()).size(unzoomed(hunk_size)).color(palette().text_2).grow())
         })
         .when(!split, |d| {
             d.child(div().text_color(rgb(palette().text_2)).child(context.to_owned()))

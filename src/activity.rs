@@ -597,7 +597,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             let id = entry.id;
                             let failed = !entry.succeeded();
                             kit::row(("activity-entry", index), selected == Some(id))
-                                .h(px(ROW))
+                                .h(whole_px(ROW))
                                 .px_3()
                                 .gap_3()
                                 .child(

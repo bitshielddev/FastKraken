@@ -7,7 +7,7 @@ use crate::{
     view::{self, Desk, Selection, Ui},
 };
 use gpui::{App, Context, Pixels, TextRun, Window, rgb};
-use crate::theme::px;
+use crate::theme::{px, unzoomed};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -358,9 +358,9 @@ fn store(layout: &Layout, cx: &mut App) {
     Settings::update(cx, |settings| settings.graph_columns = layout);
 }
 
-pub(crate) fn drag<T: Desk>(app: &mut T, column: Column, x: f32, header: f32, cx: &mut Context<T>) {
+pub(crate) fn drag<T: Desk>(app: &mut T, column: Column, x: Pixels, header: Pixels, cx: &mut Context<T>) {
     let ui = app.ui();
-    let next = ui.graph_columns.layout.dragged(column, x, available(header), ui.graph_auto_width());
+    let next = ui.graph_columns.layout.dragged(column, unzoomed(x), available(unzoomed(header)), ui.graph_auto_width());
     if next != ui.graph_columns.layout {
         store(&next, cx);
         app.ui_mut().graph_columns.layout = next;
@@ -378,12 +378,12 @@ pub(crate) fn pan<T: Desk>(app: &mut T, by: f32, limit: f32, cx: &mut Context<T>
 }
 
 pub(crate) fn start_pan(ui: &mut Ui, x: Pixels) {
-    ui.graph_columns.pan_from = Some((f32::from(x), ui.graph_columns.offset));
+    ui.graph_columns.pan_from = Some((unzoomed(x), ui.graph_columns.offset));
 }
 
 pub(crate) fn panned<T: Desk>(app: &mut T, x: Pixels, limit: f32, cx: &mut Context<T>) {
     let Some((from, offset)) = app.ui().graph_columns.pan_from else { return };
-    let next = (offset + from - f32::from(x)).clamp(0., limit.max(0.));
+    let next = (offset + from - unzoomed(x)).clamp(0., limit.max(0.));
     if next != app.ui().graph_columns.offset {
         app.ui_mut().graph_columns.offset = next;
         cx.notify();
@@ -406,7 +406,7 @@ fn widest(window: &Window, texts: BTreeSet<String>, size: f32, mono: bool) -> f3
                 underline: None,
                 strikethrough: None,
             };
-            f32::from(window.text_system().shape_line(text.into(), px(size), &[run], None).width)
+            unzoomed(window.text_system().shape_line(text.into(), px(size), &[run], None).width)
         })
         .fold(0., f32::max)
 }
@@ -460,7 +460,7 @@ pub fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Con
             Layout::default()
         }
         Action::Pan(by) => {
-            let graph = drawn(&tab.ui, tab.ui.columns_drawn(f32::from(window.viewport_size().width)).1).graph;
+            let graph = drawn(&tab.ui, tab.ui.columns_drawn(unzoomed(window.viewport_size().width)).1).graph;
             let most = limit(&tab.ui, graph);
             pan(tab, by, most, cx);
             return;

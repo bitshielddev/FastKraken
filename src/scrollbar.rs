@@ -5,7 +5,7 @@ use gpui::{
     MouseUpEvent, Pixels, Point, Position, ScrollHandle, Style, Task, UniformListScrollHandle, Window,
     fill, point, rgb, size,
 };
-use crate::theme::px;
+use crate::theme::{px, unzoomed};
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -42,8 +42,8 @@ impl Extent {
             Axis::Vertical => (bounds.size.height, most.height, offset.y),
             Axis::Horizontal => (bounds.size.width, most.width, offset.x),
         };
-        let viewport = f32::from(viewport);
-        Self { viewport, content: viewport + f32::from(travel), offset: -f32::from(offset) }
+        let viewport = unzoomed(viewport);
+        Self { viewport, content: viewport + unzoomed(travel), offset: -unzoomed(offset) }
     }
 
     pub fn travel(&self) -> f32 {
@@ -142,11 +142,11 @@ fn track_length(strip: Bounds<Pixels>, axis: Axis) -> f32 {
         Axis::Vertical => strip.size.height,
         Axis::Horizontal => strip.size.width,
     };
-    (f32::from(length) - 2. * INSET).max(0.)
+    (unzoomed(length) - 2. * INSET).max(0.)
 }
 
 pub fn along(strip: Bounds<Pixels>, axis: Axis, position: Point<Pixels>) -> f32 {
-    f32::from(match axis {
+    unzoomed(match axis {
         Axis::Vertical => position.y - strip.top(),
         Axis::Horizontal => position.x - strip.left(),
     }) - INSET

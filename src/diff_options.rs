@@ -33,6 +33,7 @@ pub(crate) struct State {
     pub(crate) wrap: bool,
     pub(crate) columns: DiffColumns,
     pub(crate) measured: Pixels,
+    pub(crate) measured_zoom: f32,
     pub(crate) wrapped: Option<DiffWrapped>,
     pub(crate) jumped: Option<usize>,
 }
@@ -84,6 +85,7 @@ pub(crate) fn showing(ui: &Ui) -> bool {
 
 pub(crate) fn resized(ui: &mut Ui, width: Pixels, columns: DiffColumns) -> bool {
     ui.diff_options.measured = width;
+    ui.diff_options.measured_zoom = zoom();
     if ui.diff_options.columns == columns {
         return false;
     }
@@ -135,9 +137,9 @@ pub(crate) fn marks(ui: &Ui) -> Vec<Mark> {
 pub(crate) fn viewport(ui: &Ui) -> Option<(usize, usize)> {
     let state = ui.diff_scroll.0.borrow();
     let base = &state.base_handle;
-    let height = f32::from(base.bounds().size.height);
-    let line = ui.diff_text.face.line();
-    let top = (-f32::from(base.offset().y) / line).max(0.).round() as usize;
+    let height = unzoomed(base.bounds().size.height);
+    let line = pitch(ui.diff_text.face.line());
+    let top = (-unzoomed(base.offset().y) / line).max(0.).round() as usize;
     let shown = (height / line).floor().max(1.) as usize;
     (height > 0.).then_some((top, shown))
 }

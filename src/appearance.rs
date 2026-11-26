@@ -157,7 +157,7 @@ pub(crate) fn preferences<T: Desk>(cx: &mut Context<T>) -> Div {
         ));
     }
     let help: SharedString = help(chosen, system(cx)).into();
-    div().flex().flex_col().child(setting("Appearance", Some(help), choices))
+    div().flex().flex_col().child(setting("Appearance", Some(help), choices)).child(crate::zoom::preferences(cx))
 }
 
 #[cfg(test)]

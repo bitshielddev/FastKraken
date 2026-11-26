@@ -331,6 +331,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::submodule::COMMANDS,
         crate::lfs::COMMANDS,
         crate::sparse::COMMANDS,
+        crate::zoom::COMMANDS,
     ]
     .into_iter()
     .flatten()
@@ -1148,7 +1149,8 @@ mod tests {
         assert_eq!(ids(Bar::Window), ["tab.next", "tab.previous"]);
         assert_eq!(bar_index(Bar::File, "repo.labels"), None);
         assert_eq!(ids(Bar::Edit), ["repo.find", "view.find-next", "view.find-previous"]);
-        assert_eq!(ids(Bar::View), ["view.sidebar", "view.panel", "view.diff-mode", "view.activity", "repo.labels", "graph.only-current", "graph.author", "view.filter-sidebar"]);
+        assert_eq!(ids(Bar::View), ["view.sidebar", "view.panel", "view.diff-mode", "view.activity", "repo.labels", "graph.only-current", "graph.author", "view.filter-sidebar", "view.zoom-in", "view.zoom-out", "view.actual-size"]);
+        assert_eq!(bar_index(Bar::View, "view.zoom-in"), Some(8));
         assert_eq!(
             ids(Bar::Repository),
             [

@@ -10,7 +10,7 @@ use gpui::{
     App, Context, Div, Entity, Focusable, HighlightStyle, KeyBinding, Pixels, ScrollStrategy, Window, actions, div,
     point, prelude::*, rgb,
 };
-use crate::theme::px;
+use crate::theme::{px, unzoomed};
 use std::{ops::Range, path::PathBuf};
 
 actions!(find, [NextMatch, PreviousMatch]);
@@ -319,14 +319,14 @@ fn reveal_across(ui: &Ui, hit: &Hit, cx: &App) {
     if ui.diff_options.wrapped.is_some() {
         return;
     }
-    let Some(cell) = cell(ui, cx).map(f32::from) else { return };
+    let Some(cell) = cell(ui, cx).map(unzoomed) else { return };
     let Some(line) = ui.diff.lines.get(hit.row) else { return };
     let code = ui.diff.code(line);
     let tab = ui.diff_text.face.tab.max(1);
     let to = |offset: usize| cell * view::diff_cells(code.get(..offset).unwrap_or(code), tab) as f32;
     let (start, end) = (to(hit.range.start), to(hit.range.end));
     let base = ui.diff_scroll.0.borrow().base_handle.clone();
-    let width = f32::from(base.bounds().size.width);
+    let width = unzoomed(base.bounds().size.width);
     if width <= 0. {
         return;
     }
@@ -335,7 +335,7 @@ fn reveal_across(ui: &Ui, hit: &Hit, cx: &App) {
         DiffMode::Split => (ui.split_pan().clone(), (width - 1.) / 2. - ui.diff_text.face.split_gutter(), 0.),
     };
     let offset = pan.offset();
-    if let Some(scroll) = across(-f32::from(offset.x), room, start + gutter, end + gutter) {
+    if let Some(scroll) = across(-unzoomed(offset.x), room, start + gutter, end + gutter) {
         pan.set_offset(point(px(-scroll), offset.y));
     }
 }

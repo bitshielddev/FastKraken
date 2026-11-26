@@ -1911,7 +1911,7 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     let open = ui.diff_open && ui.stash.open_path() == Some(file.path.as_path());
                     Some(
                         kit::row(("stashed-file", idx), open)
-                            .h(px(FILE_ROW))
+                            .h(whole_px(FILE_ROW))
                             .pl(px(crate::file_list::indent(mode, depth)))
                             .pr_3()
                             .gap_2()

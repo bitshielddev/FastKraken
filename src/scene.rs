@@ -278,6 +278,7 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             };
             Some(Action::Appearance(Appearance::Choose(choice)))
         }
+        "zoom" => Some(Action::Zoom(crate::zoom::Action::Set(argument.parse().unwrap_or(crate::zoom::ACTUAL)))),
         "shortcuts" => {
             tab.dispatch(Action::Help(crate::help::Action::Shortcuts), window, cx);
             tab.ui.help.filter.update(cx, |input, cx| input.set_text(argument, cx));

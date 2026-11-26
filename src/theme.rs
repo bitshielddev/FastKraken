@@ -1,5 +1,5 @@
 use gpui::{Pixels, Rgba, rgba};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 pub struct Palette {
     pub canvas: u32,
@@ -191,8 +191,35 @@ pub const MONO: &str = if cfg!(target_os = "macos") {
     "DejaVu Sans Mono"
 };
 
+static ZOOM: AtomicU32 = AtomicU32::new(1f32.to_bits());
+
+pub fn zoom() -> f32 {
+    f32::from_bits(ZOOM.load(Ordering::Relaxed))
+}
+
+pub fn use_zoom(percent: u16) -> bool {
+    let factor = percent as f32 / 100.;
+    ZOOM.swap(factor.to_bits(), Ordering::Relaxed) != factor.to_bits()
+}
+
 pub fn px(value: f32) -> Pixels {
-    gpui::px(value)
+    gpui::px(value * zoom())
+}
+
+pub fn unzoomed(pixels: Pixels) -> f32 {
+    f32::from(pixels) / zoom()
+}
+
+pub fn whole_px(value: f32) -> Pixels {
+    gpui::px((value * zoom()).round())
+}
+
+pub fn pitch(value: f32) -> f32 {
+    pitch_at(value, zoom())
+}
+
+pub fn pitch_at(value: f32, factor: f32) -> f32 {
+    (value * factor).round() / factor
 }
 
 pub const TEXT_TITLE: f32 = 15.;
@@ -289,6 +316,36 @@ mod tests {
             ("deleted_bg", p.deleted_bg),
             ("find_match", p.find_match),
         ]
+    }
+
+    #[test]
+    fn sizes_at_actual_size_are_the_unzoomed_values_exactly() {
+        assert_eq!(zoom(), 1.);
+        for value in [0.5, 1., 12.5, ROW, FILE_ROW, TREE_ROW, 1180.] {
+            assert_eq!(px(value), gpui::px(value));
+            assert_eq!(unzoomed(gpui::px(value)), value);
+            assert_eq!(pitch(value.round()), value.round());
+            assert_eq!(whole_px(value.round()), gpui::px(value.round()));
+        }
+    }
+
+    #[test]
+    fn a_pointer_far_down_a_zoomed_list_lands_on_the_row_drawn_under_it() {
+        for percent in [80u16, 90, 100, 110, 120, 130, 140, 150] {
+            let factor = percent as f32 / 100.;
+            for row in [ROW, FILE_ROW, TREE_ROW, DIFF_LINE, 18., 23., 34., 40.] {
+                let drawn = (row * factor).round();
+                let pitch = pitch_at(row, factor);
+                for index in [0usize, 1, 7, 99, 1_000, 25_000, 100_099] {
+                    let edges = if index > 25_000 { vec![drawn / 2.] } else { vec![0.25, drawn / 2., drawn - 0.25] };
+                    for inside in edges {
+                        let screen = index as f32 * drawn + inside;
+                        let pointed = (screen / factor / pitch) as usize;
+                        assert_eq!(pointed, index, "row {row} at {percent}%, {inside} into row {index}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

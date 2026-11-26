@@ -1220,6 +1220,7 @@ pub(crate) fn disturbs(action: &view::Action) -> bool {
         | A::Start(_)
         | A::Preferences(_)
         | A::Appearance(_)
+        | A::Zoom(_)
         | A::Identity(_)
         | A::AutoFetch(_)
         | A::Tools(_)
@@ -1651,7 +1652,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
     let kind = state.kind();
     let heading = |title: &'static str, count: usize| {
         div()
-            .h(px(FILE_ROW))
+            .h(whole_px(FILE_ROW))
             .flex_shrink_0()
             .px_3()
             .flex()

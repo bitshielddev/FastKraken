@@ -472,7 +472,7 @@ pub(crate) fn header<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .is_some_and(|entry| entry.action.is_some());
     let tip = commands::tip_with_keys("Discard all changes…", "repo.discard-all");
     div()
-        .h(px(FILE_ROW))
+        .h(whole_px(FILE_ROW))
         .flex_shrink_0()
         .pl_3()
         .pr_2()

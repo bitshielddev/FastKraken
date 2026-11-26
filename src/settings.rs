@@ -82,6 +82,8 @@ pub(crate) struct Settings {
     pub(crate) ssh_command: String,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) appearance: crate::appearance::Choice,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) zoom: Option<u16>,
 }
 
 impl Settings {
@@ -140,6 +142,7 @@ impl Default for Settings {
             git_program: crate::engine::GitProgram::Bundled,
             ssh_command: String::new(),
             appearance: crate::appearance::Choice::default(),
+            zoom: None,
         }
     }
 }
@@ -256,8 +259,11 @@ impl Frame {
             None => primary?,
         };
         let (screen_w, screen_h) = (f32::from(screen.size.width), f32::from(screen.size.height));
-        let width = self.width.max(MIN_WINDOW.0).min(screen_w.max(MIN_WINDOW.0));
-        let height = self.height.max(MIN_WINDOW.1).min(screen_h.max(MIN_WINDOW.1));
+        let (least_w, least_h) = crate::zoom::min_window();
+        let least_w = least_w.min(screen_w.max(MIN_WINDOW.0));
+        let least_h = least_h.min(screen_h.max(MIN_WINDOW.1));
+        let width = self.width.max(least_w).min(screen_w.max(least_w));
+        let height = self.height.max(least_h).min(screen_h.max(least_h));
         let visible = (self.x + width).min(screen_w) - self.x.max(0.);
         if visible < 120. || self.y < -1. || self.y > screen_h - 40. {
             return None;
@@ -406,6 +412,7 @@ pub(crate) fn load(dir: Option<PathBuf>, cx: &mut App) {
         startup_notice: notice,
     });
     crate::appearance::start(cx);
+    crate::zoom::start(cx);
 }
 
 fn read(dir: &Path) -> (Settings, Memory, Option<String>) {
@@ -698,6 +705,7 @@ mod tests {
             git_program: crate::engine::GitProgram::Chosen(b"/opt/git/bin/git".to_vec()),
             ssh_command: "ssh -F /tmp/ssh/config".to_owned(),
             appearance: crate::appearance::Choice::System,
+            zoom: Some(130),
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

@@ -393,7 +393,7 @@ pub(crate) fn side_row<T: Desk>(ui: &Ui, index: usize, row: usize, pointed: bool
     let (reveal_remote, checkout_remote, menu_remote) = (remote.to_owned(), remote.to_owned(), remote.to_owned());
     let number = pull.number;
     kit::row(("side-pull", row), false)
-        .h(px(TREE_ROW))
+        .h(whole_px(TREE_ROW))
         .pl(px(12.))
         .pr(px(10.))
         .gap(px(6.))
@@ -432,7 +432,7 @@ pub(crate) fn note_row<T: Desk>(ui: &Ui, index: usize, row: usize, cx: &mut Cont
     let Some((text, offer)) = all.get(index).cloned() else { return div().into_any_element() };
     div()
         .id(("side-pull-note", row))
-        .h(px(TREE_ROW))
+        .h(whole_px(TREE_ROW))
         .w_full()
         .pl(px(29.))
         .pr(px(10.))

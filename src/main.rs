@@ -106,6 +106,7 @@ mod tools;
 mod view;
 mod watch;
 mod worktree;
+mod zoom;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1737,6 +1738,7 @@ impl Tab {
             Action::RebaseEditor(action) => rebase_editor::dispatch(self, action, window, cx),
             Action::Autostash(action) => autostash::dispatch(self, action, window, cx),
             Action::Appearance(action) => appearance::dispatch(self, action, window, cx),
+            Action::Zoom(action) => zoom::dispatch(self, action, window, cx),
             Action::Explain(action) => explain::dispatch(self, action, window, cx),
             Action::Stash(action) => stash::dispatch(self, action, window, cx),
             Action::Sync(action) => sync::dispatch(self, action, window, cx),
@@ -2127,9 +2129,9 @@ fn main() {
             titlebar: Some(gpui::TitlebarOptions {
                 title: Some("FastKraken".into()),
                 appears_transparent: true,
-                traffic_light_position: Some(gpui::point(px(14.), px(15.))),
+                traffic_light_position: Some(gpui::point(px(14.), px(zoom::traffic_lights_top()))),
             }),
-            window_min_size: Some(size(px(settings::MIN_WINDOW.0), px(settings::MIN_WINDOW.1))),
+            window_min_size: Some(zoom::min_window_size(cx)),
             ..Default::default() };
         let handle=cx.open_window(options, move |window, cx| cx.new(|cx| {
             let bench = benchmark.then(|| perf::Run::new(started, fixture, offscreen, hold));

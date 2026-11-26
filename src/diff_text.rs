@@ -475,7 +475,7 @@ fn preview(face: &Face) -> Div {
         };
         rows = rows.child(
             div()
-                .h(px(face.line()))
+                .h(whole_px(face.line()))
                 .flex()
                 .items_center()
                 .when_some(background, |d, background| d.bg(rgb(background)))

@@ -406,7 +406,7 @@ pub fn results<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         let active = matches!(&ui.selection, Some(Selection::Commit(oid)) if *oid == row.oid);
                         let oid = row.oid.clone();
                         kit::row(("search-match", index), active)
-                            .h(px(ROW))
+                            .h(whole_px(ROW))
                             .px_3()
                             .gap_2()
                             .child(kit::avatar(&row.author))

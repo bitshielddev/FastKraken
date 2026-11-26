@@ -648,7 +648,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     let stat = state.stats.get(&file.path).copied();
                     Some(
                         kit::cursor(kit::row(("committed-file", i), open), !open && cursor == Some(i))
-                            .h(px(FILE_ROW))
+                            .h(whole_px(FILE_ROW))
                             .pl(px(file_list::indent(mode, depth)))
                             .pr_3()
                             .gap_2()

@@ -5,7 +5,7 @@ use crate::{
     view::{self, Desk, HistoryRow, Selection, Tone},
 };
 use gpui::{Context, Point, ScrollStrategy, UniformListScrollHandle, Window};
-use crate::theme::px;
+use crate::theme::{pitch, px, unzoomed};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Zone {
@@ -121,8 +121,8 @@ pub(crate) fn beside(zone: Zone, right: bool, sidebar: bool, files: bool) -> Zon
 }
 
 fn page(handle: &UniformListScrollHandle, row: f32) -> usize {
-    let height = f32::from(handle.0.borrow().base_handle.bounds().size.height);
-    page_rows(height, row)
+    let height = unzoomed(handle.0.borrow().base_handle.bounds().size.height);
+    page_rows(height, pitch(row))
 }
 
 pub(crate) fn how(action: Action, page: usize) -> Option<Move> {
