@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
 };
 
@@ -16,6 +16,7 @@ pub(crate) const SIZE: u32 = 80;
 const LARGEST: u64 = 1024 * 1024;
 const GITHUB_AVATARS: &str = "avatars.githubusercontent.com";
 const NOREPLY: &str = "@users.noreply.github.com";
+const GRAVATAR: &str = "https://gravatar.com/avatar/";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -110,7 +111,7 @@ pub(crate) struct Photos {
     folder: Option<PathBuf>,
     fetch: Arc<dyn Fetch>,
     recorder: Option<Arc<Recorder>>,
-    allowed: Arc<AtomicBool>,
+    allowed: Arc<AtomicU8>,
     looks: HashMap<String, Look>,
     hosted: HashMap<String, String>,
     logins: HashMap<String, String>,
@@ -153,7 +154,15 @@ fn noreply_login(key: &str) -> Option<&str> {
 
 pub(crate) fn gravatar(key: &str) -> String {
     let hash: String = sha256(key.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("https://gravatar.com/avatar/{hash}?s={SIZE}&d=404")
+    format!("{GRAVATAR}{hash}?s={SIZE}&d=404")
+}
+
+pub(crate) fn permitted(url: &str, pictures: Pictures) -> bool {
+    match pictures {
+        Pictures::Initials => false,
+        Pictures::GitHub => !url.starts_with(GRAVATAR),
+        Pictures::Gravatar => true,
+    }
 }
 
 pub(crate) fn address(key: &str, pictures: Pictures, hosted: &HashMap<String, String>, logins: &HashMap<String, String>) -> Option<String> {
@@ -188,7 +197,7 @@ pub(crate) fn start(cx: &mut App) {
         folder,
         fetch,
         recorder,
-        allowed: Arc::new(AtomicBool::new(false)),
+        allowed: Arc::new(AtomicU8::new(Pictures::Initials as u8)),
         looks: HashMap::new(),
         hosted: HashMap::new(),
         logins: HashMap::new(),
@@ -222,9 +231,9 @@ pub(crate) fn chosen(cx: &mut App) {
 }
 
 fn allow(cx: &mut App) {
-    let on = settings::peek(cx, |settings| settings.pictures) != Pictures::Initials;
+    let pictures = settings::peek(cx, |settings| settings.pictures);
     if let Some(photos) = cx.try_global::<Photos>() {
-        photos.allowed.store(on, Ordering::Release);
+        photos.allowed.store(pictures as u8, Ordering::Release);
     }
 }
 
@@ -236,7 +245,10 @@ pub(crate) fn photo(email: &str, cx: &mut App) -> Option<Arc<RenderImage>> {
     let key = key_of(email);
     let photos = cx.global_mut::<Photos>();
     match photos.looks.get(&key) {
-        Some(Look::Shown(image)) => return Some(image.clone()),
+        Some(Look::Shown(image)) => {
+            let unchosen = pictures == Pictures::GitHub && address(&key, pictures, &photos.hosted, &photos.logins).is_none();
+            return (!unchosen).then(|| image.clone());
+        }
         Some(_) => return None,
         None => {}
     }
@@ -272,7 +284,8 @@ fn drain(cx: &mut App) {
         batch
             .into_iter()
             .map(|(key, url)| {
-                if !allowed.load(Ordering::Acquire) {
+                let pictures = Pictures::ALL.get(allowed.load(Ordering::Acquire) as usize).copied().unwrap_or_default();
+                if !permitted(&url, pictures) {
                     return (key, Found::Skipped);
                 }
                 let decoded = load(fetch.as_ref(), folder.as_deref(), &url).and_then(|bytes| {
@@ -494,6 +507,19 @@ mod tests {
             Some("https://avatars.githubusercontent.com/u/9?v=4&s=80")
         );
         assert_eq!(address("fern@users.noreply.github.com", Pictures::GitHub, &HashMap::new(), &HashMap::new()), None);
+    }
+
+    #[test]
+    fn a_queued_request_goes_out_only_while_its_source_is_still_chosen() {
+        let github = "https://avatars.githubusercontent.com/u/583231?s=80&v=4";
+        let moss = gravatar("moss@example.invalid");
+        assert!(Pictures::ALL.iter().all(|pictures| !permitted(github, *pictures) == (*pictures == Pictures::Initials)));
+        assert!(!permitted(&moss, Pictures::Initials));
+        assert!(!permitted(&moss, Pictures::GitHub));
+        assert!(permitted(&moss, Pictures::Gravatar));
+        for pictures in Pictures::ALL {
+            assert_eq!(Pictures::ALL[pictures as usize], pictures);
+        }
     }
 
     #[test]

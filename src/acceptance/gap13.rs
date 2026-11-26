@@ -560,6 +560,12 @@ impl Replay<'_> {
         if !recorder.asked().contains(&moss_url) {
             return Err(format!("With Gravatar chosen pictures were asked for {:?}", recorder.asked()).into());
         }
+        self.action(Action::Appearance(appearance::Action::Pictures(photos::Pictures::GitHub)))?;
+        self.settle_frames().await?;
+        let painted = self.cx.update(|cx| [CEDAR, FERN, MOSS].map(|email| photos::photo(email, cx).is_some()))?;
+        if painted != [true, true, false] {
+            return Err(format!("Back on GitHub pictures the avatars painted {painted:?}").into());
+        }
 
         self.key("cmd-,")?;
         self.action(Action::Preferences(preferences::Action::Show(Section::Appearance)))?;
