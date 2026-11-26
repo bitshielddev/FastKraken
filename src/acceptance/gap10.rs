@@ -47,7 +47,8 @@ impl Replay<'_> {
         self.refuse_a_range_with_a_merge(dir).await?;
         self.reorder_and_drop_in_the_editor(dir).await?;
         self.stop_an_edited_rebase_on_a_conflict(dir).await?;
-        self.undo_a_whole_edited_rebase(dir).await
+        self.undo_a_whole_edited_rebase(dir).await?;
+        self.warn_before_a_conflicting_merge(dir).await
     }
 
     fn menu_rows_now(&mut self) -> Result<[(String, bool); 2]> {
@@ -895,6 +896,141 @@ impl Replay<'_> {
         git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
         git_is(&root, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"], &refs)?;
         git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        self.pass();
+        Ok(())
+    }
+
+    fn forecast_rows(&mut self, open: &view::Menu) -> Result<Vec<(String, String, Option<String>, bool)>> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            let mut found = Vec::new();
+            for entry in commands::entries_of(&tab.ui, open, cx) {
+                for row in entry.children.iter().chain(std::iter::once(&entry)) {
+                    if let Some(note) = &row.note {
+                        found.push((entry.id.to_owned(), row.title.clone(), note.tip.clone(), note.warn));
+                    }
+                }
+            }
+            found
+        })?)
+    }
+
+    async fn warn_before_a_conflicting_merge(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1017");
+        let origin = dir.join("Forecast-origin.git");
+        let path = origin.to_str().ok_or("Scratch path is not UTF-8")?;
+        git(dir, &["init", "-q", "--bare", "-b", "main", path])?;
+        let root = init(dir, "Forecast")?;
+        record(&root, "notes.txt", "Pack\nWalk\nRest\n", "Start the notes")?;
+        record(&root, "map.txt", "North\nSouth\n", "Draw the map")?;
+        record(&root, "camp.txt", "Tents\n", "Pitch the camp")?;
+        git(&root, &["remote", "add", "origin", path])?;
+        git(&root, &["switch", "-qc", "ridge"])?;
+        record(&root, "notes.txt", "Pack\nClimb\nRest\n", "Climb instead")?;
+        record(&root, "map.txt", "North\nRidge\n", "Mark the ridge")?;
+        record(&root, "lake.txt", "Swim\n", "Find the lake")?;
+        git(&root, &["switch", "-qc", "pond", "main"])?;
+        record(&root, "pond.txt", "Still\n", "Find the pond")?;
+        git(&root, &["switch", "-qc", "river", "main"])?;
+        record(&root, "camp.txt", "Tents by the river\n", "Move the camp to the river")?;
+        git(&root, &["push", "-q", "origin", "river:main"])?;
+        git(&root, &["switch", "-q", "main"])?;
+        git(&root, &["branch", "-qD", "river"])?;
+        git(&root, &["fetch", "-q", "origin"])?;
+        git(&root, &["branch", "-q", "--set-upstream-to=origin/main", "main"])?;
+        record(&root, "notes.txt", "Pack\nSwim\nRest\n", "Swim instead")?;
+        record(&root, "map.txt", "North\nCoast\n", "Mark the coast")?;
+        record(&root, "camp.txt", "Tents on the hill\n", "Move the camp to the hill")?;
+        let main = oid(&root, "main")?;
+        let ridge = Target::Branch("ridge".into());
+        let pond = Target::Branch("pond".into());
+        self.open(&root)?;
+        self.until("Forecast open on main, one ahead of and behind origin/main", |tab| {
+            tab.ui.repo == "Forecast"
+                && tab.ui.branch == "main"
+                && tab.ui.refs.oid_of(&pond).is_some()
+                && tab.ui.refs.current("main").is_some_and(|item| item.ahead == 3 && item.behind == 1)
+        })
+        .await?;
+        let before = snapshot(&root)?;
+        self.until("the Pull button warned about origin/main", |tab| crate::forecast::pull_warning(&tab.ui).is_some()).await?;
+        let warning = self.tab.read_with(self.cx, |tab, _| crate::forecast::pull_warning(&tab.ui))?;
+        if warning.as_deref() != Some("Merging origin/main into main will conflict in 1 file: camp.txt") {
+            return Err(format!("The Pull button warns {warning:?}").into());
+        }
+        let (ridge_tip, pond_tip) = (oid(&root, "ridge")?, oid(&root, "pond")?);
+        let known = |tab: &Tab, theirs: &str| {
+            tab.ui.forecast.of(&main, theirs).is_some_and(|forecast| *forecast != crate::forecast::Forecast::Checking)
+        };
+        let on_ridge = view::Menu::Object { target: ridge.clone(), at: gpui::Point::default() };
+        self.action(Action::Menu(Some(on_ridge.clone())))?;
+        self.until("the merge forecast for ridge", |tab| known(tab, &ridge_tip)).await?;
+        let rows = self.forecast_rows(&on_ridge)?;
+        let named = "map.txt, notes.txt".to_owned();
+        let wanted = vec![("branch.merge".to_owned(), format!("Will conflict in 2 files: {named}"), Some(named.clone()), true)];
+        if rows != wanted {
+            return Err(format!("The menu of ridge forecasts {rows:?}").into());
+        }
+        let children = self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, &ridge, cx)
+                .into_iter()
+                .find(|entry| entry.id == "branch.merge")
+                .map(|entry| entry.children.into_iter().map(|child| (child.id, child.action.is_some())).collect::<Vec<_>>())
+        })?;
+        let modes = Some(vec![
+            ("branch.merge-ff", true),
+            ("branch.merge-no-ff", true),
+            ("branch.merge-ff-only", true),
+            ("branch.merge-squash", true),
+            ("forecast", false),
+        ]);
+        if children != modes {
+            return Err(format!("The merge submenu of ridge holds {children:?}").into());
+        }
+        self.action(Action::Menu(None))?;
+        let on_pond = view::Menu::Object { target: pond.clone(), at: gpui::Point::default() };
+        self.action(Action::Menu(Some(on_pond.clone())))?;
+        self.until("the merge forecast for pond", |tab| known(tab, &pond_tip)).await?;
+        let rows = self.forecast_rows(&on_pond)?;
+        if rows != [("branch.merge".to_owned(), "No conflicts expected".to_owned(), None, false)] {
+            return Err(format!("The menu of pond forecasts {rows:?}").into());
+        }
+        self.action(Action::Menu(None))?;
+        let main_branch = Target::Branch("main".into());
+        self.action(Action::Drag(crate::drag::Action::Drop {
+            dragged: ridge.clone(),
+            dragged_also: None,
+            onto: main_branch.clone(),
+            onto_also: None,
+            at: gpui::Point::default(),
+        }))?;
+        self.until("the drop menu open", |tab| tab.ui.menu.is_some()).await?;
+        let dropped = self.tab.read_with(self.cx, |tab, _| tab.ui.menu.clone())?.ok_or("The drop menu closed")?;
+        let rows = self.tab.read_with(self.cx, |tab, cx| {
+            commands::entries_of(&tab.ui, &dropped, cx).into_iter().map(|entry| (entry.id, entry.title)).collect::<Vec<_>>()
+        })?;
+        let at = rows.iter().position(|row| row.0 == "drop.merge");
+        if at.is_none() || rows.get(at.map_or(0, |at| at + 1)) != Some(&("forecast", format!("Will conflict in 2 files: {named}"))) {
+            return Err(format!("The drop menu lists {rows:?}").into());
+        }
+        self.action(Action::Menu(None))?;
+        self.choose(&ridge, "branch.rebase-onto")?;
+        let (lines, _) = self.asked_about("Rebase main onto ridge?").await?;
+        if lines.last() != Some(&format!("May conflict in 2 files: {named}")) {
+            return Err(format!("The rebase prompt says {lines:?}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::Cancel))?;
+        self.until("the rebase prompt closed", |tab| !tab.ui.prompt.open()).await?;
+        if snapshot(&root)? != before {
+            return Err(format!("Forecasting changed Git: {:?}", snapshot(&root)?).into());
+        }
+        if root.join(".git/MERGE_HEAD").exists() || root.join(".git/rebase-merge").exists() {
+            return Err("Forecasting left a merge or a rebase behind".into());
+        }
+        self.choose_under(&ridge, "branch.merge", "Always create a merge commit")?;
+        self.until("the merge stopped on its conflicts", |tab| !tab.ui.busy() && tab.ui.operation.active()).await?;
+        git_is(&root, &["diff", "--name-only", "--diff-filter=U"], "map.txt\nnotes.txt\n")?;
+        git(&root, &["merge", "--abort"])?;
+        git_is(&root, &["rev-parse", "main"], &format!("{main}\n"))?;
         self.pass();
         Ok(())
     }

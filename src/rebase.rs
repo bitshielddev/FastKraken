@@ -392,8 +392,12 @@ pub(crate) fn head_now(repo: &Repository) -> Result<String, Failure> {
     Ok(head)
 }
 
-pub(crate) fn describe(ask: &Ask, _: &Ui) -> Spec {
-    spec(ask)
+pub(crate) fn describe(ask: &Ask, ui: &Ui) -> Spec {
+    let spec = spec(ask);
+    match crate::forecast::line(ui, &ask.tip, &ask.target, crate::forecast::Wording::Rebase) {
+        Some(line) => spec.line(line),
+        None => spec,
+    }
 }
 
 fn spec(ask: &Ask) -> Spec {
@@ -448,6 +452,7 @@ pub(crate) fn run(tab: &mut Tab, ask: Ask, stash: bool, cx: &mut Context<Tab>) {
 
 fn check_then_ask(tab: &mut Tab, mut ask: Ask, cx: &mut Context<Tab>) {
     let Some(repo) = tab.repo.clone() else { return };
+    crate::forecast::request(tab, ask.tip.clone(), ask.target.clone(), cx);
     let epoch = tab.epoch;
     let (full, tip, target) = (ask.full.clone(), ask.tip.clone(), ask.target.clone());
     Tab::work(

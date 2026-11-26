@@ -238,6 +238,18 @@ fn rebasing<'a>(ui: &Ui, target: &'a Target) -> Option<(&'a OsString, &'a Target
     matches!(onto, Target::Branch(_) | Target::RemoteBranch(_) | Target::Tag(_) | Target::Commit(_)).then_some((branch, onto))
 }
 
+pub(crate) fn forecast_ends(ui: &Ui, target: &Target) -> Option<(crate::forecast::Wording, String, String, &'static str)> {
+    use crate::forecast::Wording;
+    if let Some((into, from)) = merging(ui, target) {
+        let ours = ui.refs.oid_of(&Target::Branch(into.clone()))?;
+        return Some((Wording::Merge, ours.to_owned(), oid(ui, from)?.to_owned(), "drop.merge"));
+    }
+    let (branch, onto) = rebasing(ui, target)?;
+    let tip = ui.refs.oid_of(&Target::Branch(branch.clone()))?;
+    let onto = oid(ui, onto)?;
+    (tip != onto).then(|| (Wording::Rebase, tip.to_owned(), onto.to_owned(), "drop.interactive-rebase"))
+}
+
 fn forwarding<'a>(ui: &Ui, target: &'a Target) -> Option<(&'a OsString, &'a Target)> {
     let (dragged, onto) = ends(target)?;
     let into = local(ui, onto)?;
@@ -662,6 +674,7 @@ fn dropped_on(tab: &mut Tab, mut dropped: Dropped, at: Point<Pixels>, cx: &mut C
             } else {
                 tab.ui.menu = Some(menu);
                 tab.ui.menu_cursor = Default::default();
+                crate::forecast::menu_opened(tab, cx);
             }
             cx.notify();
         },

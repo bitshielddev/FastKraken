@@ -338,6 +338,32 @@ pub(crate) struct Entry {
     pub children: Vec<Entry>,
     pub mark: Option<Mark>,
     pub check: Option<bool>,
+    pub note: Option<Note>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Note {
+    pub tip: Option<String>,
+    pub warn: bool,
+}
+
+impl Entry {
+    pub(crate) fn note(id: &'static str, title: String, note: Note) -> Self {
+        Self {
+            id,
+            title,
+            icon: None,
+            group: Group::Switch,
+            shortcut: None,
+            danger: false,
+            disabled: None,
+            action: None,
+            children: Vec::new(),
+            mark: None,
+            check: None,
+            note: Some(note),
+        }
+    }
 }
 
 pub(crate) fn entry(command: &'static Command, ui: &Ui, target: &Target, cx: &App) -> Option<Entry> {
@@ -363,6 +389,7 @@ pub(crate) fn entry(command: &'static Command, ui: &Ui, target: &Target, cx: &Ap
         children: Vec::new(),
         mark: command.mark.and_then(|mark| mark(ui, target)),
         check: command.tick.map(|tick| tick(ui, target)),
+        note: None,
     })
 }
 
@@ -379,6 +406,7 @@ fn submenu(id: &'static str, title: String, icon: &'static str, group: Group, ch
         children,
         mark: None,
         check: None,
+        note: None,
     }
 }
 
@@ -412,6 +440,7 @@ fn rows(ui: &Ui, target: &Target, cx: &App, flat: bool) -> Vec<Entry> {
                 .and_then(|child| child.action.clone());
         }
     }
+    crate::forecast::annotate(ui, target, &mut entries);
     if let Target::Tag(_) = target {
         crate::tag::fan_out(ui, &mut entries, flat);
     }
@@ -665,6 +694,9 @@ pub(crate) fn key<T: Desk>(app: &mut T, key: Key, window: &mut Window, cx: &mut 
         }
         entry = entry.children.swap_remove(sub);
     }
+    if entry.note.is_some() {
+        return;
+    }
     match entry.action {
         Some(action) => app.dispatch(action, window, cx),
         None => {
@@ -688,6 +720,15 @@ fn row<T: Desk>(
     here: Cursor,
     cx: &Context<T>,
 ) -> gpui::Stateful<Div> {
+    if let Some(note) = entry.note {
+        let (icon, ink) = if note.warn { ("alert", crate::theme::CONFLICT) } else { ("ok", crate::theme::TEXT_3) };
+        let item = kit::item(id, entry.title).icon(icon).ink(ink).highlighted(highlighted).tip(note.tip.map(SharedString::from));
+        return item.inert().on_hover(cx.listener(move |app, hovered: &bool, w, cx| {
+            if *hovered && app.ui().menu_cursor != here {
+                app.dispatch(Action::MenuHover(here), w, cx);
+            }
+        }));
+    }
     let mut item = kit::item(id, entry.title)
         .enabled(entry.action.is_some() || parent)
         .highlighted(highlighted)

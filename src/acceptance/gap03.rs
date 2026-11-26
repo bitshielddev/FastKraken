@@ -1237,7 +1237,11 @@ impl Replay<'_> {
     }
 
     async fn rebase_prompt(&mut self) -> Result<(String, String, Option<(String, bool)>, Vec<String>)> {
-        self.until("the rebase prompt open", |tab| matches!(tab.ui.prompt.asked(), Some(prompt::Kind::Rebase(_)))).await?;
+        self.until("the rebase prompt open with its conflict forecast", |tab| {
+            matches!(tab.ui.prompt.asked(), Some(prompt::Kind::Rebase(_)))
+                && prompt::shown(&tab.ui).is_some_and(|spec| spec.lines.last().is_none_or(|line| line != "Checking for conflicts…"))
+        })
+        .await?;
         let shown = self.tab.read_with(self.cx, |tab, _| {
             prompt::shown(&tab.ui).map(|spec| {
                 (spec.title, spec.confirm.to_string(), spec.tick.map(|(label, on)| (label.to_string(), on)), spec.lines)
@@ -1301,6 +1305,7 @@ impl Replay<'_> {
             vec![
                 "2 commits will be rewritten, replayed one by one on top of main.".to_owned(),
                 "origin/feature/ridge already has these commits. You will need to force push afterwards.".to_owned(),
+                "No conflicts expected".to_owned(),
             ],
         );
         if shown != expected {

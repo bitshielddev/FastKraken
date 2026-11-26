@@ -1535,8 +1535,9 @@ impl Replay<'_> {
         let drop = drag::Action::Drop { dragged: dragged.clone(), dragged_also: None, onto: onto.clone(), onto_also, at };
         self.action(Action::Drag(drop))?;
         let wanted = drag::pair(dragged, onto);
-        self.until("the drop menu open", |tab| {
+        self.until("the drop menu open with its conflict forecast", |tab| {
             matches!(&tab.ui.menu, Some(view::Menu::Object { target, at: shown }) if *target == wanted && *shown == at)
+                && tab.ui.forecast.settled()
         })
         .await?;
         Ok(self.tab.read_with(self.cx, |tab, cx| {
@@ -1615,7 +1616,11 @@ impl Replay<'_> {
                 return Err(format!("Dropping feature on main lacks {wanted:?}: {titles:?}").into());
             }
         }
-        if let Some(stray) = rows.iter().find(|row| !row.1.starts_with("drop.")) {
+        let merge_at = rows.iter().position(|row| row.0 == "Merge feature into main").map_or(0, |at| at + 1);
+        if rows.get(merge_at).map(|row| (row.0.as_str(), row.1)) != Some(("No conflicts expected", "forecast")) {
+            return Err(format!("Dropping feature on main forecasts no merge: {titles:?}").into());
+        }
+        if let Some(stray) = rows.iter().find(|row| !row.1.starts_with("drop.") && row.1 != "forecast") {
             return Err(format!("Dropping feature on main also lists {:?} ({})", stray.0, stray.1).into());
         }
         if titles.iter().any(|title| title.starts_with("Fast-forward")) {

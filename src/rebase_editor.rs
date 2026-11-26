@@ -742,8 +742,10 @@ fn open(tab: &mut Tab, branch: Option<OsString>, onto: Source, window: &mut Wind
                     tab.ui.activity.close();
                     tab.ui.diff_open = false;
                     tab.ui.menu = None;
+                    let (tip, target) = (loaded.ends.tip.clone(), loaded.ends.target.clone());
                     tab.ui.rebase_editor.open = Some(Editor::new(loaded));
                     tab.ui.focus_on_open = true;
+                    crate::forecast::request(tab, tip, target, cx);
                 }
                 Ok(Err(limit)) => {
                     tab.ui.notices.show(Notice::new(Tone::Info, "This cannot be rebased interactively", limit));
@@ -1102,6 +1104,10 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         ))
         .when(ends.switch, |d| {
             d.child(kit::muted(format!("{} is not checked out. FastKraken switches to it when the rebase starts.", ends.branch)))
+        })
+        .when_some(crate::forecast::line(ui, &ends.tip, &ends.target, crate::forecast::Wording::Rebase), |d, line| {
+            let ink = if crate::forecast::conflicting(ui, &ends.tip, &ends.target) { CONFLICT } else { TEXT_3 };
+            d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(ink)).child(line))
         })
         .when_some(editor.loaded.upstream.as_ref(), |d, upstream| {
             d.child(

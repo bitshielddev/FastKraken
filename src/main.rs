@@ -33,6 +33,7 @@ mod file_history;
 mod file_list;
 mod file_view;
 mod find;
+mod forecast;
 mod github;
 mod graph_view;
 mod guard;
@@ -1773,6 +1774,7 @@ impl Tab {
                 }
                 self.ui.menu = menu;
                 self.ui.menu_cursor = Default::default();
+                forecast::menu_opened(self, cx);
                 cx.notify();
             }
             Action::Dismiss if self.ui.prompt.open() => {

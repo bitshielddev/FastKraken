@@ -1032,13 +1032,18 @@ pub(crate) fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .icon("fetch")
         .enabled(idle && has_remote)
         .tip(fetch_tip());
-    let pull = kit::btn("sync-pull", ui.sync.button()).ghost().count(Some(behind));
+    let warning = crate::forecast::pull_warning(ui);
+    let warned = |tip: String| match &warning {
+        Some(warning) => format!("{warning}\n{tip}"),
+        None => tip,
+    };
+    let pull = kit::btn("sync-pull", ui.sync.button()).ghost().count(Some(behind)).warn(warning.is_some());
     let pull = if ui.sync.chosen().fetch {
-        pull.icon("fetch").enabled(idle && has_remote).tip(fetch_tip())
+        pull.icon("fetch").enabled(idle && has_remote).tip(warned(fetch_tip()))
     } else {
         pull.icon("arrow-down")
             .enabled(idle && attached && ui.upstream.is_some())
-            .tip(if let Some(reason) = &running {
+            .tip(warned(if let Some(reason) = &running {
                 reason.clone()
             } else if ui.detached {
                 DETACHED_PULL.to_owned()
@@ -1046,7 +1051,7 @@ pub(crate) fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 "This branch has no upstream to pull from".to_owned()
             } else {
                 crate::commands::tip_with_keys(ui.sync.chosen().strategy.title(), "repo.pull")
-            })
+            }))
     };
     let push = if ui.detached {
         kit::btn("sync-push", "Push")

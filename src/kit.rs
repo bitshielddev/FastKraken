@@ -281,6 +281,7 @@ pub struct Btn {
     count: Option<SharedString>,
     hint: Option<&'static str>,
     tip: Option<SharedString>,
+    warn: bool,
 }
 
 pub fn btn(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Btn {
@@ -297,6 +298,7 @@ pub fn btn(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Btn {
         count: None,
         hint: None,
         tip: None,
+        warn: false,
     }
 }
 
@@ -351,6 +353,10 @@ impl Btn {
     }
     pub fn tip(mut self, tip: impl Into<SharedString>) -> Self {
         self.tip = Some(tip.into());
+        self
+    }
+    pub fn warn(mut self, warn: bool) -> Self {
+        self.warn = warn;
         self
     }
 
@@ -415,6 +421,9 @@ impl Btn {
                     .text_color(rgb(ACCENT))
                     .child(count),
             );
+        }
+        if self.warn {
+            base = base.child(icon("alert").size(px(12.)).text_color(rgb(CONFLICT)));
         }
         if let Some(name) = self.trailing {
             base = base.child(icon(name).size(px(11.)).text_color(rgb(TEXT_3)));
@@ -1113,6 +1122,7 @@ pub struct Item {
     tip: Option<SharedString>,
     highlighted: bool,
     chevron: bool,
+    ink: Option<u32>,
 }
 
 pub fn item(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Item {
@@ -1127,6 +1137,7 @@ pub fn item(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Item {
         tip: None,
         highlighted: false,
         chevron: false,
+        ink: None,
     }
 }
 
@@ -1167,13 +1178,21 @@ impl Item {
         self
     }
 
+    pub fn ink(mut self, colour: u32) -> Self {
+        self.ink = Some(colour);
+        self
+    }
+
     pub fn inert(self) -> Stateful<Div> {
-        let enabled = self.enabled;
+        let enabled = self.enabled && self.ink.is_none();
+        let ink = self.ink.unwrap_or(if self.danger { DELETED } else { TEXT });
         let lead = match (self.check, self.icon) {
             (Some(true), _) => Some(icon("check").text_color(rgb(ACCENT))),
+            (None, Some(name)) if self.ink.is_some() => Some(icon(name).text_color(rgb(ink))),
             (None, Some(name)) => Some(icon(name)),
             _ => None,
         };
+        let dimmed = !self.enabled;
         let inner = div()
             .h(px(ROW))
             .w_full()
@@ -1183,8 +1202,8 @@ impl Item {
             .gap_2()
             .rounded(px(5.))
             .text_size(px(12.5))
-            .text_color(rgb(if self.danger { DELETED } else { TEXT }))
-            .when(!enabled, |d| d.opacity(0.42))
+            .text_color(rgb(ink))
+            .when(dimmed, |d| d.opacity(0.42))
             .when(self.highlighted, |d| d.bg(rgb(SELECTED)))
             .when(enabled, |d| {
                 d.group_hover("menu-item", |s| s.bg(rgb(SELECTED)))
@@ -1199,11 +1218,7 @@ impl Item {
                         .children(lead),
                 )
             })
-            .child(fit(self.label).size(12.5).color(if self.danger {
-                DELETED
-            } else {
-                TEXT
-            }))
+            .child(fit(self.label).size(12.5).color(ink))
             .child(grow())
             .when_some(self.meta, |d, meta| {
                 d.child(

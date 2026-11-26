@@ -647,6 +647,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
                     tab.ui.refs.addresses = addresses;
                     crate::pin::refs_loaded(&mut tab.ui);
                     crate::graph_view::follow_upstream(tab, cx);
+                    crate::forecast::refs_loaded(tab, cx);
                 }
                 Err(error) => tab.error(error, cx),
             }

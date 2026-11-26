@@ -234,6 +234,7 @@ fn entry(title: String, path: PathBuf, icon: &'static str) -> Entry {
         children: Vec::new(),
         mark: None,
         check: None,
+        note: None,
     }
 }
 
