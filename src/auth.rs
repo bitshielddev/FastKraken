@@ -51,13 +51,24 @@ struct Binding {
     account: u64,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+struct Waiting {
+    destination: Vec<u8>,
+    url: String,
+    registration: Registration,
+    account: u64,
+}
+
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
 struct Settings {
     registration: Option<Registration>,
     active: BTreeMap<String, u64>,
     bindings: Vec<Binding>,
+    cloning: Vec<Waiting>,
 }
+
+const CLONE_DESTINATION: &str = "FASTKRAKEN_CREDENTIAL_CLONE";
 
 pub(crate) fn replaying() -> bool {
     #[cfg(feature = "publish-replay")]
@@ -239,6 +250,7 @@ pub(crate) fn bindings(repo: &Repository) -> Result<Vec<(String, String)>> {
 pub(crate) struct Connection {
     pub(crate) client: Client,
     pub(crate) token: String,
+    pub(crate) account: u64,
 }
 
 pub(crate) fn connection(repo: &Repository, remote: &str) -> Result<Option<Connection>> {
@@ -250,7 +262,72 @@ pub(crate) fn connection(repo: &Repository, remote: &str) -> Result<Option<Conne
     };
     let client = Client::new(&binding.registration.id, &binding.registration.slug)?;
     let tokens = fresh(&dir, &client, binding.account)?.ok_or_else(|| format!("{LAPSED}. Reconnect GitHub."))?;
-    Ok(Some(Connection { client, token: tokens.access_token }))
+    Ok(Some(Connection { client, token: tokens.access_token, account: binding.account }))
+}
+
+pub(crate) fn signed_in() -> Result<Option<Connection>> {
+    let client = client()?;
+    Ok(active(&client)?.map(|(account, tokens)| Connection { client, token: tokens.access_token, account }))
+}
+
+pub(crate) struct CloneAccess {
+    destination: Vec<u8>,
+    url: String,
+    client: Client,
+    account: u64,
+}
+
+pub(crate) fn clone_access(destination: &Path, url: &str, account: u64) -> Result<CloneAccess> {
+    repo_path(url).ok_or("Only a github.com HTTPS address can be cloned with the GitHub connection.")?;
+    let client = client()?;
+    match active(&client)? {
+        Some((active, _)) if active == account => {}
+        _ => return Err("The GitHub account that listed this repository is no longer connected. Connect GitHub again and choose the repository again.".into()),
+    }
+    let destination = destination.as_os_str().as_bytes().to_vec();
+    let waiting = Waiting { destination: destination.clone(), url: url.to_owned(), registration: (&client).into(), account };
+    update(&directory()?, |s| {
+        s.cloning.retain(|w| w.destination != destination);
+        s.cloning.push(waiting);
+        Ok(())
+    })?;
+    Ok(CloneAccess { destination, url: url.to_owned(), client, account })
+}
+
+impl CloneAccess {
+    pub(crate) fn configure(&self, command: &mut Command) -> Result<()> {
+        let executable = env::current_exe().map_err(|e| e.to_string())?;
+        let exe = executable.to_str().ok_or("The credential helper executable needs a UTF-8 path.")?;
+        command.env(CLONE_DESTINATION, OsStr::from_bytes(&self.destination));
+        credential_arguments(command, &self.url, exe);
+        Ok(())
+    }
+
+    pub(crate) fn bind(&self, repo: &Repository) -> Result<()> {
+        bind(repo, "origin", &self.url, &self.client, self.account)
+    }
+}
+
+impl Drop for CloneAccess {
+    fn drop(&mut self) {
+        let _ = directory().and_then(|dir| {
+            update(&dir, |s| {
+                s.cloning.retain(|w| !(w.destination == self.destination && w.url == self.url));
+                Ok(())
+            })
+        });
+    }
+}
+
+fn clone_tokens(dir: &Path, destination: &[u8], url: &str) -> Result<Tokens> {
+    let settings = load(dir)?;
+    let waiting = settings
+        .cloning
+        .iter()
+        .find(|w| w.destination == destination && w.url == url)
+        .ok_or("No clone is waiting for this GitHub repository.")?;
+    let client = Client::new(&waiting.registration.id, &waiting.registration.slug)?;
+    fresh(dir, &client, waiting.account)?.ok_or_else(|| format!("{LAPSED}. Reconnect GitHub."))
 }
 
 pub(crate) fn bound(repo: &Repository, remote: &str) -> Result<Option<String>> {
@@ -386,23 +463,27 @@ pub(crate) fn configure_transport(repo: &Repository, command: &mut Command) -> R
     command.env("FASTKRAKEN_CREDENTIAL_REPOSITORY", &repo.root);
     for b in bindings {
         repo_path(&b.url).ok_or("Invalid stored GitHub destination.")?;
-        let prefix = format!("credential.{}.", b.url);
-        let helper = format!(
-            "!exec {} --git-credential {}",
-            shell_quote(exe),
-            shell_quote(&b.url)
-        );
-        command
-            .arg("-c")
-            .arg(format!("{prefix}helper="))
-            .arg("-c")
-            .arg(format!("{prefix}helper={helper}"))
-            .arg("-c")
-            .arg(format!("{prefix}useHttpPath=true"))
-            .arg("-c")
-            .arg(format!("{prefix}username=x-access-token"));
+        credential_arguments(command, &b.url, exe);
     }
     Ok(())
+}
+
+fn credential_arguments(command: &mut Command, url: &str, exe: &str) {
+    let prefix = format!("credential.{url}.");
+    let helper = format!(
+        "!exec {} --git-credential {}",
+        shell_quote(exe),
+        shell_quote(url)
+    );
+    command
+        .arg("-c")
+        .arg(format!("{prefix}helper="))
+        .arg("-c")
+        .arg(format!("{prefix}helper={helper}"))
+        .arg("-c")
+        .arg(format!("{prefix}useHttpPath=true"))
+        .arg("-c")
+        .arg(format!("{prefix}username=x-access-token"));
 }
 
 pub(crate) fn git_credential(mut args: impl Iterator<Item = OsString>) -> Result<()> {
@@ -422,19 +503,23 @@ pub(crate) fn git_credential(mut args: impl Iterator<Item = OsString>) -> Result
     if !matches_request(input, expected)? {
         return Err("Credential destination does not match the selected repository.".into());
     }
-    let root = env::var_os("FASTKRAKEN_CREDENTIAL_REPOSITORY")
-        .ok_or("Missing checkout for the Git credential request.")?;
-    let repo = Repository::open(Path::new(&root))?;
     let dir = directory()?;
-    let settings = load(&dir)?;
-    let binding = settings
-        .bindings
-        .iter()
-        .find(|b| b.directory == repo.common_dir().as_os_str().as_bytes() && b.url == url)
-        .ok_or("This repository has no matching GitHub account.")?;
-    let client = Client::new(&binding.registration.id, &binding.registration.slug)?;
-    let tokens = fresh(&dir, &client, binding.account)?
-        .ok_or_else(|| format!("{LAPSED}. Reconnect GitHub."))?;
+    let tokens = if let Some(destination) = env::var_os(CLONE_DESTINATION) {
+        clone_tokens(&dir, destination.as_bytes(), &url)?
+    } else {
+        let root = env::var_os("FASTKRAKEN_CREDENTIAL_REPOSITORY")
+            .ok_or("Missing checkout for the Git credential request.")?;
+        let repo = Repository::open(Path::new(&root))?;
+        let settings = load(&dir)?;
+        let binding = settings
+            .bindings
+            .iter()
+            .find(|b| b.directory == repo.common_dir().as_os_str().as_bytes() && b.url == url)
+            .ok_or("This repository has no matching GitHub account.")?;
+        let client = Client::new(&binding.registration.id, &binding.registration.slug)?;
+        fresh(&dir, &client, binding.account)?
+            .ok_or_else(|| format!("{LAPSED}. Reconnect GitHub."))?
+    };
     if tokens.access_token.is_empty() || tokens.access_token.bytes().any(|b| b.is_ascii_control()) {
         return Err("Invalid GitHub credential. Reconnect the account.".into());
     }
@@ -531,6 +616,59 @@ pub(crate) mod tests {
         assert!(matches_request(req.as_bytes(), expected).unwrap());
         let other = "protocol=https\nhost=github.com\npath=TrailTeam/ledger.git\n\n";
         assert!(!matches_request(other.as_bytes(), expected).unwrap());
+    }
+
+    #[test]
+    fn a_clone_waiting_for_its_account_is_given_the_token_until_it_ends() {
+        assert!(vault::secret::kept_apart());
+        let apart = Apart::new();
+        let client = configure("clone-client", "fastkraken-clone").unwrap();
+        let tokens = Tokens { access_token: "clone-fixture".into(), refresh_token: None, expires_at: None };
+        save(&client, 31, &tokens).unwrap();
+        let url = "https://github.com/cedar/summit-trail.git";
+        let destination = apart.path().join("clones/summit-trail");
+        assert!(clone_access(&destination, "https://example.invalid/cedar/summit-trail.git", 31).is_err());
+        assert!(clone_access(&destination, url, 32).err().unwrap().contains("no longer connected"));
+        let access = clone_access(&destination, url, 31).unwrap();
+        let waiting = destination.as_os_str().as_bytes();
+        assert_eq!(clone_tokens(apart.path(), waiting, url).unwrap().access_token, "clone-fixture");
+        assert!(clone_tokens(apart.path(), waiting, "https://github.com/cedar/other.git").is_err());
+        assert!(clone_tokens(apart.path(), b"/elsewhere/summit-trail", url).is_err());
+        let mut command = Command::new("git");
+        access.configure(&mut command).unwrap();
+        let args: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.contains(&format!("credential.{url}.helper=")));
+        assert!(args.iter().any(|arg| arg.starts_with(&format!("credential.{url}.helper=!exec ")) && arg.ends_with(&format!("--git-credential '{url}'"))));
+        assert!(args.contains(&format!("credential.{url}.username=x-access-token")));
+        assert!(!args.iter().any(|arg| arg.contains("clone-fixture")));
+        let env: Vec<_> = command.get_envs().filter(|(key, _)| *key == CLONE_DESTINATION).map(|(_, value)| value.map(OsStr::to_owned)).collect();
+        assert_eq!(env, [Some(destination.clone().into_os_string())]);
+        drop(access);
+        assert!(clone_tokens(apart.path(), waiting, url).is_err());
+        assert!(load(apart.path()).unwrap().cloning.is_empty());
+        vault::remove(client.client_id(), 31).unwrap();
+    }
+
+    #[test]
+    fn a_clone_is_bound_to_its_account_only_when_origin_is_the_listed_address() {
+        let _apart = Apart::new();
+        let client = configure("bound-clone-client", "fastkraken-bound-clone").unwrap();
+        save(&client, 31, &Tokens { access_token: "clone-fixture".into(), refresh_token: None, expires_at: None }).unwrap();
+        let f = crate::repository::tests::Fixture::new();
+        let url = "https://github.com/cedar/summit-trail.git";
+        let access = clone_access(&f.dir.join("unused"), url, 31).unwrap();
+        assert!(access.bind(&f.repo).is_err());
+        assert_eq!(bound(&f.repo, "origin").unwrap(), None);
+        f.git(&["remote", "add", "origin", "https://github.com/cedar/elsewhere.git"]);
+        assert!(access.bind(&f.repo).is_err());
+        f.git(&["remote", "set-url", "origin", url]);
+        let before = f.git(&["config", "--local", "--list"]);
+        access.bind(&f.repo).unwrap();
+        assert_eq!(bound(&f.repo, "origin").unwrap().as_deref(), Some(url));
+        assert_eq!(f.git(&["config", "--local", "--list"]), before);
+        let connection = connection(&f.repo, "origin").unwrap().unwrap();
+        assert_eq!((connection.account, connection.token.as_str()), (31, "clone-fixture"));
+        vault::remove(client.client_id(), 31).unwrap();
     }
 
     #[test]

@@ -27,8 +27,28 @@ pub(super) struct Hosted {
     pub(super) checks: BTreeMap<String, Vec<Value>>,
     pub(super) denied_pulls: BTreeSet<String>,
     pub(super) denied_checks: BTreeSet<String>,
+    pub(super) user: Option<(u64, String)>,
+    pub(super) installations: Vec<Installed>,
+    pub(super) repositories: BTreeMap<String, Value>,
     version: u64,
     pub(super) asked: Vec<Asked>,
+}
+
+pub(super) struct Installed {
+    pub(super) id: u64,
+    pub(super) owner: String,
+    pub(super) repositories: Vec<Value>,
+}
+
+pub(super) fn listed(full_name: &str, private: bool, pushed: &str) -> Value {
+    json!({"full_name": full_name, "private": private, "pushed_at": pushed})
+}
+
+pub(super) fn repository(full_name: &str, parent: Option<&str>) -> Value {
+    match parent {
+        Some(parent) => json!({"full_name": full_name, "private": false, "fork": true, "parent": {"full_name": parent}}),
+        None => json!({"full_name": full_name, "private": false, "fork": false}),
+    }
 }
 
 pub(super) struct Hosting {
@@ -168,10 +188,33 @@ fn handle(mut stream: TcpStream, state: &Mutex<Hosted>) -> io::Result<()> {
 }
 
 fn route(state: &Hosted, path: &str) -> (u16, Value) {
+    let missing = (404, json!({"message": "Not Found"}));
+    if path == "/user" {
+        return state.user.as_ref().map_or(missing, |(id, login)| (200, json!({"id": id, "login": login})));
+    }
+    if let Some(page) = path.strip_prefix("/user/installations?per_page=100&page=") {
+        let installations: Vec<Value> = state
+            .installations
+            .iter()
+            .filter(|_| page == "1")
+            .map(|install| {
+                json!({"id": install.id, "account": {"login": install.owner, "id": install.id, "type": "Organization"}, "permissions": {"contents": "write"}, "suspended_at": null})
+            })
+            .collect();
+        return (200, json!({"installations": installations}));
+    }
+    if let Some((id, page)) = path.strip_prefix("/user/installations/").and_then(|rest| rest.split_once("/repositories?per_page=100&page=")) {
+        let Some(install) = state.installations.iter().find(|install| install.id.to_string() == id) else { return missing };
+        let repositories = if page == "1" { install.repositories.clone() } else { Vec::new() };
+        return (200, json!({"total_count": install.repositories.len(), "repositories": repositories}));
+    }
     let Some(rest) = path.strip_prefix("/repos/") else { return (404, json!({})) };
     let mut parts = rest.splitn(3, '/');
-    let (Some(owner), Some(name), Some(tail)) = (parts.next(), parts.next(), parts.next()) else { return (404, json!({})) };
+    let (Some(owner), Some(name)) = (parts.next(), parts.next()) else { return (404, json!({})) };
     let repo = format!("{owner}/{name}").to_ascii_lowercase();
+    let Some(tail) = parts.next() else {
+        return state.repositories.get(&repo).map_or(missing, |record| (200, record.clone()));
+    };
     let denied = json!({"message": "Resource not accessible by integration"});
     if tail == "pulls?state=open&per_page=100" || tail == "pulls?state=closed&sort=updated&direction=desc&per_page=50" {
         if state.denied_pulls.contains(&repo) {

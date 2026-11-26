@@ -1,4 +1,4 @@
-use super::hosting_mock::{Hosting, Pull, TOKEN, run};
+use super::hosting_mock::{Hosting, Installed, Pull, TOKEN, listed, repository, run};
 use super::*;
 use crate::{
     commands::{self, Target},
@@ -20,6 +20,10 @@ const BADGE_REPO: &str = "cedar/badge-trail";
 const INSTALL: &str = "https://github.com/apps/fastkraken-replay/installations/new";
 const PULLS_DENIED: &str = "FastKraken needs permission to read pull requests on cedar";
 const CHECKS_DENIED: &str = "FastKraken needs permission to read checks on cedar";
+const SUMMIT_TRAIL: &str = "summit-trail";
+const CEDAR_SUMMIT: &str = "https://github.com/cedar/summit-trail";
+const FERN_SUMMIT: &str = "https://github.com/fern/summit-trail";
+const TEAM_SUMMIT: &str = "https://github.com/trailteam/summit-trail";
 
 struct Badges {
     root: PathBuf,
@@ -63,7 +67,233 @@ impl Replay<'_> {
         let hosting = Hosting::start()?;
         let badges = self.a_branch_with_an_open_pull_request_shows_its_number(dir, &hosting).await?;
         self.missing_permission_is_explained(&hosting, &badges).await?;
-        self.check_out_a_pull_request_from_a_fork(dir, &hosting, &badges).await
+        self.check_out_a_pull_request_from_a_fork(dir, &hosting, &badges).await?;
+        self.clone_from_the_github_list(dir, &hosting).await
+    }
+
+    async fn until_tab_total(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
+        let started = Instant::now();
+        loop {
+            self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
+            let seen = self.tab.tabs(self.cx)?;
+            if seen == (count, front) {
+                return Ok(());
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                return Err(format!("Timed out waiting for {description}: tabs and front are {seen:?}").into());
+            }
+            self.cx.background_executor().timer(Duration::from_millis(12)).await;
+        }
+    }
+
+    fn filter_list(&mut self, text: &str) -> Result<Vec<String>> {
+        let text = text.to_owned();
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.cloning.filter.update(cx, |field, cx| field.set_text(&text, cx)))?;
+        Ok(self.tab.read_with(self.cx, |tab, cx| tab.ui.cloning.shown(cx).iter().map(|repository| repository.full_name()).collect())?)
+    }
+
+    fn clone_request(&mut self) -> Result<crate::clone::Request> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| tab.ui.cloning.request(cx))?)
+    }
+
+    async fn idle(&mut self, description: &str, ready: impl Fn(&Tab) -> bool) -> Result<()> {
+        self.until(description, |tab| !tab.ui.busy() && tab.ui.jobs.network.is_none() && !tab.ui.forks.looking && ready(tab)).await
+    }
+
+    async fn told(&mut self, title: &str, detail: &str) -> Result<()> {
+        let (_, said, _, _) = self.notice_appears(title).await?;
+        if said != detail {
+            return Err(format!("The notice {title:?} says {said:?}, not {detail:?}").into());
+        }
+        Ok(())
+    }
+
+    async fn clone_from_the_github_list(&mut self, dir: &Path, hosting: &Hosting) -> Result<()> {
+        use crate::clone::{Action as C, Listing, Source};
+        self.start("GAP1206");
+        let source = init(dir, "Summit-trail-source")?;
+        record(&source, "trail.txt", TRAIL, "Start the summit trail")?;
+        git(&source, &["branch", "-m", "main", "trunk"])?;
+        let bare = |owner: &str| -> Result<String> {
+            let path = dir.join(format!("summit-{owner}.git"));
+            fs::create_dir(&path)?;
+            git(&path, &["init", "-q", "--bare", "-b", "trunk"])?;
+            Ok(path.to_str().ok_or("The bare repository's path is not UTF-8")?.to_owned())
+        };
+        let team = bare("trailteam")?;
+        git(&source, &["push", "-q", &team, "trunk"])?;
+        let team_tip = oid(&source, "trunk")?;
+        record(&source, "summit.txt", "Summit\n", "Mark the summit")?;
+        let summit = oid(&source, "trunk")?;
+        let cedar = bare("cedar")?;
+        git(&source, &["push", "-q", &cedar, "trunk"])?;
+        let fern = bare("fern")?;
+        git(&source, &["push", "-q", &fern, "trunk"])?;
+        git(&source, &["switch", "-qc", "cairn"])?;
+        record(&source, "cairn.txt", "Cairn\n", "Build a cairn")?;
+        let cairn = oid(&source, "cairn")?;
+        git(&source, &["push", "-q", &fern, "cairn"])?;
+        let global = global_config(dir);
+        let kept = fs::read_to_string(&global)?;
+        let mut rules = kept.clone();
+        for (page, path) in [(CEDAR_SUMMIT, &cedar), (FERN_SUMMIT, &fern), (TEAM_SUMMIT, &team)] {
+            rules += &format!("[url \"{path}\"]\n\tinsteadOf = {page}.git\n[url \"{page}.git\"]\n\tpushInsteadOf = {page}.git\n");
+        }
+        fs::write(&global, rules)?;
+        hosting.change(|state| {
+            state.user = Some((11, "fern".into()));
+            state.installations = vec![
+                Installed {
+                    id: 501,
+                    owner: "cedar".into(),
+                    repositories: vec![listed("cedar/summit-trail", false, "2026-11-25T08:00:00Z"), listed("cedar/badge-trail", true, "2026-11-20T10:00:00Z")],
+                },
+                Installed {
+                    id: 502,
+                    owner: "fern".into(),
+                    repositories: vec![listed("fern/summit-trail", false, "2026-11-23T12:30:00Z"), listed("fern/field-notes", true, "2026-11-26T07:00:00Z")],
+                },
+            ];
+            for (full_name, parent) in [("cedar/summit-trail", Some("trailteam/summit-trail")), ("fern/summit-trail", Some("cedar/summit-trail")), ("trailteam/summit-trail", None)] {
+                state.repositories.insert(full_name.into(), repository(full_name, parent));
+            }
+        });
+        let clones = dir.join("github-clones");
+        fs::create_dir(&clones)?;
+        let asked = hosting.asked().len();
+
+        self.action(Action::Clone(C::Browse))?;
+        self.until("the GitHub list in the clone dialog", |tab| {
+            tab.ui.cloning.open() && tab.ui.cloning.source() == Source::GitHub && matches!(tab.ui.cloning.listing(), Listing::Ready(_))
+        })
+        .await?;
+        let (rows, account) = self.tab.read_with(self.cx, |tab, cx| {
+            let at = crate::github::epoch_of("2026-11-26T09:00:00Z").unwrap_or_default();
+            let rows: Vec<(String, bool, Option<String>)> =
+                tab.ui.cloning.shown(cx).iter().map(|r| (r.full_name(), r.private, crate::clone::pushed(r, at))).collect();
+            let account = match tab.ui.cloning.listing() {
+                Listing::Ready(account) => Some((account.account, account.login.clone(), account.install.clone())),
+                _ => None,
+            };
+            (rows, account)
+        })?;
+        let wanted = [
+            ("fern/field-notes", true, "Pushed 2 hours ago"),
+            ("cedar/summit-trail", false, "Pushed yesterday"),
+            ("fern/summit-trail", false, "Pushed 23 Nov"),
+            ("cedar/badge-trail", true, "Pushed 20 Nov"),
+        ];
+        let rows_match = rows.len() == wanted.len()
+            && rows.iter().zip(wanted).all(|((name, private, pushed), (want, secret, when))| name == want && *private == secret && pushed.as_deref() == Some(when));
+        if !rows_match {
+            return Err(format!("The GitHub list shows {rows:?}").into());
+        }
+        if account != Some((11, "fern".to_owned(), INSTALL.to_owned())) {
+            return Err(format!("The list was read for {account:?}").into());
+        }
+        let paths: Vec<String> = hosting.asked()[asked..].iter().map(|ask| ask.path.clone()).collect();
+        for path in ["/user", "/user/installations?per_page=100&page=1", "/user/installations/501/repositories?per_page=100&page=1", "/user/installations/502/repositories?per_page=100&page=1"] {
+            if !paths.iter().any(|asked| asked == path) {
+                return Err(format!("Listing the repositories never asked for {path}: {paths:?}").into());
+            }
+        }
+        let opened = crate::handoff::opened().len();
+        self.action(Action::Handoff(crate::handoff::Action::OpenUrl(INSTALL.into())))?;
+        self.opened_after(opened, INSTALL).await?;
+        if self.filter_list("summit")? != ["cedar/summit-trail", "fern/summit-trail"] {
+            return Err("Filtering by summit does not leave the two summit trails".into());
+        }
+        if !self.filter_list("no-such-trail")?.is_empty() {
+            return Err("A filter that matches nothing still lists repositories".into());
+        }
+        self.filter_list("")?;
+        self.action(Action::Clone(C::Pick("fern/summit-trail".into())))?;
+        let picked = self.clone_request()?;
+        if picked.address != format!("{FERN_SUMMIT}.git") || picked.name != SUMMIT_TRAIL || picked.account != Some(11) {
+            return Err(format!("Choosing fern/summit-trail fills {picked:?}").into());
+        }
+        let typed = format!("{CEDAR_SUMMIT}.git");
+        self.tab.update(self.cx, |tab, _, cx| tab.ui.cloning.address.update(cx, |field, cx| field.set_text(&typed, cx)))?;
+        if self.clone_request()?.account.is_some() {
+            return Err("A typed address is still cloned with the account of the chosen row".into());
+        }
+        if self.filter_list("CEDAR/S")? != ["cedar/summit-trail"] {
+            return Err("The filter does not ignore case".into());
+        }
+        self.action(Action::Clone(C::PickFirst))?;
+        self.action(Action::Clone(C::SetParent(clones.clone())))?;
+        let destination = clones.join(SUMMIT_TRAIL);
+        let request = self.clone_request()?;
+        if request.address != typed || request.account != Some(11) || request.destination() != destination || request.problem().is_some() {
+            return Err(format!("After choosing cedar/summit-trail the dialog would clone {request:?}").into());
+        }
+
+        self.action(Action::Clone(C::Submit))?;
+        self.until_tab_total("the clone in a second tab", 2, 1).await?;
+        self.idle("summit-trail open with origin and its history", |tab| {
+            tab.ui.repo == SUMMIT_TRAIL
+                && tab.ui.branch == "trunk"
+                && tab.ui.history.iter().any(|row| row.subject == "Mark the summit")
+                && tab.ui.refs.remotes.iter().any(|remote| remote == "origin")
+        })
+        .await?;
+        let parent = clones.display().to_string();
+        self.told("Cloned summit-trail", &format!("Into {parent}. origin uses your GitHub connection.")).await?;
+        git_is(&destination, &["config", "--get-all", "remote.origin.url"], &format!("{typed}\n"))?;
+        git_is(&destination, &["rev-parse", "HEAD"], &format!("{summit}\n"))?;
+        git_is(&destination, &["status", "--porcelain"], "")?;
+        let repo = crate::repository::Repository::open(&destination)?;
+        if crate::auth::bound(&repo, "origin")?.as_deref() != Some(typed.as_str()) {
+            return Err("The clone's origin is not bound to the GitHub account".into());
+        }
+        let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(dir.join("state/github.json"))?)?;
+        if !settings["cloning"].as_array().is_some_and(Vec::is_empty) {
+            return Err(format!("The clone left its one-time access behind: {}", settings["cloning"]).into());
+        }
+
+        let origin = Target::Remote("origin".into());
+        let opened = crate::handoff::opened().len();
+        self.take_row(&origin, "remote.fork-on-github", "Fork on GitHub…").await?;
+        self.opened_after(opened, &format!("{CEDAR_SUMMIT}/fork")).await?;
+        self.take_row(&origin, "remote.add-my-fork", "Add my fork as a remote").await?;
+        self.told("Added fern", &format!("fern is {FERN_SUMMIT}.git and uses your GitHub connection. Fetching it now.")).await?;
+        self.idle("fern fetched", |tab| tab.ui.refs.oid_of(&Target::RemoteBranch("fern/cairn".into())) == Some(cairn.as_str())).await?;
+        git_is(&destination, &["config", "--get-all", "remote.fern.url"], &format!("{FERN_SUMMIT}.git\n"))?;
+        git_is(&destination, &["rev-parse", "refs/remotes/fern/cairn"], &format!("{cairn}\n"))?;
+        if crate::auth::bound(&repo, "fern")?.as_deref() != Some(format!("{FERN_SUMMIT}.git").as_str()) {
+            return Err("fern is not bound to the GitHub account".into());
+        }
+        self.take_row(&origin, "remote.add-parent", "Add the parent repository as a remote").await?;
+        self.told("Added upstream", &format!("upstream is {TEAM_SUMMIT}.git. Fetching it now.")).await?;
+        self.idle("upstream fetched", |tab| tab.ui.refs.oid_of(&Target::RemoteBranch("upstream/trunk".into())) == Some(team_tip.as_str())).await?;
+        git_is(&destination, &["config", "--get-all", "remote.upstream.url"], &format!("{TEAM_SUMMIT}.git\n"))?;
+        if crate::auth::bound(&repo, "upstream")?.is_some() {
+            return Err("The parent repository was bound to the account".into());
+        }
+        let remotes = git(&destination, &["remote"])?;
+        self.take_row(&Target::Remote("fern".into()), "remote.add-parent", "Add the parent repository as a remote").await?;
+        self.told("origin already is the parent repository", "origin is cedar/summit-trail. Nothing was changed.").await?;
+        self.idle("the parent looked up", |_| true).await?;
+        self.take_row(&origin, "remote.add-my-fork", "Add my fork as a remote").await?;
+        self.told("Your fork is already a remote", "fern is fern/summit-trail. Nothing was changed.").await?;
+        self.idle("the fork looked up", |_| true).await?;
+        let upstream = Target::Remote("upstream".into());
+        self.take_row(&upstream, "remote.add-my-fork", "Add my fork as a remote").await?;
+        self.told("fern/summit-trail is not a fork of trailteam/summit-trail", "Nothing was added.").await?;
+        self.idle("the other fork looked up", |_| true).await?;
+        let opened = crate::handoff::opened().len();
+        self.take_row(&upstream, "remote.fork-on-github", "Fork on GitHub…").await?;
+        self.opened_after(opened, &format!("{TEAM_SUMMIT}/fork")).await?;
+        git_is(&destination, &["remote"], &remotes)?;
+        git_is(&destination, &["rev-parse", "trunk"], &format!("{summit}\n"))?;
+        git_is(&destination, &["status", "--porcelain"], "")?;
+
+        self.key("cmd-w")?;
+        self.until_tab_total("one tab again", 1, 0).await?;
+        self.until("Badge-trail in front", |tab| tab.ui.repo == BADGE_TRAIL).await?;
+        fs::write(&global, kept)?;
+        self.pass();
+        Ok(())
     }
 
     fn menu_row(&mut self, target: &Target, id: &str) -> Result<Option<(String, Option<String>, Option<Action>)>> {

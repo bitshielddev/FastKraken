@@ -103,6 +103,33 @@ pub(crate) struct CheckRun {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Listed {
+    pub owner: String,
+    pub name: String,
+    pub private: bool,
+    pub pushed: Option<i64>,
+}
+
+impl Listed {
+    pub(crate) fn full_name(&self) -> String {
+        format!("{}/{}", self.owner, self.name)
+    }
+
+    pub(crate) fn clone_url(&self) -> String {
+        format!("https://github.com/{}/{}.git", self.owner, self.name)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Repo {
+    pub full_name: String,
+    pub private: bool,
+    pub parent: Option<String>,
+}
+
+const LISTED_PAGES: u32 = 10;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Cached<T> {
     Fresh { value: T, etag: Option<String> },
     Unchanged,
@@ -454,6 +481,48 @@ impl Client {
         Ok(all)
     }
 
+    pub(crate) fn repositories(&self, token: &str) -> Result<Vec<Listed>, Error> {
+        let mut listed: Vec<Listed> = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for install in self.installations(token)? {
+            let Some(id) = install["id"].as_u64().filter(|_| install["suspended_at"].is_null()) else {
+                continue;
+            };
+            for page in 1..=LISTED_PAGES {
+                let reply = self.get(token, &format!("/user/installations/{id}/repositories?per_page=100&page={page}"))?;
+                let more = reply.next_page;
+                let body = success(reply, 200)?;
+                for repository in body["repositories"].as_array().ok_or_else(invalid_response)?.iter().filter_map(listed_from_response) {
+                    if seen.insert(repository.full_name().to_ascii_lowercase()) {
+                        listed.push(repository);
+                    }
+                }
+                if !more {
+                    break;
+                }
+            }
+        }
+        listed.sort_by(|a, b| {
+            b.pushed.cmp(&a.pushed).then_with(|| a.full_name().to_ascii_lowercase().cmp(&b.full_name().to_ascii_lowercase()))
+        });
+        Ok(listed)
+    }
+
+    pub(crate) fn repository(&self, token: &str, owner: &str, name: &str) -> Result<Option<Repo>, Error> {
+        validate_destination(owner, name)?;
+        let reply = self.get(token, &format!("/repos/{owner}/{name}"))?;
+        if reply.status == 404 {
+            return Ok(None);
+        }
+        let body = success(reply, 200)?;
+        let full_name = full_name(&body["full_name"]).ok_or_else(invalid_response)?;
+        if !full_name.eq_ignore_ascii_case(&format!("{owner}/{name}")) {
+            return Err(invalid_response());
+        }
+        let parent = if body["fork"].as_bool() == Some(true) { full_name_of(&body["parent"]) } else { None };
+        Ok(Some(Repo { full_name, private: body["private"].as_bool().ok_or_else(invalid_response)?, parent }))
+    }
+
     pub(crate) fn installed_on(&self, token: &str, owner: &str) -> Result<bool, Error> {
         Ok(self.installations(token)?.iter().any(|install| {
             install["suspended_at"].is_null()
@@ -656,6 +725,44 @@ fn branch_name(value: &Value) -> Option<String> {
 fn full_name(value: &Value) -> Option<String> {
     let (owner, name) = value.as_str()?.split_once('/')?;
     (valid_owner_login(owner) && validate_repo_name(name).is_ok()).then(|| format!("{owner}/{name}"))
+}
+
+fn full_name_of(repository: &Value) -> Option<String> {
+    full_name(&repository["full_name"])
+}
+
+fn listed_from_response(item: &Value) -> Option<Listed> {
+    let full = full_name_of(item)?;
+    let (owner, name) = full.split_once('/')?;
+    Some(Listed {
+        owner: owner.to_owned(),
+        name: name.to_owned(),
+        private: item["private"].as_bool()?,
+        pushed: item["pushed_at"].as_str().and_then(epoch_of),
+    })
+}
+
+pub(crate) fn epoch_of(stamp: &str) -> Option<i64> {
+    let bytes = stamp.as_bytes();
+    if bytes.len() != 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' || bytes[13] != b':' || bytes[16] != b':' || bytes[19] != b'Z' {
+        return None;
+    }
+    let number = |from: usize, to: usize| -> Option<i64> {
+        let part = &stamp[from..to];
+        part.bytes().all(|b| b.is_ascii_digit()).then(|| part.parse().ok()).flatten()
+    };
+    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
+    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let shifted = if month <= 2 { year - 1 } else { year };
+    let era = shifted.div_euclid(400);
+    let year_of_era = shifted - era * 400;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
 fn pull_from_response(item: &Value, base: &str) -> Option<PullRequest> {

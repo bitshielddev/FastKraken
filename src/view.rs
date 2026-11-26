@@ -590,6 +590,7 @@ pub enum Action {
     PushTo(crate::push_to::Action),
     PullRequest(crate::pull_request::Action),
     Pulls(crate::pulls::Action),
+    Forks(crate::forks::Action),
     Stash(crate::stash::Action),
     Sync(crate::sync::Action),
     Publish(crate::publish::Action),
@@ -809,6 +810,7 @@ pub struct Ui {
     pub(crate) journal: crate::journal::State,
     pub(crate) worktree: crate::worktree::State,
     pub(crate) pulls: crate::pulls::State,
+    pub(crate) forks: crate::forks::State,
     pub(crate) submodule: crate::submodule::State,
     pub(crate) lfs: crate::lfs::State,
     pub(crate) sparse: crate::sparse::State,
@@ -914,6 +916,7 @@ impl Ui {
             journal: Default::default(),
             worktree: Default::default(),
             pulls: Default::default(),
+            forks: Default::default(),
             submodule: Default::default(),
             lfs: Default::default(),
             sparse: Default::default(),
@@ -3185,7 +3188,8 @@ pub fn render<T: Desk>(
                 && ui.stash.message().is_some_and(|field| field.focus_handle(cx).is_focused(window)))
             || (!ui.cloning.open()
                 && (ui.cloning.address.focus_handle(cx).is_focused(window)
-                    || ui.cloning.name.focus_handle(cx).is_focused(window)))
+                    || ui.cloning.name.focus_handle(cx).is_focused(window)
+                    || ui.cloning.filter.focus_handle(cx).is_focused(window)))
             || (!ui.init.open()
                 && (ui.init.name.focus_handle(cx).is_focused(window)
                     || ui.init.branch.focus_handle(cx).is_focused(window)))

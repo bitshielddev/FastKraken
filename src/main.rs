@@ -34,6 +34,7 @@ mod file_list;
 mod file_view;
 mod find;
 mod forecast;
+mod forks;
 mod github;
 mod graph_view;
 mod guard;
@@ -1746,6 +1747,7 @@ impl Tab {
             Action::PushTo(action) => push_to::dispatch(self, action, window, cx),
             Action::PullRequest(action) => pull_request::dispatch(self, action, window, cx),
             Action::Pulls(action) => pulls::dispatch(self, action, window, cx),
+            Action::Forks(action) => forks::dispatch(self, action, window, cx),
             Action::ViewChanges => {
                 if let Some(first) = self.ui.files.first() {
                     self.follow = Follow::Nothing;

@@ -1247,6 +1247,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         A::PushTo(_) => false,
         A::PullRequest(_) => true,
         A::Pulls(action) => action.during_operation(),
+        A::Forks(_) => false,
         A::Tag(_) => false,
         A::Tracking(action) => matches!(action, crate::tracking::Action::RestoreRemote { .. }),
         A::Stash(action) => matches!(

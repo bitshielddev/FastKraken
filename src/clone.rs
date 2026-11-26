@@ -1,5 +1,7 @@
 use crate::{
-    Tab, explain, jobs, kit,
+    Tab, auth, explain,
+    github::{Error, Listed},
+    jobs, kit,
     notice::{self, Notice},
     remotes, repository,
     settings::Memory,
@@ -24,8 +26,20 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
     .words(&["git clone", "download", "url", "address", "copy a repository", "checkout"])
     .icon("arrow-down")
     .keys("cmd-n")
-    .bar(Bar::File)]
+    .bar(Bar::File),
+    Command::new(
+        "repo.clone-github",
+        Group::Repository,
+        |_, _| "Clone from GitHub…".into(),
+        |_, target, _| if *target == Target::Repo { Availability::Enabled } else { Availability::Hidden },
+        |_, _| Some(view::Action::Clone(Action::Browse)),
+    )
+    .words(&["git clone", "github", "my repositories", "list", "download"])
+    .icon("cloud")]
 };
+
+pub(crate) const LISTED_NOTE: &str = "Showing repositories on accounts where FastKraken is installed.";
+pub(crate) const CHOOSE: &str = "Choose repositories…";
 
 pub(crate) const MAX_DEPTH: u32 = 1_000_000;
 pub(crate) const DEPTH_PROBLEM: &str = "Enter how many of the latest commits to download, a whole number from 1.";
@@ -101,6 +115,38 @@ pub(crate) struct Request {
     pub parent: PathBuf,
     pub name: String,
     pub options: Options,
+    pub account: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Source {
+    #[default]
+    Address,
+    GitHub,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Account {
+    pub account: u64,
+    pub login: String,
+    pub install: String,
+    pub repositories: Vec<Listed>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Listing {
+    #[default]
+    Idle,
+    Loading,
+    SignedOut(Option<String>),
+    Failed(String),
+    Ready(Account),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Connection {
+    Bound,
+    Unbound(String),
 }
 
 impl Request {
@@ -128,6 +174,12 @@ pub(crate) enum Action {
     Show(PathBuf),
     ToggleAdvanced,
     Toggle(Choice),
+    Browse,
+    Source(Source),
+    Reload,
+    Pick(String),
+    PickFirst,
+    ConnectGitHub,
 }
 
 pub(crate) struct State {
@@ -144,6 +196,12 @@ pub(crate) struct State {
     blobless: bool,
     sparse: bool,
     submodules: bool,
+    source: Source,
+    listing: Listing,
+    ticket: u64,
+    pub(crate) filter: Entity<CommitInput>,
+    picked: Option<(String, u64)>,
+    list_scroll: gpui::ScrollHandle,
 }
 
 impl State {
@@ -156,6 +214,8 @@ impl State {
         let branch = cx.new(|cx| CommitInput::with_placeholder(cx, "The default branch"));
         cx.observe(&depth, |_, _, cx| cx.notify()).detach();
         cx.observe(&branch, |_, _, cx| cx.notify()).detach();
+        let filter = cx.new(|cx| CommitInput::with_placeholder(cx, "Filter by owner or name"));
+        cx.observe(&filter, |_, _, cx| cx.notify()).detach();
         Self {
             open: false,
             address,
@@ -170,7 +230,27 @@ impl State {
             blobless: false,
             sparse: false,
             submodules: false,
+            source: Source::Address,
+            listing: Listing::Idle,
+            ticket: 0,
+            filter,
+            picked: None,
+            list_scroll: gpui::ScrollHandle::new(),
         }
+    }
+
+    pub(crate) fn source(&self) -> Source {
+        self.source
+    }
+
+    pub(crate) fn listing(&self) -> &Listing {
+        &self.listing
+    }
+
+    pub(crate) fn shown(&self, cx: &App) -> Vec<&Listed> {
+        let Listing::Ready(account) = &self.listing else { return Vec::new() };
+        let filter = self.filter.read(cx).text().trim().to_ascii_lowercase();
+        account.repositories.iter().filter(|repository| repository.full_name().to_ascii_lowercase().contains(&filter)).collect()
     }
 
     pub(crate) fn advanced(&self) -> bool {
@@ -206,11 +286,14 @@ impl State {
     }
 
     pub(crate) fn request(&self, cx: &App) -> Request {
+        let address = self.address.read(cx).text().trim().to_owned();
+        let account = self.picked.as_ref().filter(|(url, _)| *url == address).map(|(_, account)| *account);
         Request {
-            address: self.address.read(cx).text().trim().to_owned(),
+            address,
             parent: self.parent.clone(),
             name: self.name.read(cx).text().trim().to_owned(),
             options: self.options(cx),
+            account,
         }
     }
 }
@@ -289,12 +372,21 @@ pub(crate) fn destination_problem(parent: &Path, destination: &Path) -> Result<b
 }
 
 
+#[cfg(test)]
 pub(crate) fn clone(request: &Request) -> Result<PathBuf, String> {
+    cloned(request).map(|(root, _)| root)
+}
+
+pub(crate) fn cloned(request: &Request) -> Result<(PathBuf, Option<Connection>), String> {
     let failed = |reason: String| format!("Clone Failed — {reason}");
     if let Some(problem) = request.problem() {
         return Err(failed(if problem.is_empty() { "Enter an address and a folder name.".to_owned() } else { problem }));
     }
     let destination = request.destination();
+    let access = match request.account {
+        Some(account) => Some(auth::clone_access(&destination, &request.address, account).map_err(failed)?),
+        None => None,
+    };
     let created = match fs::create_dir(&destination) {
         Ok(()) => true,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -306,6 +398,9 @@ pub(crate) fn clone(request: &Request) -> Result<PathBuf, String> {
         Err(error) => return Err(failed(format!("Could not create {}: {error}.", destination.display()))),
     };
     let result = repository::clone_command(&request.parent).and_then(|mut command| {
+        if let Some(access) = &access {
+            access.configure(&mut command)?;
+        }
         command.args(["clone", "--progress"]).args(request.options.arguments(local(&request.address)));
         if request.options.submodules {
             repository::with_system_tools(&mut command);
@@ -316,7 +411,14 @@ pub(crate) fn clone(request: &Request) -> Result<PathBuf, String> {
         })
     });
     match result {
-        Ok(_) => fs::canonicalize(&destination).map_err(|error| failed(format!("{} cannot be read: {error}.", destination.display()))),
+        Ok(_) => {
+            let root = fs::canonicalize(&destination).map_err(|error| failed(format!("{} cannot be read: {error}.", destination.display())))?;
+            let connection = access.as_ref().map(|access| match repository::Repository::open(&root).and_then(|repo| access.bind(&repo)) {
+                Ok(()) => Connection::Bound,
+                Err(why) => Connection::Unbound(why),
+            });
+            Ok((root, connection))
+        }
         Err(error) => {
             discard(&destination, created);
             let said: Vec<&str> = error.lines().filter(|line| !line.starts_with("Cloning into ")).collect();
@@ -365,9 +467,12 @@ fn show(tab: &mut Tab, request: Option<Request>, window: &mut Window, cx: &mut C
         parent: default_parent(cx),
         name: String::new(),
         options: Options::default(),
+        account: None,
     });
     let state = &mut tab.ui.cloning;
     state.open = true;
+    state.source = Source::Address;
+    state.picked = request.account.map(|account| (request.address.clone(), account));
     state.parent = request.parent;
     state.derived = String::new();
     let options = request.options;
@@ -385,6 +490,60 @@ fn show(tab: &mut Tab, request: Option<Request>, window: &mut Window, cx: &mut C
         follow(tab, cx);
     }
     window.focus(&tab.ui.cloning.address.focus_handle(cx));
+}
+
+fn list(tab: &mut Tab, cx: &mut Context<Tab>) {
+    let state = &mut tab.ui.cloning;
+    if state.listing == Listing::Loading {
+        return;
+    }
+    state.ticket += 1;
+    let ticket = state.ticket;
+    state.listing = Listing::Loading;
+    cx.notify();
+    Tab::work(cx, listed, move |tab, listing, cx| {
+        if tab.ui.cloning.ticket == ticket {
+            tab.ui.cloning.listing = listing;
+            cx.notify();
+        }
+    });
+}
+
+pub(crate) fn listed() -> Listing {
+    let client = match auth::client() {
+        Ok(client) => client,
+        Err(why) => return Listing::SignedOut(Some(why)),
+    };
+    let (account, tokens) = match auth::active(&client) {
+        Ok(Some(signed_in)) => signed_in,
+        Ok(None) => return Listing::SignedOut(None),
+        Err(why) if why.starts_with(auth::LAPSED) => return Listing::SignedOut(Some(why)),
+        Err(why) => return Listing::Failed(why),
+    };
+    let lapsed = |error: Error| match error {
+        Error::Unauthorized(said) => Listing::SignedOut(Some(format!("{}. {said}", auth::LAPSED))),
+        error => Listing::Failed(error.to_string()),
+    };
+    let login = match client.user(&tokens.access_token) {
+        Ok((id, login)) if id == account => login,
+        Ok(_) => return Listing::SignedOut(Some("GitHub returned a different account. Connect again.".into())),
+        Err(error) => return lapsed(error),
+    };
+    match client.repositories(&tokens.access_token) {
+        Ok(repositories) => Listing::Ready(Account { account, login, install: client.installation_url(), repositories }),
+        Err(error) => lapsed(error),
+    }
+}
+
+fn pick(tab: &mut Tab, full_name: &str, window: &mut Window, cx: &mut Context<Tab>) {
+    let state = &mut tab.ui.cloning;
+    let Listing::Ready(account) = &state.listing else { return };
+    let Some(repository) = account.repositories.iter().find(|repository| repository.full_name() == full_name) else { return };
+    let url = repository.clone_url();
+    state.picked = Some((url.clone(), account.account));
+    state.address.update(cx, |address, cx| address.set_text(&url, cx));
+    follow(tab, cx);
+    window.focus(&tab.ui.cloning.name.focus_handle(cx));
 }
 
 fn close(tab: &mut Tab, window: &mut Window) {
@@ -470,6 +629,46 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             tab.refuse("Wait for the current operation to finish, then open the clone.".to_owned(), cx);
         }
         Action::Show(path) => tab.open(path, cx),
+        Action::Browse => {
+            if !tab.ui.cloning.open {
+                show(tab, None, window, cx);
+            }
+            tab.ui.cloning.source = Source::GitHub;
+            list(tab, cx);
+            window.focus(&tab.ui.cloning.filter.focus_handle(cx));
+        }
+        Action::Source(source) => {
+            tab.ui.cloning.source = source;
+            match source {
+                Source::GitHub => {
+                    if !matches!(tab.ui.cloning.listing, Listing::Ready(_)) {
+                        list(tab, cx);
+                    }
+                    window.focus(&tab.ui.cloning.filter.focus_handle(cx));
+                }
+                Source::Address => window.focus(&tab.ui.cloning.address.focus_handle(cx)),
+            }
+        }
+        Action::Reload => {
+            tab.ui.cloning.listing = Listing::Idle;
+            list(tab, cx);
+        }
+        Action::Pick(full_name) => pick(tab, &full_name, window, cx),
+        Action::PickFirst => {
+            let first = tab.ui.cloning.shown(cx).first().map(|repository| repository.full_name());
+            if let Some(full_name) = first {
+                pick(tab, &full_name, window, cx);
+            }
+        }
+        Action::ConnectGitHub => {
+            if tab.repo.is_none() {
+                tab.refuse("Open a repository, connect GitHub from Publish to GitHub…, then your repositories are listed here".to_owned(), cx);
+                return;
+            }
+            close(tab, window);
+            let again = Some(Box::new(view::Action::Clone(Action::Browse)));
+            crate::publish::sign_in(tab, crate::publish::After::Retry(again), cx);
+        }
     }
     cx.notify();
 }
@@ -499,7 +698,7 @@ pub(crate) fn start(tab: &mut Tab, request: Request, cx: &mut Context<Tab>) {
         ..explain::About::default()
     };
     let asked = request.clone();
-    let work = move || link.enter(|| clone(&asked).map_err(|error| explain::explain(notice::Failure::from(error), &about)));
+    let work = move || link.enter(|| cloned(&asked).map_err(|error| explain::explain(notice::Failure::from(error), &about)));
     Tab::work(cx, work, move |tab, result, cx| {
         let Some(job) = tab.ui.jobs.end_network(id) else { return };
         crate::askpass::poll(tab, cx);
@@ -516,10 +715,15 @@ pub(crate) fn start(tab: &mut Tab, request: Request, cx: &mut Context<Tab>) {
                 let shown = failure.notice().logged(logged(tab, true));
                 tab.ui.notices.finish(spinner, shown);
             }
-            Ok(root) => {
+            Ok((root, connection)) => {
                 Memory::update(cx, |memory| memory.add_recent(&root, view::now()));
                 let name = root.file_name().map_or_else(|| request.name.clone(), |name| name.to_string_lossy().into_owned());
-                let cloned = Notice::new(Tone::Success, format!("Cloned {name}"), format!("Into {}.", request.parent.display()));
+                let connected = match connection {
+                    None => String::new(),
+                    Some(Connection::Bound) => " origin uses your GitHub connection.".to_owned(),
+                    Some(Connection::Unbound(why)) => format!(" The GitHub connection was not set up for origin: {why}"),
+                };
+                let cloned = Notice::new(Tone::Success, format!("Cloned {name}"), format!("Into {}.{connected}", request.parent.display()));
                 let in_the_way = tab.ui.dialog_open() || tab.ui.modal_open();
                 if tab.repo.is_some() && !in_the_way && crate::tabs::present(cx) {
                     tab.ui.notices.remove(spinner);
@@ -588,8 +792,16 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
             None => "The folder to clone into does not exist. Choose another.".to_owned(),
         }
     });
+    let source = state.source;
+    let sources = kit::segmented()
+        .child(kit::segment("clone-source-address", "Address", None, source == Source::Address, view::Action::Clone(Action::Source(Source::Address)), cx))
+        .child(kit::segment("clone-source-github", "GitHub", Some("cloud"), source == Source::GitHub, view::Action::Clone(Action::Source(Source::GitHub)), cx));
     let body = kit::dialog("Clone a repository", 480.)
-        .child(div().on_key_down(submit(cx)).child(kit::field("Repository address", state.address.clone(), address.map(Into::into))))
+        .child(div().flex().child(sources))
+        .when(source == Source::Address, |d| {
+            d.child(div().on_key_down(submit(cx)).child(kit::field("Repository address", state.address.clone(), address.map(Into::into))))
+        })
+        .when(source == Source::GitHub, |d| d.child(github(app, &request, cx)))
         .child(kit::field("Clone into", parent, None))
         .child(div().on_key_down(submit(cx)).child(kit::field("Folder name", state.name.clone(), name.map(Into::into))))
         .child(full.text_size(px(TEXT_SMALL)))
@@ -605,6 +817,110 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                 .child(kit::btn("clone-start", "Clone").primary().enabled(ready).on(view::Action::Clone(Action::Submit), cx)),
         );
     Some(kit::modal(body, Some(view::Action::Clone(Action::Close)), &ui.modal_focus, cx))
+}
+
+fn pick_first<T: Desk>(cx: &mut Context<T>) -> impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static {
+    cx.listener(|app: &mut T, e: &KeyDownEvent, w, cx| {
+        if e.keystroke.key == "enter" && e.keystroke.modifiers == Default::default() {
+            app.dispatch(view::Action::Clone(Action::PickFirst), w, cx);
+            cx.stop_propagation();
+        }
+    })
+}
+
+pub(crate) fn pushed(repository: &Listed, now: i64) -> Option<String> {
+    repository.pushed.map(|time| format!("Pushed {}", view::when(time, &view::date_of(time), now)))
+}
+
+fn github<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::Div {
+    let ui = app.ui();
+    let state = &ui.cloning;
+    let body = div().flex().flex_col().gap_2();
+    let problem = |text: String| div().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(text);
+    match &state.listing {
+        Listing::Idle | Listing::Loading => body.child(
+            div()
+                .h(px(64.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(kit::spinner("clone-github-spinner"))
+                .child(kit::muted("Reading your GitHub repositories…")),
+        ),
+        Listing::SignedOut(why) => {
+            let connect = if ui.repo.is_empty() {
+                kit::muted("Open a repository and connect GitHub from Publish to GitHub…, then come back here.").into_any_element()
+            } else {
+                div().flex().child(kit::btn("clone-github-connect", "Connect GitHub…").primary().on(view::Action::Clone(Action::ConnectGitHub), cx)).into_any_element()
+            };
+            body.child(div().text_size(px(12.5)).text_color(rgb(TEXT)).child("Connect GitHub to list the repositories you can clone."))
+                .when_some(why.clone(), |d, why| d.child(kit::muted(why)))
+                .child(connect)
+        }
+        Listing::Failed(why) => body
+            .child(problem(format!("The repositories were not read: {why}")))
+            .child(div().flex().child(kit::btn("clone-github-retry", "Try again").on(view::Action::Clone(Action::Reload), cx))),
+        Listing::Ready(account) => {
+            let shown = state.shown(cx);
+            let filter = state.filter.read(cx).text().trim().to_owned();
+            let now = view::now();
+            let mut list = div()
+                .id("clone-github-list")
+                .h(px(196.))
+                .flex()
+                .flex_col()
+                .overflow_y_scroll()
+                .track_scroll(&state.list_scroll)
+                .rounded(px(RADIUS))
+                .border_1()
+                .border_color(rgb(LINE))
+                .bg(rgb(CANVAS));
+            if shown.is_empty() {
+                let empty = if account.repositories.is_empty() {
+                    "No repositories yet on the accounts where FastKraken is installed.".to_owned()
+                } else {
+                    format!("No repository matches “{filter}”.")
+                };
+                list = list.child(div().p(px(10.)).child(kit::muted(empty)));
+            }
+            for (i, repository) in shown.iter().enumerate() {
+                let full_name = repository.full_name();
+                let chosen = request.account.is_some() && request.address == repository.clone_url();
+                let row = kit::row(("clone-github-row", i), chosen)
+                    .h(px(32.))
+                    .px(px(10.))
+                    .gap_2()
+                    .focusable()
+                    .focus(|s| s.bg(rgb(HOVER)))
+                    .when(i > 0, |d| d.border_t_1().border_color(rgb(LINE)))
+                    .child(kit::icon(if repository.private { "lock" } else { "globe" }).size(px(12.)).text_color(rgb(TEXT_3)))
+                    .child(kit::fit(full_name.clone()).size(12.5).grow())
+                    .child(kit::muted(if repository.private { "Private" } else { "Public" }))
+                    .when_some(pushed(repository, now), |d, pushed| d.child(kit::muted(pushed).w(px(112.)).flex().justify_end()));
+                list = list.child(kit::pressable(row, view::Action::Clone(Action::Pick(full_name)), cx));
+            }
+            body.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_1().min_w_0().on_key_down(pick_first(cx)).child(state.filter.clone()))
+                    .child(kit::muted(format!("Signed in as {}", account.login)))
+                    .child(kit::link("clone-github-reload", "Refresh", view::Action::Clone(Action::Reload), cx)),
+            )
+            .child(list)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(kit::muted(LISTED_NOTE).flex_1().min_w_0())
+                    .child(kit::link("clone-github-choose", CHOOSE, view::Action::Handoff(crate::handoff::Action::OpenUrl(account.install.clone())), cx)),
+            )
+            .when(request.account.is_some(), |d| d.child(kit::muted(format!("Address: {}", request.address))))
+        }
+    }
 }
 
 fn choice<T: Desk>(state: &State, choice: Choice, title: &'static str, help: &'static str, cx: &Context<T>) -> gpui::Stateful<gpui::Div> {
@@ -822,6 +1138,7 @@ mod tests {
             parent: dir.path().into(),
             name: "trail".into(),
             options: Options { depth: Some("0".into()), ..Options::default() },
+            account: None,
         };
         assert_eq!(request.problem().as_deref(), Some(DEPTH_PROBLEM));
         assert_eq!(clone(&request).unwrap_err(), format!("Clone Failed — {DEPTH_PROBLEM}"));
@@ -840,7 +1157,7 @@ mod tests {
         f.git(&["push", "-q", bare.to_str().unwrap(), "ridge"]);
         let clones = dir.path().join("clones");
         fs::create_dir(&clones).unwrap();
-        let ask = |name: &str, options: Options| Request { address: bare.display().to_string(), parent: clones.clone(), name: name.into(), options };
+        let ask = |name: &str, options: Options| Request { address: bare.display().to_string(), parent: clones.clone(), name: name.into(), options, account: None };
         let root = clone(&ask("shallow", Options { depth: Some("1".into()), ..Options::default() })).unwrap();
         assert_eq!(git(&root, &["rev-parse", "--is-shallow-repository"]), "true\n");
         assert_eq!(git(&root, &["rev-list", "--count", "HEAD"]), "1\n");
@@ -869,7 +1186,7 @@ mod tests {
         let clones = dir.path().join("clones");
         fs::create_dir(&clones).unwrap();
         let options = Options { blobless: true, sparse: true, ..Options::default() };
-        let request = Request { address: bare.display().to_string(), parent: clones.clone(), name: "light".into(), options };
+        let request = Request { address: bare.display().to_string(), parent: clones.clone(), name: "light".into(), options, account: None };
         let root = clone(&request).unwrap();
         assert_eq!(git(&root, &["config", "remote.origin.promisor"]), "true\n");
         assert_eq!(git(&root, &["config", "remote.origin.partialclonefilter"]), "blob:none\n");
@@ -900,6 +1217,7 @@ mod tests {
             parent: clones.clone(),
             name: name.into(),
             options: Options { submodules: true, ..Options::default() },
+            account: None,
         };
         let empty = tempfile::NamedTempFile::new().unwrap();
         let refused = {

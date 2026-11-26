@@ -388,6 +388,7 @@ pub(crate) fn words(path: &Path, why: Unopenable, recent: impl Fn(&Path) -> bool
                 parent: path.parent().map(Path::to_owned).unwrap_or_default(),
                 name: clone::folder_name(&path.display().to_string()).unwrap_or_default(),
                 options: clone::Options::default(),
+                account: None,
             };
             (
                 format!("{name} is a bare repository"),

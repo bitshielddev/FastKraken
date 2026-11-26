@@ -419,3 +419,91 @@ fn check_runs_are_read_for_one_full_commit() {
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].line, format!("GET /repos/cedar/trail/commits/{sha}/check-runs?per_page=100 HTTP/1.1"));
 }
+
+#[test]
+fn repositories_are_listed_from_every_installation_newest_push_first() {
+    let installation = |id: u64, login: &str, suspended: bool| {
+        json!({"id": id, "account": {"login": login, "id": id, "type": "Organization"}, "permissions": {"contents": "write"}, "suspended_at": if suspended { json!("2026-01-01") } else { Value::Null }})
+    };
+    let listed = |full_name: &str, private: bool, pushed: Option<&str>| json!({"full_name": full_name, "private": private, "pushed_at": pushed});
+    let first_page = response(
+        200,
+        json!({"total_count": 3, "repositories": [
+            listed("cedar/summit-trail", false, Some("2026-11-25T08:00:00Z")),
+            listed("cedar/badge-trail", true, Some("2026-11-20T10:00:00Z")),
+            {"full_name": "cedar/../escape", "private": false},
+            {"full_name": "cedar/no-visibility"},
+        ]}),
+    )
+    .replace("Content-Type:", "Link: <https://example.invalid/next>; rel=\"next\"\r\nContent-Type:");
+    let records = mock(
+        vec![
+            response(200, json!({"installations": [installation(501, "cedar", false), installation(502, "frozen", true), installation(503, "fern", false)]})),
+            first_page,
+            response(200, json!({"repositories": [listed("cedar/old-map", false, None)]})),
+            response(200, json!({"repositories": [listed("fern/summit-trail", false, Some("2026-11-24T12:30:00Z")), listed("Cedar/Summit-trail", false, Some("2026-11-26T00:00:00Z"))]})),
+        ],
+        |client| {
+            let repositories = client.repositories("auth-fixture").unwrap();
+            let shown: Vec<(String, bool, Option<i64>)> = repositories.iter().map(|r| (r.full_name(), r.private, r.pushed)).collect();
+            assert_eq!(
+                shown,
+                [
+                    ("cedar/summit-trail".to_owned(), false, epoch_of("2026-11-25T08:00:00Z")),
+                    ("fern/summit-trail".to_owned(), false, epoch_of("2026-11-24T12:30:00Z")),
+                    ("cedar/badge-trail".to_owned(), true, epoch_of("2026-11-20T10:00:00Z")),
+                    ("cedar/old-map".to_owned(), false, None),
+                ]
+            );
+            assert_eq!(repositories[0].clone_url(), "https://github.com/cedar/summit-trail.git");
+        },
+    );
+    let lines: Vec<&str> = records.iter().map(|record| record.line.as_str()).collect();
+    assert_eq!(
+        lines,
+        [
+            "GET /user/installations?per_page=100&page=1 HTTP/1.1",
+            "GET /user/installations/501/repositories?per_page=100&page=1 HTTP/1.1",
+            "GET /user/installations/501/repositories?per_page=100&page=2 HTTP/1.1",
+            "GET /user/installations/503/repositories?per_page=100&page=1 HTTP/1.1",
+        ]
+    );
+}
+
+#[test]
+fn a_repository_reports_the_parent_it_was_forked_from() {
+    let records = mock(
+        vec![
+            response(200, json!({"full_name": "fern/summit-trail", "private": false, "fork": true, "parent": {"full_name": "cedar/summit-trail"}})),
+            response(200, json!({"full_name": "cedar/summit-trail", "private": true, "fork": false, "parent": {"full_name": "ignored/parent"}})),
+            response(404, json!({"message": "Not Found"})),
+            response(200, json!({"full_name": "someone/else", "private": false, "fork": false})),
+            response(403, json!({"message": "Resource not accessible by integration"})),
+        ],
+        |client| {
+            let fork = client.repository("auth-fixture", "fern", "summit-trail").unwrap().unwrap();
+            assert_eq!(fork, Repo { full_name: "fern/summit-trail".into(), private: false, parent: Some("cedar/summit-trail".into()) });
+            let original = client.repository("auth-fixture", "cedar", "summit-trail").unwrap().unwrap();
+            assert_eq!(original.parent, None);
+            assert!(original.private);
+            assert_eq!(client.repository("auth-fixture", "hiker", "summit-trail").unwrap(), None);
+            assert!(client.repository("auth-fixture", "cedar", "moved").is_err());
+            assert!(matches!(client.repository("auth-fixture", "cedar", "locked"), Err(Error::Denied(_))));
+            assert!(client.repository("auth-fixture", "cedar", "../x").is_err());
+        },
+    );
+    assert_eq!(records.len(), 5);
+    assert_eq!(records[0].line, "GET /repos/fern/summit-trail HTTP/1.1");
+}
+
+#[test]
+fn a_push_time_is_read_as_seconds_since_1970() {
+    assert_eq!(epoch_of("1970-01-01T00:00:00Z"), Some(0));
+    assert_eq!(epoch_of("2000-03-01T00:00:01Z"), Some(951_868_801));
+    let stamp = epoch_of("2026-11-20T10:00:00Z").unwrap();
+    assert_eq!(crate::view::date_of(stamp), "2026-11-20");
+    assert_eq!(stamp % 86_400, 36_000);
+    for stamp in ["", "2026-11-20", "2026-11-20T10:00:00", "2026-13-20T10:00:00Z", "2026-11-20T25:00:00Z", "2026-1a-20T10:00:00Z", "2026-11-20T10:00:00+01:00"] {
+        assert_eq!(epoch_of(stamp), None, "{stamp:?}");
+    }
+}
