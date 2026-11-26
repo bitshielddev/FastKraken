@@ -1677,7 +1677,7 @@ fn offer_unstage(failure: Failure) -> Failure {
 pub fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement + use<T> {
     let ui = app.ui();
     let open = ui.stash.options_open();
-    let divider = || div().w(px(1.)).h(px(CONTROL)).bg(rgb(LINE_STRONG));
+    let divider = || div().w(px(1.)).h(px(CONTROL)).bg(rgb(palette().line_strong));
     let reason = refusal(ui, false);
     let mut button = kit::btn("stash-worktree", "Stash")
         .ghost()
@@ -1693,8 +1693,8 @@ pub fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement + use<
         .items_center()
         .rounded(px(RADIUS))
         .border_1()
-        .border_color(rgb(LINE_STRONG))
-        .bg(rgb(RAISED))
+        .border_color(rgb(palette().line_strong))
+        .bg(rgb(palette().raised))
         .child(button.on(view::Action::Stash(Action::Save), cx))
         .child(divider())
         .child(
@@ -1785,7 +1785,7 @@ fn options<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .mb(px(-12.))
                 .py_1()
                 .border_t_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .child(
                     kit::item("stash-pop-latest", "Pop latest stash")
                         .icon("stash")
@@ -1817,12 +1817,12 @@ fn tick<T: Desk>(
         .child(kit::checkbox(on))
         .child(text);
     match off {
-        Some(reason) => tick.text_color(rgb(TEXT_OFF)).child(kit::muted(reason).text_size(px(11.5))).into_any_element(),
+        Some(reason) => tick.text_color(rgb(palette().text_off)).child(kit::muted(reason).text_size(px(11.5))).into_any_element(),
         None => kit::pressable(
             tick.cursor_pointer()
-                .text_color(rgb(TEXT_2))
+                .text_color(rgb(palette().text_2))
                 .focusable()
-                .focus(|s| s.text_color(rgb(TEXT))),
+                .focus(|s| s.text_color(rgb(palette().text))),
             view::Action::Stash(action),
             cx,
         )
@@ -1957,7 +1957,7 @@ pub fn details<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .flex_col()
                 .gap_2()
                 .border_b_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .child(
                     div()
                         .text_size(px(14.))

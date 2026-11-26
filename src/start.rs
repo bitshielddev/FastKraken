@@ -383,7 +383,7 @@ pub(crate) fn screen<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         )
         .child(
             div()
-                .text_color(rgb(TEXT_2))
+                .text_color(rgb(palette().text_2))
                 .child("Choose a local working tree to see its history and changes, clone one from its address, or start a new one."),
         )
         .child(buttons)
@@ -461,8 +461,8 @@ fn recents<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             div()
                 .rounded(px(RADIUS))
                 .border_1()
-                .border_color(rgb(LINE))
-                .bg(rgb(PANEL))
+                .border_color(rgb(palette().line))
+                .bg(rgb(palette().panel))
                 .overflow_hidden()
                 .child(list),
         )
@@ -486,10 +486,10 @@ fn recent_row<T: Desk>(row: Row, index: usize, at: bool, now: i64, cx: &Context<
         .gap_2()
         .when(row.missing, |d| d.opacity(0.45))
         .tooltip(kit::tip(tip))
-        .child(kit::icon("folder").text_color(rgb(if row.missing { TEXT_3 } else { ACCENT })))
+        .child(kit::icon("folder").text_color(rgb(if row.missing { palette().text_3 } else { palette().accent })))
         .child(div().flex_shrink_0().max_w(px(220.)).min_w_0().flex().child(kit::fit(row.name).weight(FontWeight::MEDIUM)))
-        .child(kit::fit(row.parent).size(TEXT_SMALL).color(TEXT_3).cut(kit::Cut::Start).grow())
-        .child(div().flex_shrink_0().text_size(px(TEXT_SMALL)).text_color(rgb(TEXT_3)).child(when))
+        .child(kit::fit(row.parent).size(TEXT_SMALL).color(palette().text_3).cut(kit::Cut::Start).grow())
+        .child(div().flex_shrink_0().text_size(px(TEXT_SMALL)).text_color(rgb(palette().text_3)).child(when))
         .child(kit::icon_btn(
             ("recent-remove", index),
             "x",

@@ -23,11 +23,11 @@ pub fn icon(name: &str) -> Svg {
         .path(format!("icons/{name}.svg"))
         .size(px(14.))
         .flex_shrink_0()
-        .text_color(rgb(TEXT_2))
+        .text_color(rgb(palette().text_2))
 }
 
 pub fn spinner(id: impl Into<ElementId>) -> impl IntoElement {
-    icon("spinner").text_color(rgb(ACCENT)).with_animation(
+    icon("spinner").text_color(rgb(palette().accent)).with_animation(
         id,
         Animation::new(Duration::from_millis(900)).repeat(),
         |icon, delta| icon.with_transformation(Transformation::rotate(percentage(delta))),
@@ -67,7 +67,7 @@ pub fn fit(text: impl Into<SharedString>) -> Fit {
     Fit {
         text: text.into(),
         size: TEXT_BASE,
-        color: rgb(TEXT).into(),
+        color: rgb(palette().text).into(),
         weight: FontWeight::NORMAL,
         family: None,
         cut: Cut::End,
@@ -362,17 +362,17 @@ impl Btn {
 
     fn base(self) -> Stateful<Div> {
         let (fg, bg, border, hover) = match self.tone {
-            Tone::Primary => (ACCENT_INK, rgb(ACCENT), rgb(ACCENT), rgb(ACCENT_HOVER)),
-            Tone::Normal if self.selected => (TEXT, rgb(SELECTED), rgb(LINE_STRONG), rgb(SELECTED)),
-            Tone::Normal => (TEXT, rgb(RAISED), rgb(LINE_STRONG), rgb(HOVER)),
-            Tone::Ghost if self.selected => (TEXT, rgb(SELECTED), clear(), rgb(SELECTED)),
-            Tone::Ghost => (TEXT, clear(), clear(), rgb(HOVER)),
-            Tone::Danger => (DELETED, clear(), clear(), soft(DELETED, 0x26)),
-            Tone::Destructive => (CANVAS, rgb(DELETED), rgb(DELETED), soft(DELETED, 0xd0)),
+            Tone::Primary => (palette().accent_ink, rgb(palette().accent), rgb(palette().accent), rgb(palette().accent_hover)),
+            Tone::Normal if self.selected => (palette().text, rgb(palette().selected), rgb(palette().line_strong), rgb(palette().selected)),
+            Tone::Normal => (palette().text, rgb(palette().raised), rgb(palette().line_strong), rgb(palette().hover)),
+            Tone::Ghost if self.selected => (palette().text, rgb(palette().selected), clear(), rgb(palette().selected)),
+            Tone::Ghost => (palette().text, clear(), clear(), rgb(palette().hover)),
+            Tone::Danger => (palette().deleted, clear(), clear(), soft(palette().deleted, 0x26)),
+            Tone::Destructive => (palette().canvas, rgb(palette().deleted), rgb(palette().deleted), soft(palette().deleted, 0xd0)),
         };
         let icon_color = match self.tone {
             Tone::Primary | Tone::Danger | Tone::Destructive => fg,
-            _ => TEXT_2,
+            _ => palette().text_2,
         };
         let enabled = self.enabled;
         let mut base = div()
@@ -418,21 +418,21 @@ impl Btn {
                 div()
                     .text_size(px(TEXT_TINY))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(ACCENT))
+                    .text_color(rgb(palette().accent))
                     .child(count),
             );
         }
         if self.warn {
-            base = base.child(icon("alert").size(px(12.)).text_color(rgb(CONFLICT)));
+            base = base.child(icon("alert").size(px(12.)).text_color(rgb(palette().conflict)));
         }
         if let Some(name) = self.trailing {
-            base = base.child(icon(name).size(px(11.)).text_color(rgb(TEXT_3)));
+            base = base.child(icon(name).size(px(11.)).text_color(rgb(palette().text_3)));
         }
         if let Some(hint) = self.hint {
             let ink = if self.tone == Tone::Primary {
-                soft(ACCENT_INK, 0xb0)
+                soft(palette().accent_ink, 0xb0)
             } else {
-                rgb(TEXT_3)
+                rgb(palette().text_3)
             };
             base = base.child(
                 div()
@@ -459,7 +459,7 @@ impl Btn {
         if !enabled {
             return base;
         }
-        pressable(base.focusable().focus(|s| s.border_color(rgb(ACCENT))), action, cx)
+        pressable(base.focusable().focus(|s| s.border_color(rgb(palette().accent))), action, cx)
     }
 
     pub fn tracked<T: Desk>(
@@ -474,7 +474,7 @@ impl Btn {
             return base;
         }
         let activate = action.clone();
-        let base = base.track_focus(handle).focus(|s| s.border_color(rgb(ACCENT)));
+        let base = base.track_focus(handle).focus(|s| s.border_color(rgb(palette().accent)));
         base.key_context("DeskButton")
             .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
                 if !event.is_keyboard() {
@@ -521,9 +521,9 @@ pub fn icon_btn<T: Desk>(
         .border_1()
         .border_color(clear())
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(HOVER)))
+        .hover(|s| s.bg(rgb(palette().hover)))
         .focusable()
-        .focus(|s| s.border_color(rgb(ACCENT)))
+        .focus(|s| s.border_color(rgb(palette().accent)))
         .key_context("DeskButton")
         .tab_stop(true)
         .child(icon(name))
@@ -553,11 +553,11 @@ impl Render for Tip {
             .max_w(px(320.))
             .rounded(px(RADIUS))
             .border_1()
-            .border_color(rgb(LINE_STRONG))
-            .bg(rgb(TIP))
+            .border_color(rgb(palette().line_strong))
+            .bg(rgb(palette().tip))
             .shadow_md()
             .text_size(px(TEXT_SMALL))
-            .text_color(rgb(TEXT))
+            .text_color(rgb(palette().text))
             .child(self.0.clone())
     }
 }
@@ -593,15 +593,15 @@ pub fn row(id: impl Into<ElementId>, selected: bool) -> Stateful<Div> {
         .border_l_2()
         .cursor_pointer()
         .when(selected, |d| {
-            d.bg(rgb(SELECTED)).border_color(rgb(ACCENT))
+            d.bg(rgb(palette().selected)).border_color(rgb(palette().accent))
         })
         .when(!selected, |d| {
-            d.border_color(clear()).hover(|s| s.bg(rgb(HOVER)))
+            d.border_color(clear()).hover(|s| s.bg(rgb(palette().hover)))
         })
 }
 
 pub fn cursor(row: Stateful<Div>, at: bool) -> Stateful<Div> {
-    row.when(at, |d| d.bg(rgb(HOVER)).border_color(rgb(LINE_STRONG)))
+    row.when(at, |d| d.bg(rgb(palette().hover)).border_color(rgb(palette().line_strong)))
 }
 
 pub fn label(text: impl Into<SharedString>) -> Div {
@@ -609,7 +609,7 @@ pub fn label(text: impl Into<SharedString>) -> Div {
         .flex_shrink_0()
         .text_size(px(TEXT_TINY))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(TEXT_3))
+        .text_color(rgb(palette().text_3))
         .whitespace_nowrap()
         .child(text.into())
 }
@@ -617,7 +617,7 @@ pub fn label(text: impl Into<SharedString>) -> Div {
 pub fn muted(text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(TEXT_SMALL))
-        .text_color(rgb(TEXT_3))
+        .text_color(rgb(palette().text_3))
         .child(text.into())
 }
 
@@ -641,12 +641,12 @@ pub fn chip(kind: Chip, text: impl Into<SharedString>) -> Div {
 
 pub fn chip_marked(kind: Chip, text: impl Into<SharedString>, marks: &[&'static str]) -> Div {
     let (fg, bg, lead) = match kind {
-        Chip::Head => (ACCENT_INK, rgb(ACCENT), Some("check")),
-        Chip::Local => (ACCENT, soft(ACCENT, 0x24), None),
-        Chip::Remote => (REMOTE, soft(REMOTE, 0x26), Some("cloud")),
-        Chip::Tag => (TAG, soft(TAG, 0x26), Some("tag")),
-        Chip::Stash => (TEXT_2, clear(), Some("stash")),
-        Chip::Plain => (TEXT_2, rgb(RAISED), None),
+        Chip::Head => (palette().accent_ink, rgb(palette().accent), Some("check")),
+        Chip::Local => (palette().accent, soft(palette().accent, 0x24), None),
+        Chip::Remote => (palette().remote, soft(palette().remote, 0x26), Some("cloud")),
+        Chip::Tag => (palette().tag, soft(palette().tag, 0x26), Some("tag")),
+        Chip::Stash => (palette().text_2, clear(), Some("stash")),
+        Chip::Plain => (palette().text_2, rgb(palette().raised), None),
     };
     div()
         .h(px(18.))
@@ -659,7 +659,7 @@ pub fn chip_marked(kind: Chip, text: impl Into<SharedString>, marks: &[&'static 
         .rounded(px(RADIUS_CHIP))
         .bg(bg)
         .when(kind == Chip::Stash, |d| {
-            d.border_1().border_dashed().border_color(rgb(LINE_STRONG))
+            d.border_1().border_dashed().border_color(rgb(palette().line_strong))
         })
         .when_some(lead, |d, name| {
             d.child(icon(name).size(px(10.)).text_color(rgb(fg)))
@@ -679,14 +679,14 @@ pub fn chip_marked(kind: Chip, text: impl Into<SharedString>, marks: &[&'static 
 
 pub fn badge(status: &str) -> Div {
     let (letter, color) = match status {
-        "Added" => ("A", ADDED),
-        "Untracked" => ("U", ADDED),
-        "Deleted" => ("D", DELETED),
-        "Conflicted" => ("!", CONFLICT),
-        "Type changed" => ("T", REMOTE),
-        "Renamed" => ("R", TAG),
-        "Copied" => ("C", TAG),
-        _ => ("M", MODIFIED),
+        "Added" => ("A", palette().added),
+        "Untracked" => ("U", palette().added),
+        "Deleted" => ("D", palette().deleted),
+        "Conflicted" => ("!", palette().conflict),
+        "Type changed" => ("T", palette().remote),
+        "Renamed" => ("R", palette().tag),
+        "Copied" => ("C", palette().tag),
+        _ => ("M", palette().modified),
     };
     div()
         .size(px(16.))
@@ -719,7 +719,7 @@ pub fn file_label(
         .gap_2()
         .child(badge(status))
         .child(fit(name).size(12.5).cut(Cut::Middle))
-        .child(fit(folder).size(11.5).color(TEXT_3).cut(Cut::Start).grow())
+        .child(fit(folder).size(11.5).color(palette().text_3).cut(Cut::Start).grow())
         .when_some(from, |d, from| d.tooltip(tip(moved_from(status, from))))
 }
 
@@ -815,7 +815,7 @@ impl Element for Avatar {
         let run = TextRun {
             len: self.initials.len(),
             font,
-            color: rgb(CANVAS).into(),
+            color: rgb(palette().canvas).into(),
             background_color: None,
             underline: None,
             strikethrough: None,
@@ -841,12 +841,12 @@ pub fn checkbox(checked: bool) -> Div {
         .rounded(px(3.5))
         .border_1()
         .when(checked, |d| {
-            d.bg(rgb(ACCENT))
-                .border_color(rgb(ACCENT))
-                .child(icon("check").size(px(10.)).text_color(rgb(ACCENT_INK)))
+            d.bg(rgb(palette().accent))
+                .border_color(rgb(palette().accent))
+                .child(icon("check").size(px(10.)).text_color(rgb(palette().accent_ink)))
         })
         .when(!checked, |d| {
-            d.bg(rgb(CANVAS)).border_color(rgb(LINE_STRONG))
+            d.bg(rgb(palette().canvas)).border_color(rgb(palette().line_strong))
         })
 }
 
@@ -865,9 +865,9 @@ pub fn field(name: &'static str, control: impl IntoElement, help: Option<SharedS
 pub fn float() -> Div {
     div()
         .occlude()
-        .bg(rgb(FLOAT))
+        .bg(rgb(palette().float))
         .border_1()
-        .border_color(rgb(LINE_STRONG))
+        .border_color(rgb(palette().line_strong))
         .rounded(px(RADIUS_FLOAT))
         .shadow_lg()
         .overflow_hidden()
@@ -1007,8 +1007,8 @@ pub fn segmented() -> Div {
         .gap(px(2.))
         .rounded(px(RADIUS))
         .border_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(CANVAS))
+        .border_color(rgb(palette().line))
+        .bg(rgb(palette().canvas))
 }
 
 pub fn segment<T: Desk>(
@@ -1029,20 +1029,20 @@ pub fn segment<T: Desk>(
         .rounded(px(4.))
         .cursor_pointer()
         .text_size(px(12.5))
-        .text_color(rgb(if chosen { TEXT } else { TEXT_3 }))
+        .text_color(rgb(if chosen { palette().text } else { palette().text_3 }))
         .border_1()
         .border_color(clear())
-        .when(chosen, |d| d.bg(rgb(RAISED)))
-        .when(!chosen, |d| d.hover(|s| s.text_color(rgb(TEXT_2))))
+        .when(chosen, |d| d.bg(rgb(palette().raised)))
+        .when(!chosen, |d| d.hover(|s| s.text_color(rgb(palette().text_2))))
         .when_some(lead, |d, name| {
             d.child(
                 icon(name)
                     .size(px(12.))
-                    .text_color(rgb(if chosen { TEXT_2 } else { TEXT_3 })),
+                    .text_color(rgb(if chosen { palette().text_2 } else { palette().text_3 })),
             )
         })
         .child(label);
-    pressable(segment.focusable().focus(|s| s.border_color(rgb(ACCENT))), action, cx)
+    pressable(segment.focusable().focus(|s| s.border_color(rgb(palette().accent))), action, cx)
 }
 
 pub fn stepper<T: Desk>(
@@ -1073,8 +1073,8 @@ pub fn stepper<T: Desk>(
         .p(px(2.))
         .rounded(px(RADIUS))
         .border_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(CANVAS))
+        .border_color(rgb(palette().line))
+        .bg(rgb(palette().canvas))
         .child(side(0, "minus", "Less", less))
         .child(
             div()
@@ -1082,7 +1082,7 @@ pub fn stepper<T: Desk>(
                 .flex()
                 .justify_center()
                 .text_size(px(12.5))
-                .text_color(rgb(TEXT))
+                .text_color(rgb(palette().text))
                 .child(value.into()),
         )
         .child(side(1, "plus", "More", more))
@@ -1099,8 +1099,8 @@ pub fn link<T: Desk>(
         .flex_shrink_0()
         .cursor_pointer()
         .text_size(px(TEXT_SMALL))
-        .text_color(rgb(ACCENT))
-        .hover(|s| s.text_color(rgb(ACCENT_HOVER)))
+        .text_color(rgb(palette().accent))
+        .hover(|s| s.text_color(rgb(palette().accent_hover)))
         .focusable()
         .focus(|s| s.underline())
         .child(label.into());
@@ -1108,7 +1108,7 @@ pub fn link<T: Desk>(
 }
 
 pub fn separator() -> Div {
-    div().h(px(1.)).my_1().bg(rgb(LINE))
+    div().h(px(1.)).my_1().bg(rgb(palette().line))
 }
 
 pub struct Item {
@@ -1185,9 +1185,9 @@ impl Item {
 
     pub fn inert(self) -> Stateful<Div> {
         let enabled = self.enabled && self.ink.is_none();
-        let ink = self.ink.unwrap_or(if self.danger { DELETED } else { TEXT });
+        let ink = self.ink.unwrap_or(if self.danger { palette().deleted } else { palette().text });
         let lead = match (self.check, self.icon) {
-            (Some(true), _) => Some(icon("check").text_color(rgb(ACCENT))),
+            (Some(true), _) => Some(icon("check").text_color(rgb(palette().accent))),
             (None, Some(name)) if self.ink.is_some() => Some(icon(name).text_color(rgb(ink))),
             (None, Some(name)) => Some(icon(name)),
             _ => None,
@@ -1204,9 +1204,9 @@ impl Item {
             .text_size(px(12.5))
             .text_color(rgb(ink))
             .when(dimmed, |d| d.opacity(0.42))
-            .when(self.highlighted, |d| d.bg(rgb(SELECTED)))
+            .when(self.highlighted, |d| d.bg(rgb(palette().selected)))
             .when(enabled, |d| {
-                d.group_hover("menu-item", |s| s.bg(rgb(SELECTED)))
+                d.group_hover("menu-item", |s| s.bg(rgb(palette().selected)))
             })
             .when(self.check.is_some() || self.icon.is_some(), |d| {
                 d.child(
@@ -1225,12 +1225,12 @@ impl Item {
                     div()
                         .flex_shrink_0()
                         .text_size(px(TEXT_TINY))
-                        .text_color(rgb(TEXT_3))
+                        .text_color(rgb(palette().text_3))
                         .child(meta),
                 )
             })
             .when(self.chevron, |d| {
-                d.child(icon("chevron-right").size(px(11.)).text_color(rgb(TEXT_3)))
+                d.child(icon("chevron-right").size(px(11.)).text_color(rgb(palette().text_3)))
             });
         div()
             .id(self.id)
@@ -1309,7 +1309,7 @@ pub fn dialog(title: impl Into<SharedString>, width: f32) -> Div {
             div()
                 .text_size(px(TEXT_TITLE))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(TEXT))
+                .text_color(rgb(palette().text))
                 .child(title.into()),
         )
 }

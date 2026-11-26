@@ -303,7 +303,7 @@ pub fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         .flex_shrink_0()
                         .px_1()
                         .text_size(px(TEXT_SMALL))
-                        .text_color(rgb(TEXT_2))
+                        .text_color(rgb(palette().text_2))
                         .child(counter(state, ui.selection.as_ref())),
                 )
                 .child(step("search-previous", "chevron-up", "Previous match (⇧↩)", -1))
@@ -378,7 +378,7 @@ pub fn results<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .items_center()
             .gap_2()
             .border_b_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(palette().line))
             .child(kit::label(status(state)))
             .when(more, |d| {
                 d.child(kit::btn("search-more", "Show more").small().on(view::Action::Search(Action::More), cx))

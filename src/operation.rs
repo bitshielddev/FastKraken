@@ -1581,16 +1581,16 @@ pub(crate) fn banner<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(soft(CONFLICT, 0x18))
+        .bg(soft(palette().conflict, 0x18))
         .border_b_1()
-        .border_color(soft(CONFLICT, 0x48))
+        .border_color(soft(palette().conflict, 0x48))
         .text_size(px(12.5))
-        .child(kit::icon("alert").text_color(rgb(CONFLICT)))
+        .child(kit::icon("alert").text_color(rgb(palette().conflict)))
         .child(kit::fit(snapshot.headline()).size(12.5).weight(FontWeight::SEMIBOLD))
         .child(
             kit::fit(details.iter().map(|detail| format!("· {detail}")).collect::<Vec<_>>().join(" "))
                 .size(12.5)
-                .color(TEXT_2)
+                .color(palette().text_2)
                 .grow(),
         )
         .when_some(action, |d, (id, label, action, danger)| {
@@ -1614,10 +1614,10 @@ pub(crate) fn reminder_strip<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<Di
             .flex()
             .items_center()
             .gap_2()
-            .bg(soft(CONFLICT, 0x18))
+            .bg(soft(palette().conflict, 0x18))
             .border_b_1()
-            .border_color(soft(CONFLICT, 0x48))
-            .child(kit::icon("alert").size(px(13.)).text_color(rgb(CONFLICT)))
+            .border_color(soft(palette().conflict, 0x48))
+            .child(kit::icon("alert").size(px(13.)).text_color(rgb(palette().conflict)))
             .child(kit::fit(text).size(TEXT_SMALL).grow())
             .child(kit::btn("view-conflicts", "View conflicts").small().on(view_conflicts(), cx)),
     )
@@ -1685,7 +1685,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
         .flex_col()
         .gap_2()
         .border_t_1()
-        .border_color(rgb(LINE));
+        .border_color(rgb(palette().line));
     let note = |text: String, token: u32| {
         div()
             .flex()
@@ -1716,7 +1716,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
                 (None, None) => "Resolve each file. The conflicts end when the last one is resolved.",
             };
             footer
-                .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(TEXT_2)).child(text))
+                .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().text_2)).child(text))
                 .children(abort)
         }
         (Some(_), Some(snapshot)) if snapshot.empty => {
@@ -1724,7 +1724,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
             footer
                 .child(note(
                     format!("{commit} is now empty, possibly because of how its conflicts were resolved."),
-                    CONFLICT,
+                    palette().conflict,
                 ))
                 .child(
                     tipped(kit::btn("skip-commit", "Skip commit").primary().wide().enabled(ready))
@@ -1749,7 +1749,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
                     d.child(
                         div()
                             .text_size(px(TEXT_SMALL))
-                            .text_color(rgb(TEXT_2))
+                            .text_color(rgb(palette().text_2))
                             .child("Not committed: finishing leaves the result staged, with this message in the commit box."),
                     )
                 })
@@ -1759,7 +1759,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
                 .when(left > 0, |d| {
                     let files = if left == 1 { "1 file".to_owned() } else { format!("{left} files") };
                     let verb = if kind == Kind::Merge || kind == Kind::Revert { "finish" } else { "continue" };
-                    d.child(note(format!("Resolve {files} to {verb} the {}", kind.noun()), CONFLICT))
+                    d.child(note(format!("Resolve {files} to {verb} the {}", kind.noun()), palette().conflict))
                 })
                 .child({
                     let button = kit::btn("continue-operation", label)
@@ -1796,7 +1796,7 @@ pub(crate) fn side_panel<T: Desk>(app: &T, width: gpui::Pixels, cx: &mut Context
         .flex()
         .flex_col()
         .overflow_hidden()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .child(list)
         .child(kit::scrollbar("merge-files-scrollbar", &state.files_scroll))
         .child(footer)

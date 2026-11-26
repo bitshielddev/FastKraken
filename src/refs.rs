@@ -1313,7 +1313,7 @@ fn count_buttons<T: Desk>(item: &NamedRef, current: bool, row: usize, pointed: b
                 .px(px(3.))
                 .rounded(px(4.))
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(RAISED)))
+                .hover(|s| s.bg(rgb(palette().raised)))
                 .child(kit::label(text).font_weight(FontWeight::MEDIUM))
                 .when(pointed, |d| d.tooltip(kit::tip(tip)))
                 .on_click(cx.listener(move |app, _, w, cx| {
@@ -1349,7 +1349,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
             range
                 .filter_map(|i| {
                     let row = ui.refs.rows.get(i)?;
-                    let at = div().w_full().when(cursor == Some(i), |d| d.bg(rgb(HOVER)));
+                    let at = div().w_full().when(cursor == Some(i), |d| d.bg(rgb(palette().hover)));
                     Some(at.child(match row {
                         SideRow::Header {
                             section,
@@ -1389,7 +1389,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .items_center()
                                 .gap(px(5.))
                                 .cursor_pointer()
-                                .when(i > 0, |d| d.border_t_1().border_color(rgb(LINE)))
+                                .when(i > 0, |d| d.border_t_1().border_color(rgb(palette().line)))
                                 .child(
                                     kit::icon(if *open {
                                         "chevron-down"
@@ -1397,7 +1397,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         "chevron-right"
                                     })
                                     .size(px(11.))
-                                    .text_color(rgb(TEXT_3)),
+                                    .text_color(rgb(palette().text_3)),
                                 )
                                 .child(kit::label(title))
                                 .when(section == Section::Remotes, |d| d.children(crate::autofetch::warning(ui, cx)))
@@ -1413,7 +1413,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                             .items_center()
                                             .justify_center()
                                             .rounded(px(4.))
-                                            .hover(|s| s.bg(rgb(HOVER)))
+                                            .hover(|s| s.bg(rgb(palette().hover)))
                                             .child(kit::icon("plus").size(px(11.)))
                                             .tooltip(kit::tip(tip))
                                             .on_click(cx.listener(
@@ -1447,7 +1447,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         .items_center()
                                         .justify_center()
                                         .rounded(px(4.))
-                                        .hover(|s| s.bg(rgb(HOVER)))
+                                        .hover(|s| s.bg(rgb(palette().hover)))
                                         .child(kit::icon("more").size(px(12.)))
                                         .tooltip(kit::tip(format!("{title} actions")))
                                         .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
@@ -1466,7 +1466,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                     d.child(
                                         div()
                                             .id(("side-header-hidden", i))
-                                            .child(kit::icon("eye-off").size(px(11.)).text_color(rgb(TEXT_3)))
+                                            .child(kit::icon("eye-off").size(px(11.)).text_color(rgb(palette().text_3)))
                                             .tooltip(kit::tip(format!("{title} are hidden in the graph"))),
                                     )
                                 })
@@ -1527,8 +1527,8 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .items_center()
                                 .gap(px(5.))
                                 .cursor_pointer()
-                                .when(folder_picked, |d| d.bg(rgb(SELECTED)))
-                                .hover(|s| s.bg(rgb(HOVER)))
+                                .when(folder_picked, |d| d.bg(rgb(palette().selected)))
+                                .hover(|s| s.bg(rgb(palette().hover)))
                                 .child(
                                     kit::icon(if *open {
                                         "chevron-down"
@@ -1536,9 +1536,9 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         "chevron-right"
                                     })
                                     .size(px(11.))
-                                    .text_color(rgb(TEXT_3)),
+                                    .text_color(rgb(palette().text_3)),
                                 )
-                                .child(kit::fit(name.clone()).size(12.5).color(if left_out { TEXT_3 } else { TEXT_2 }).grow())
+                                .child(kit::fit(name.clone()).size(12.5).color(if left_out { palette().text_3 } else { palette().text_2 }).grow())
                                 .when_some(menu_folder, |d, prefix| {
                                     d.on_mouse_down(MouseButton::Right, cx.listener(move |app, event: &MouseDownEvent, w, cx| {
                                         let inside = crate::sidebar::in_folder(app.ui(), &prefix);
@@ -1569,7 +1569,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                             .items_center()
                                             .justify_center()
                                             .rounded(px(4.))
-                                            .hover(|s| s.bg(rgb(RAISED)))
+                                            .hover(|s| s.bg(rgb(palette().raised)))
                                             .child(kit::icon("more").size(px(12.)))
                                             .tooltip(kit::tip("Manage remote"))
                                             .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
@@ -1630,8 +1630,8 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .items_center()
                                 .gap(px(6.))
                                 .cursor_pointer()
-                                .when(picked, |d| d.bg(rgb(SELECTED)))
-                                .hover(|s| s.bg(rgb(HOVER)))
+                                .when(picked, |d| d.bg(rgb(palette().selected)))
+                                .hover(|s| s.bg(rgb(palette().hover)))
                                 .child(
                                     div()
                                         .w(px(11.))
@@ -1640,14 +1640,14 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         .justify_center()
                                         .when(current, |d| {
                                             d.child(
-                                                div().size(px(6.)).rounded_full().bg(rgb(ACCENT)),
+                                                div().size(px(6.)).rounded_full().bg(rgb(palette().accent)),
                                             )
                                         }),
                                 )
                                 .child(
                                     kit::fit(label.clone())
                                         .size(12.5)
-                                        .color(if left_out { TEXT_3 } else if current || shown { TEXT } else { TEXT_2 })
+                                        .color(if left_out { palette().text_3 } else if current || shown { palette().text } else { palette().text_2 })
                                         .weight(if current {
                                             FontWeight::SEMIBOLD
                                         } else {
@@ -1661,7 +1661,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                     d.children(count_buttons(item, current, i, pointed == Some(i), cx))
                                         .when(item.gone, |d| d.child(kit::label("gone")))
                                         .when(elsewhere.is_some(), |d| {
-                                            d.child(kit::icon("folder").flex_shrink_0().size(px(11.)).text_color(rgb(TEXT_3)))
+                                            d.child(kit::icon("folder").flex_shrink_0().size(px(11.)).text_color(rgb(palette().text_3)))
                                         })
                                         .when(pointed == Some(i), |d| {
                                             let tip = match &elsewhere {
@@ -1724,14 +1724,14 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .child(
                                     kit::fit(entry.title.clone())
                                         .size(12.5)
-                                        .color(if selected { TEXT } else { TEXT_2 })
+                                        .color(if selected { palette().text } else { palette().text_2 })
                                         .grow(),
                                 )
                                 .child(
                                     div()
                                         .flex_shrink_0()
                                         .text_size(px(TEXT_SMALL))
-                                        .text_color(rgb(if selected { TEXT_2 } else { TEXT_3 }))
+                                        .text_color(rgb(if selected { palette().text_2 } else { palette().text_3 }))
                                         .whitespace_nowrap()
                                         .child(view::when(entry.time, &entry.date, view::now())),
                                 )
@@ -1767,13 +1767,13 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             .items_center()
                             .gap_2()
                             .text_size(px(12.5))
-                            .child(div().text_color(rgb(TEXT_3)).child("No remote yet"))
+                            .child(div().text_color(rgb(palette().text_3)).child("No remote yet"))
                             .child(kit::grow())
                             .child(
                                 div()
                                     .id(("side-publish", i))
                                     .cursor_pointer()
-                                    .text_color(rgb(ACCENT))
+                                    .text_color(rgb(palette().accent))
                                     .child("Publish…")
                                     .on_click(cx.listener(|app, _, w, cx| {
                                         app.dispatch(
@@ -1963,7 +1963,7 @@ pub(crate) fn switcher<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         .px_3()
                         .pb_1()
                         .text_size(px(TEXT_SMALL))
-                        .text_color(rgb(DELETED))
+                        .text_color(rgb(palette().deleted))
                         .child(reason),
                 )
             })
@@ -2003,7 +2003,7 @@ pub(crate) fn switcher<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             div()
                 .p_2()
                 .border_b_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .key_context("BranchSwitcher")
                 .child(ui.refs.find.clone()),
         )
@@ -2034,7 +2034,7 @@ pub(crate) fn switcher<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .mt_1()
                 .py_1()
                 .border_t_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .child(
                     kit::item("switch-new", format!("New branch from {}…", ui.branch))
                         .icon("plus")
@@ -2067,9 +2067,9 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                 .gap_2()
                 .rounded(px(RADIUS))
                 .border_1()
-                .border_color(rgb(LINE))
-                .bg(rgb(CANVAS))
-                .child(kit::fit(short).mono().size(11.5).color(TEXT_2))
+                .border_color(rgb(palette().line))
+                .bg(rgb(palette().canvas))
+                .child(kit::fit(short).mono().size(11.5).color(palette().text_2))
                 .child(kit::fit(draft.subject.clone()).grow()),
         )
         .child(
@@ -2086,7 +2086,7 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
             d.child(
                 div()
                     .text_size(px(TEXT_SMALL))
-                    .text_color(rgb(DELETED))
+                    .text_color(rgb(palette().deleted))
                     .child(error),
             )
         })
@@ -2099,7 +2099,7 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                 format!("Create a signed, annotated tag (-s). {}", config.described())
             };
             d.child(ui.refs.message.clone())
-                .when_some(unsigned, |d, hint| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(TEXT_3)).child(hint)))
+                .when_some(unsigned, |d, hint| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().text_3)).child(hint)))
                 .child(kit::pressable(
                     div()
                         .id("sign-new-tag")
@@ -2109,9 +2109,9 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                         .cursor_pointer()
                         .rounded(px(RADIUS_CHIP))
                         .text_size(px(12.5))
-                        .text_color(rgb(TEXT_2))
+                        .text_color(rgb(palette().text_2))
                         .focusable()
-                        .focus(|s| s.text_color(rgb(TEXT)))
+                        .focus(|s| s.text_color(rgb(palette().text)))
                         .child(kit::checkbox(draft.sign))
                         .child("Sign this tag")
                         .tooltip(kit::tip(sign_tip)),
@@ -2128,9 +2128,9 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                         .cursor_pointer()
                         .rounded(px(RADIUS_CHIP))
                         .text_size(px(12.5))
-                        .text_color(rgb(TEXT_2))
+                        .text_color(rgb(palette().text_2))
                         .focusable()
-                        .focus(|s| s.text_color(rgb(TEXT)))
+                        .focus(|s| s.text_color(rgb(palette().text)))
                         .child(kit::checkbox(ticked))
                         .child(format!("Push to {remote}")),
                     view::Action::Refs(Action::TogglePush),
@@ -2148,9 +2148,9 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                     .cursor_pointer()
                     .rounded(px(RADIUS_CHIP))
                     .text_size(px(12.5))
-                    .text_color(rgb(TEXT_2))
+                    .text_color(rgb(palette().text_2))
                     .focusable()
-                    .focus(|s| s.text_color(rgb(TEXT)))
+                    .focus(|s| s.text_color(rgb(palette().text)))
                     .child(kit::checkbox(draft.checkout))
                     .child("Check out after creating"),
                 view::Action::Refs(Action::ToggleCheckout),

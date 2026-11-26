@@ -666,9 +666,9 @@ fn side_line(ui: &Ui, label: &'static str, rev: &Rev) -> Option<Div> {
             .flex()
             .items_center()
             .gap(px(6.))
-            .child(kit::fit(label).size(TEXT_SMALL).color(TEXT_3))
-            .child(kit::fit(rev.short()).mono().size(11.5).color(TEXT_2))
-            .child(kit::fit(subject).size(TEXT_SMALL).color(TEXT_2).grow()),
+            .child(kit::fit(label).size(TEXT_SMALL).color(palette().text_3))
+            .child(kit::fit(rev.short()).mono().size(11.5).color(palette().text_2))
+            .child(kit::fit(subject).size(TEXT_SMALL).color(palette().text_2).grow()),
     )
 }
 
@@ -709,7 +709,7 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex_col()
         .gap(px(7.))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(
             div()
                 .id("compare-title")

@@ -1389,7 +1389,7 @@ fn commit_line(label: &'static str, commit: Option<&Commit>) -> Div {
         .items_center()
         .gap_3()
         .child(div().w(px(150.)).flex_shrink_0().child(kit::label(label)))
-        .child(kit::fit(oid).size(12.5).mono().color(TEXT_2))
+        .child(kit::fit(oid).size(12.5).mono().color(palette().text_2))
         .child(kit::fit(subject).size(12.5).grow())
 }
 
@@ -1405,8 +1405,8 @@ fn commit_list(title: String, commits: &[Commit], count: usize) -> Div {
                 .flex()
                 .items_center()
                 .gap_3()
-                .child(kit::fit(notice::short(&commit.oid).to_owned()).size(12.).mono().color(TEXT_3))
-                .child(kit::fit(commit.subject.clone().unwrap_or_default()).size(12.5).color(TEXT_2).grow())
+                .child(kit::fit(notice::short(&commit.oid).to_owned()).size(12.).mono().color(palette().text_3))
+                .child(kit::fit(commit.subject.clone().unwrap_or_default()).size(12.5).color(palette().text_2).grow())
         }))
         .when(count > commits.len(), |d| d.child(div().pl_3().child(kit::muted(format!("and {} more", count - commits.len())))))
 }
@@ -1493,7 +1493,7 @@ pub(crate) fn panel<T: Desk>(ui: &Ui, panel: &Panel, cx: &Context<T>) -> gpui::S
                 .gap_2()
                 .child(kit::chip(kit::Chip::Plain, "Submodule"))
                 .child(kit::fit(panel.path.display().to_string()).size(13.).weight(FontWeight::SEMIBOLD))
-                .when(!summary.is_empty(), |d| d.child(kit::fit(summary).size(12.5).color(TEXT_3).grow())),
+                .when(!summary.is_empty(), |d| d.child(kit::fit(summary).size(12.5).color(palette().text_3).grow())),
         )
         .child(body)
         .child(div().flex().flex_wrap().gap_2().children(update).children(open).child(stage))
@@ -1511,7 +1511,7 @@ pub(crate) fn row_marks(flags: Gitlink, staged: bool) -> Div {
         .items_center()
         .gap_1()
         .child(kit::chip(kit::Chip::Plain, "Submodule"))
-        .when(!summary.is_empty(), |d| d.child(kit::fit(summary).size(TEXT_TINY).color(TEXT_3)))
+        .when(!summary.is_empty(), |d| d.child(kit::fit(summary).size(TEXT_TINY).color(palette().text_3)))
 }
 
 pub(crate) fn strip_text(count: usize) -> String {
@@ -1537,10 +1537,10 @@ fn strip_frame(text: String) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(soft(MODIFIED, 0x18))
+        .bg(soft(palette().modified, 0x18))
         .border_b_1()
-        .border_color(soft(MODIFIED, 0x48))
-        .child(kit::icon("alert").size(px(13.)).text_color(rgb(MODIFIED)))
+        .border_color(soft(palette().modified, 0x48))
+        .child(kit::icon("alert").size(px(13.)).text_color(rgb(palette().modified)))
         .child(kit::fit(text).size(TEXT_SMALL).grow())
 }
 
@@ -1609,10 +1609,10 @@ pub(crate) fn side_row<T: Desk>(ui: &Ui, index: usize, row: usize, pointed: bool
         .pr(px(10.))
         .gap(px(6.))
         .child(div().w(px(11.)).flex_shrink_0().flex().justify_center().when(!quiet, |d| {
-            d.child(div().size(px(6.)).rounded_full().bg(rgb(MODIFIED)))
+            d.child(div().size(px(6.)).rounded_full().bg(rgb(palette().modified)))
         }))
-        .child(kit::fit(module.shown()).size(12.5).color(TEXT_2).grow())
-        .child(div().max_w(px(120.)).flex_shrink_0().child(kit::fit(state).size(TEXT_SMALL).color(TEXT_3)))
+        .child(kit::fit(module.shown()).size(12.5).color(palette().text_2).grow())
+        .child(div().max_w(px(120.)).flex_shrink_0().child(kit::fit(state).size(TEXT_SMALL).color(palette().text_3)))
         .when(pointed, |d| d.tooltip(kit::tip(tip)))
         .on_click(cx.listener(move |app, event: &ClickEvent, w, cx| {
             if event.click_count() > 1 {

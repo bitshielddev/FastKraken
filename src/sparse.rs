@@ -752,7 +752,7 @@ fn tree_row<T: Desk>(index: usize, row: &Row, enabled: bool, cx: &mut Context<T>
             .flex()
             .items_center()
             .pl(indent(*depth) + px(20.))
-            .child(kit::fit(text.clone()).size(TEXT_SMALL).color(TEXT_3).grow())
+            .child(kit::fit(text.clone()).size(TEXT_SMALL).color(palette().text_3).grow())
             .into_any_element(),
         Row::Folder { path, name, depth, unfolded, tick, inside } => {
             let chevron = div()
@@ -763,7 +763,7 @@ fn tree_row<T: Desk>(index: usize, row: &Row, enabled: bool, cx: &mut Context<T>
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .child(kit::icon(if *unfolded { "chevron-down" } else { "chevron-right" }).size(px(12.)).text_color(rgb(TEXT_3)));
+                .child(kit::icon(if *unfolded { "chevron-down" } else { "chevron-right" }).size(px(12.)).text_color(rgb(palette().text_3)));
             let chevron = kit::pressable(chevron, view::Action::Sparse(Action::Unfold(path.clone())), cx);
             let within = *tick == Tick::Within;
             let pick = div()
@@ -773,10 +773,10 @@ fn tree_row<T: Desk>(index: usize, row: &Row, enabled: bool, cx: &mut Context<T>
                 .flex()
                 .items_center()
                 .gap_2()
-                .when(enabled && !within, |d| d.cursor_pointer().focusable().focus(|s| s.bg(rgb(HOVER))))
+                .when(enabled && !within, |d| d.cursor_pointer().focusable().focus(|s| s.bg(rgb(palette().hover))))
                 .child(div().when(within, |d| d.opacity(0.5)).child(kit::checkbox(*tick != Tick::Off)))
-                .child(kit::icon("folder").size(px(13.)).text_color(rgb(TEXT_3)))
-                .child(kit::fit(name.clone()).size(12.5).color(if *tick == Tick::Off { TEXT_2 } else { TEXT }).grow())
+                .child(kit::icon("folder").size(px(13.)).text_color(rgb(palette().text_3)))
+                .child(kit::fit(name.clone()).size(12.5).color(if *tick == Tick::Off { palette().text_2 } else { palette().text }).grow())
                 .when(*inside > 0, |d| d.child(kit::muted(format!("{} inside", counted(*inside, "folder")))))
                 .when(within, |d| d.tooltip(kit::tip("Inside a ticked folder, so it is checked out too")));
             let pick = if enabled && !within { kit::pressable(pick, view::Action::Sparse(Action::Tick(path.clone())), cx) } else { pick };
@@ -840,8 +840,8 @@ pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
                 .flex_col()
                 .rounded(px(RADIUS))
                 .border_1()
-                .border_color(rgb(LINE))
-                .bg(rgb(CANVAS))
+                .border_color(rgb(palette().line))
+                .bg(rgb(palette().canvas))
                 .py_1()
                 .child(list),
         )

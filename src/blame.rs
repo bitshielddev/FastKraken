@@ -77,7 +77,7 @@ impl Commit {
 
     fn hue(&self) -> usize {
         let prefix = self.oid.get(..8).unwrap_or("0");
-        u32::from_str_radix(prefix, 16).unwrap_or(0) as usize % LANES.len()
+        u32::from_str_radix(prefix, 16).unwrap_or(0) as usize % palette().lanes.len()
     }
 }
 
@@ -237,7 +237,7 @@ impl Annotations {
                 && other != commit
                 && other_hue == hue
             {
-                hue = (hue + 1) % LANES.len();
+                hue = (hue + 1) % palette().lanes.len();
             }
             let next = block.start + block.count.max(1);
             self.blocks[index].hue = hue;
@@ -898,22 +898,22 @@ pub(crate) fn cell<T: Desk>(ui: &Ui, line: usize, first: bool, face: &Face, cx: 
         .items_center()
         .overflow_hidden()
         .border_r_1()
-        .border_color(rgb(LINE));
+        .border_color(rgb(palette().line));
     let Some(index) = open.notes.block_of(line) else { return Some(base) };
     let block = &open.notes.blocks[index];
     let commit = open.notes.commits.get(block.commit)?.clone();
     let committed = commit.committed();
     let chosen = open.chosen == Some(index);
     let opening = first && block.start == line;
-    let ink = LANES[block.hue % LANES.len()];
+    let ink = palette().lanes[block.hue % palette().lanes.len()];
     let text = (opening && !ui.blame.bare).then(|| label(ui, line)).flatten();
     let tip = commit.clone();
     Some(
         base.cursor_pointer()
             .when(committed, |d| d.bg(soft(ink, if chosen { CHOSEN_ALPHA } else { SEPARATOR_ALPHA })))
-            .when(!committed && chosen, |d| d.bg(rgb(SELECTED)))
+            .when(!committed && chosen, |d| d.bg(rgb(palette().selected)))
             .when(opening, |d| d.border_t_1())
-            .hover(|s| s.bg(rgb(HOVER)))
+            .hover(|s| s.bg(rgb(palette().hover)))
             .child(div().w(px(3.)).h_full().flex_shrink_0().when(committed, |d| d.bg(rgb(ink))))
             .when_some(text, |d, text| {
                 d.child(
@@ -926,7 +926,7 @@ pub(crate) fn cell<T: Desk>(ui: &Ui, line: usize, first: bool, face: &Face, cx: 
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .text_size(face.small())
-                        .text_color(rgb(if committed { TEXT_2 } else { TEXT_3 }))
+                        .text_color(rgb(if committed { palette().text_2 } else { palette().text_3 }))
                         .child(text),
                 )
             })
@@ -999,9 +999,9 @@ fn strip<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_t_1()
-        .border_color(rgb(LINE));
+        .border_color(rgb(palette().line));
     let Some((block, commit)) = ui.blame.chosen() else {
         return base
             .when(ui.blame.reading(), |d| d.child(kit::spinner("blame-reading")))
@@ -1019,7 +1019,7 @@ fn strip<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     if !commit.committed() {
         return base
             .child(div().text_size(px(TEXT_SMALL)).font_weight(FontWeight::SEMIBOLD).child(NOT_COMMITTED))
-            .child(kit::fit("These lines differ from the last commit").size(TEXT_SMALL).color(TEXT_3).grow())
+            .child(kit::fit("These lines differ from the last commit").size(TEXT_SMALL).color(palette().text_3).grow())
             .child(before)
             .child(dismiss);
     }
@@ -1030,7 +1030,7 @@ fn strip<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             .flex_shrink_0()
             .font_family(MONO)
             .text_size(px(11.5))
-            .text_color(rgb(TEXT_3))
+            .text_color(rgb(palette().text_3))
             .child(commit.short()),
     )
     .child(kit::fit(commit.summary.clone()).size(TEXT_SMALL).weight(FontWeight::MEDIUM).grow())
@@ -1041,7 +1041,7 @@ fn strip<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             .tooltip(kit::tip_with(move || view::exact_time(time)))
             .child(kit::muted(format!("{} · {when}", commit.author))),
     )
-    .when_some(moved, |d, moved| d.child(kit::fit(moved).size(11.5).color(TEXT_2).cut(kit::Cut::Start)))
+    .when_some(moved, |d, moved| d.child(kit::fit(moved).size(11.5).color(palette().text_2).cut(kit::Cut::Start)))
     .child(kit::btn("blame-copy-sha", "Copy SHA").small().ghost().on(view::Action::Blame(Action::CopySha), cx))
     .child(kit::btn("blame-show-in-graph", "Show in graph").small().ghost().on(view::Action::Blame(Action::ShowInGraph), cx))
     .child(before)

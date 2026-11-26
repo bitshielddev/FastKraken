@@ -537,9 +537,9 @@ fn choice<T: Desk>(scope: Scope, chosen: bool, cx: &Context<T>) -> gpui::Statefu
         .cursor_pointer()
         .rounded(px(RADIUS_CHIP))
         .text_size(px(TEXT_SMALL))
-        .text_color(rgb(if chosen { TEXT } else { TEXT_2 }))
+        .text_color(rgb(if chosen { palette().text } else { palette().text_2 }))
         .focusable()
-        .focus(|s| s.text_color(rgb(TEXT)))
+        .focus(|s| s.text_color(rgb(palette().text)))
         .child(crate::preferences::radio(chosen))
         .child(scope.title());
     kit::pressable(row, view::Action::Identity(Action::SetScope(scope)), cx)
@@ -553,7 +553,7 @@ pub(crate) fn form<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Option<Div> {
     let missing = state.missing();
     let typed = problem(state.name.read(cx).text(), state.email.read(cx).text());
     let ready = typed.is_none() && !state.saving && (state.scope == Scope::Global || !ui.repo.is_empty());
-    let note = state.error.clone().map(|error| (error, DELETED)).or_else(|| typed.filter(|problem| !problem.is_empty()).map(|problem| (problem, TEXT_3)));
+    let note = state.error.clone().map(|error| (error, palette().deleted)).or_else(|| typed.filter(|problem| !problem.is_empty()).map(|problem| (problem, palette().text_3)));
     let intro = match state.known.as_ref() {
         Some(known) if missing => missing_words(&known.effective),
         _ => "The name and email your commits carry.",
@@ -566,9 +566,9 @@ pub(crate) fn form<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Option<Div> {
             .p_2()
             .rounded(px(RADIUS))
             .border_1()
-            .border_color(rgb(if missing { MODIFIED } else { LINE }))
-            .bg(rgb(CANVAS))
-            .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(if missing { TEXT } else { TEXT_2 })).child(intro))
+            .border_color(rgb(if missing { palette().modified } else { palette().line }))
+            .bg(rgb(palette().canvas))
+            .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(if missing { palette().text } else { palette().text_2 })).child(intro))
             .child(div().on_key_down(submit(Place::Panel, cx)).child(state.name.clone()))
             .child(div().on_key_down(submit(Place::Panel, cx)).child(state.email.clone()))
             .child(
@@ -614,9 +614,9 @@ pub(crate) fn committing_as<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Option<imp
         .border_1()
         .border_color(kit::clear())
         .focusable()
-        .focus(|s| s.border_color(rgb(ACCENT)))
+        .focus(|s| s.border_color(rgb(palette().accent)))
         .tooltip(kit::tip(format!("{text}. Choose to change the name and email your commits carry.")))
-        .child(kit::fit(text).size(11.5).color(TEXT_3));
+        .child(kit::fit(text).size(11.5).color(palette().text_3));
     Some(kit::pressable(line, view::Action::Identity(Action::Edit), cx))
 }
 
@@ -627,10 +627,10 @@ pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
         && Some(state.global_email.read(cx).text().trim()) == state.global_base.email.as_deref();
     let ready = typed.is_none() && !state.saving && !unchanged && matches!(state.global, Some(Ok(_)));
     let note = match (&state.global, &state.global_error) {
-        (None, _) => Some(("Reading your name and email…".to_owned(), TEXT_3)),
-        (Some(Err(error)), _) => Some((error.clone(), DELETED)),
-        (_, Some(error)) => Some((error.clone(), DELETED)),
-        _ => typed.filter(|problem| !problem.is_empty()).map(|problem| (problem, TEXT_3)),
+        (None, _) => Some(("Reading your name and email…".to_owned(), palette().text_3)),
+        (Some(Err(error)), _) => Some((error.clone(), palette().deleted)),
+        (_, Some(error)) => Some((error.clone(), palette().deleted)),
+        _ => typed.filter(|problem| !problem.is_empty()).map(|problem| (problem, palette().text_3)),
     };
     let own = state.known.as_ref().and_then(|known| known.local.shown()).filter(|_| !ui.repo.is_empty());
     let name = div().w(px(260.)).on_key_down(submit(Place::Preferences, cx)).child(state.global_name.clone());

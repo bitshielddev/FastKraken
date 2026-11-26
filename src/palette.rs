@@ -612,23 +612,23 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
         .flex()
         .items_center()
         .border_t_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .text_size(px(TEXT_SMALL))
         .child(match reason {
-            Some(reason) => kit::fit(reason).size(TEXT_SMALL).color(TEXT_2).grow().into_any_element(),
+            Some(reason) => kit::fit(reason).size(TEXT_SMALL).color(palette().text_2).grow().into_any_element(),
             None if files && finder.capped => kit::fit("Only the first 200,000 files are listed")
                 .size(TEXT_SMALL)
-                .color(TEXT_2)
+                .color(palette().text_2)
                 .grow()
                 .into_any_element(),
             None if files => kit::fit("↑↓ to move, ↩ to open, esc to close")
                 .size(TEXT_SMALL)
-                .color(TEXT_3)
+                .color(palette().text_3)
                 .grow()
                 .into_any_element(),
             None => kit::fit("↑↓ to move, ↩ to run, esc to close")
                 .size(TEXT_SMALL)
-                .color(TEXT_3)
+                .color(palette().text_3)
                 .grow()
                 .into_any_element(),
         });
@@ -641,7 +641,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
             div()
                 .p_2()
                 .border_b_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .key_context("CommandPalette")
                 .child(ui.palette.field.clone()),
         )

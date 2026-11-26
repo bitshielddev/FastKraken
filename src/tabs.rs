@@ -539,7 +539,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
-            .bg(rgb(CANVAS))
+            .bg(rgb(palette().canvas))
             .child(self.front().clone())
             .children(crate::view::commit_input::field_menu(window, cx))
     }
@@ -602,9 +602,9 @@ pub(crate) fn render<T: Desk>(_: &T, cx: &mut Context<T>) -> Option<impl IntoEle
         .items_end()
         .gap(px(2.))
         .px(px(8.))
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .overflow_x_scroll();
     for (index, shown) in tabs.into_iter().enumerate() {
         row = row.child(button(index, &shown, index == front, cx));
@@ -621,9 +621,9 @@ fn button<T: Desk>(index: usize, shown: &Shown, front: bool, cx: &mut Context<T>
         (None, false) => shown.title.clone(),
     };
     let mark = if shown.asking {
-        Some(div().size(px(7.)).rounded_full().bg(rgb(ACCENT)))
+        Some(div().size(px(7.)).rounded_full().bg(rgb(palette().accent)))
     } else if shown.busy {
-        Some(div().size(px(7.)).rounded_full().bg(rgb(TEXT_3)))
+        Some(div().size(px(7.)).rounded_full().bg(rgb(palette().text_3)))
     } else {
         None
     };
@@ -649,10 +649,10 @@ fn button<T: Desk>(index: usize, shown: &Shown, front: bool, cx: &mut Context<T>
         .border_t_2()
         .text_size(px(TEXT_SMALL))
         .cursor_pointer()
-        .when(front, |d| d.bg(rgb(CANVAS)).border_color(rgb(ACCENT)).text_color(rgb(TEXT)))
-        .when(!front, |d| d.border_color(kit::clear()).text_color(rgb(TEXT_2)).hover(|s| s.bg(rgb(HOVER))))
+        .when(front, |d| d.bg(rgb(palette().canvas)).border_color(rgb(palette().accent)).text_color(rgb(palette().text)))
+        .when(!front, |d| d.border_color(kit::clear()).text_color(rgb(palette().text_2)).hover(|s| s.bg(rgb(palette().hover))))
         .focusable()
-        .focus(|s| s.border_color(rgb(ACCENT)))
+        .focus(|s| s.border_color(rgb(palette().accent)))
         .tooltip(kit::tip(tip))
         .on_mouse_down(MouseButton::Middle, cx.listener(move |app, _, window, cx| {
             app.dispatch(view::Action::Tabs(Action::Close(Some(index))), window, cx);

@@ -727,7 +727,7 @@ impl CommitInput {
         let text_system = window.text_system();
         let font_size = px(look.map_or(12.5, |look| look.size));
         let line_height = px(look.map_or(LINE_HEIGHT, |look| look.line));
-        let ink = look.map_or(TEXT, |look| look.color);
+        let ink = look.map_or(palette().text, |look| look.color);
         let run = |len, color| TextRun {
             len,
             font: font.clone(),
@@ -752,8 +752,8 @@ impl CommitInput {
                 if from > cursor {
                     runs.push(run(from - cursor, ink));
                 }
-                let underline = UnderlineStyle { thickness: px(1.), color: Some(rgb(ACCENT).into()), wavy: false };
-                runs.push(TextRun { underline: Some(underline), ..run(to - from, ACCENT) });
+                let underline = UnderlineStyle { thickness: px(1.), color: Some(rgb(palette().accent).into()), wavy: false };
+                runs.push(TextRun { underline: Some(underline), ..run(to - from, palette().accent) });
                 cursor = to;
             }
             if cursor < text.len() || runs.is_empty() {
@@ -789,7 +789,7 @@ impl CommitInput {
             lines.push(InputLine { range: offset + start..offset + text.len(), shape: shape_at(offset + start, &text[start..]) });
             offset += text.len() + 1;
         }
-        let placeholder = (self.editor.value.is_empty() && look.is_none()).then(|| shape(self.placeholder, TEXT_3));
+        let placeholder = (self.editor.value.is_empty() && look.is_none()).then(|| shape(self.placeholder, palette().text_3));
         let mut layout = InputLayout { lines, bounds, origin: bounds.origin, line: line_height };
         let caret = layout.point(self.to_display(self.editor.caret));
         if self.editor.multiline {
@@ -832,7 +832,7 @@ impl CommitInput {
                         point(start.min(end), y + px(2.)),
                         size((end - start).abs(), line_height - px(4.)),
                     ),
-                    rgb(TEXT_SELECTION),
+                    rgb(palette().text_selection),
                 ));
             }
             if let Some(marked) = &marked_range
@@ -845,7 +845,7 @@ impl CommitInput {
                         point(left.min(right), y + line_height - px(2.)),
                         size((right - left).abs(), px(1.)),
                     ),
-                    rgb(ACCENT),
+                    rgb(palette().accent),
                 ));
             }
             let _ = line.shape.paint(point(layout.origin.x, y), line_height, window, cx);
@@ -857,7 +857,7 @@ impl CommitInput {
             let caret = layout.point(self.to_display(self.editor.caret));
             window.paint_quad(fill(
                 Bounds::new(caret + point(px(0.), px(2.)), size(px(1.), line_height - px(4.))),
-                rgb(ACCENT),
+                rgb(palette().accent),
             ));
         }
         layout
@@ -934,12 +934,12 @@ impl Render for CommitInput {
         field
             .h(px(if multiline { LINE_HEIGHT * DESCRIPTION_ROWS as f32 + 8. } else { 30. }))
             .px(px(9.))
-            .bg(rgb(CANVAS))
+            .bg(rgb(palette().canvas))
             .border_1()
-            .border_color(rgb(LINE_STRONG))
+            .border_color(rgb(palette().line_strong))
             .rounded(px(RADIUS))
             .text_size(px(12.5))
-            .focus(|s| s.border_color(rgb(ACCENT)))
+            .focus(|s| s.border_color(rgb(palette().accent)))
             .cursor(CursorStyle::IBeam)
             .overflow_hidden()
             .when(multiline, |d| {

@@ -588,7 +588,7 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
         body = body.child(
             div()
                 .text_size(px(12.5))
-                .text_color(rgb(TEXT_2))
+                .text_color(rgb(palette().text_2))
                 .child(line.clone()),
         );
     }
@@ -610,7 +610,7 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
             .items_center()
             .gap_2()
             .text_size(px(12.))
-            .text_color(rgb(TEXT_2))
+            .text_color(rgb(palette().text_2))
             .child(note.text.clone());
         if let Some((label, action)) = &note.link {
             line = line.child(kit::link("prompt-note-link", label.clone(), action.clone(), cx));
@@ -645,7 +645,7 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
                     .rounded(px(RADIUS_CHIP))
                     .border_1()
                     .border_color(kit::clear())
-                    .focus(|s| s.border_color(rgb(ACCENT)))
+                    .focus(|s| s.border_color(rgb(palette().accent)))
                     .cursor_pointer()
                     .text_size(px(12.5))
                     .child(kit::checkbox(state.tick))
@@ -676,8 +676,8 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
             .flex_col()
             .rounded(px(RADIUS))
             .border_1()
-            .border_color(rgb(LINE))
-            .bg(rgb(CANVAS))
+            .border_color(rgb(palette().line))
+            .bg(rgb(palette().canvas))
             .py_1();
         for (i, (item, handle)) in spec.items.iter().zip(&state.item_handles).enumerate() {
             let toggle = act(Action::ToggleItem(i));
@@ -697,8 +697,8 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
                     .rounded(px(RADIUS_CHIP))
                     .border_1()
                     .border_color(kit::clear())
-                    .focus(|s| s.border_color(rgb(ACCENT)))
-                    .hover(|s| s.bg(rgb(HOVER)))
+                    .focus(|s| s.border_color(rgb(palette().accent)))
+                    .hover(|s| s.bg(rgb(palette().hover)))
                     .cursor_pointer()
                     .text_size(px(12.5))
                     .child(kit::checkbox(on))

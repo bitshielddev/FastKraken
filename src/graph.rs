@@ -1,4 +1,4 @@
-use crate::theme::{CANVAS, LANES, SELECTED, TEXT_3, soft};
+use crate::theme::{palette, soft};
 use gpui::{
     BorderStyle, Bounds, ContentMask, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, fill,
     linear_color_stop, linear_gradient, point, px, quad, rgb, size,
@@ -153,13 +153,13 @@ impl Graph {
     ) -> impl IntoElement + use<> {
         let row = self.rows[row].clone();
         let content = self.content_width();
-        let ground = if selected { SELECTED } else { CANVAS };
+        let ground = if selected { palette().selected } else { palette().canvas };
         canvas(
             |_, _, _| (),
             move |b, _, window, _| window.with_content_mask(Some(ContentMask { bounds: b }), |window| {
                 let x = |lane: usize| b.left() + px(LEFT + lane as f32 * LANE - lanes.offset);
                 let mid = b.center().y;
-                let color = |lane: usize| rgb(LANES[lane % LANES.len()]);
+                let color = |lane: usize| rgb(palette().lanes[lane % palette().lanes.len()]);
                 let straight = |lane: usize, y1, y2| {
                     fill(
                         Bounds::new(point(x(lane) - px(1.), y1), size(px(2.), y2 - y1)),
@@ -182,7 +182,7 @@ impl Graph {
                 if row.incoming {
                     window.paint_quad(straight(row.node, b.top(), mid));
                 } else if stash_above {
-                    dashes(window, point(x(row.node) - px(1.), b.top()), mid - b.top(), false, LANES[row.node % LANES.len()]);
+                    dashes(window, point(x(row.node) - px(1.), b.top()), mid - b.top(), false, palette().lanes[row.node % palette().lanes.len()]);
                 }
                 for parent in &row.outgoing {
                     if *parent == row.node {
@@ -231,7 +231,7 @@ impl Graph {
     pub fn stash_element(&self, base: usize, first: bool, selected: bool, lanes: Lanes) -> impl IntoElement + use<> {
         let row = self.rows[base].clone();
         let content = self.content_width();
-        let ground = if selected { SELECTED } else { CANVAS };
+        let ground = if selected { palette().selected } else { palette().canvas };
         canvas(
             |_, _, _| (),
             move |bounds, _, window, _| window.with_content_mask(Some(ContentMask { bounds }), |window| {
@@ -239,23 +239,23 @@ impl Graph {
                 let mid = bounds.center().y;
                 let marker = bounds.right() - px(10.);
                 let stem = x(row.node);
-                dashes(window, point(stem + px(1.), mid - px(1.)), marker - stem - px(4.), true, TEXT_3);
+                dashes(window, point(stem + px(1.), mid - px(1.)), marker - stem - px(4.), true, palette().text_3);
                 for lane in row.through.iter().copied().chain(row.joining.iter().copied()).chain(row.incoming.then_some(row.node)) {
                     window.paint_quad(fill(
                         Bounds::new(point(x(lane) - px(1.), bounds.top()), size(px(2.), bounds.size.height)),
-                        rgb(LANES[lane % LANES.len()]),
+                        rgb(palette().lanes[lane % palette().lanes.len()]),
                     ));
                 }
                 if !row.incoming {
                     let top = if first { mid } else { bounds.top() };
-                    dashes(window, point(stem - px(1.), top), bounds.bottom() - top, false, LANES[row.node % LANES.len()]);
+                    dashes(window, point(stem - px(1.), top), bounds.bottom() - top, false, palette().lanes[row.node % palette().lanes.len()]);
                 }
                 window.paint_quad(quad(
                     Bounds::new(point(marker - px(3.5), mid - px(3.5)), size(px(7.), px(7.))),
                     px(1.5),
                     rgb(ground),
                     px(1.),
-                    rgb(TEXT_3),
+                    rgb(palette().text_3),
                     BorderStyle::Solid,
                 ));
                 fades(window, bounds, lanes, content, ground);

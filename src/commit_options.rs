@@ -458,7 +458,7 @@ fn tick<T: Desk>(
         .items_center()
         .gap_2()
         .text_size(px(TEXT_SMALL))
-        .text_color(rgb(TEXT_2))
+        .text_color(rgb(palette().text_2))
         .rounded(px(4.))
         .border_1()
         .border_color(kit::clear())
@@ -467,7 +467,7 @@ fn tick<T: Desk>(
         .tooltip(kit::tip(tip));
     match action {
         Some(action) => {
-            let row = row.cursor_pointer().focusable().focus(|s| s.border_color(rgb(ACCENT)));
+            let row = row.cursor_pointer().focusable().focus(|s| s.border_color(rgb(palette().accent)));
             kit::pressable(row, action, cx)
         }
         None => row.opacity(0.42),
@@ -494,12 +494,12 @@ pub(crate) fn disclosure<T: Desk>(app: &T, cx: &mut Context<T>) -> Stateful<Div>
         .border_color(kit::clear())
         .cursor_pointer()
         .text_size(px(TEXT_SMALL))
-        .text_color(rgb(TEXT_2))
-        .hover(|s| s.text_color(rgb(TEXT)))
+        .text_color(rgb(palette().text_2))
+        .hover(|s| s.text_color(rgb(palette().text)))
         .focusable()
-        .focus(|s| s.border_color(rgb(ACCENT)))
+        .focus(|s| s.border_color(rgb(palette().accent)))
         .child(label)
-        .child(kit::icon(if open { "chevron-down" } else { "chevron-right" }).size(px(11.)).text_color(rgb(TEXT_3)))
+        .child(kit::icon(if open { "chevron-down" } else { "chevron-right" }).size(px(11.)).text_color(rgb(palette().text_3)))
         .tooltip(kit::tip(if open { "Hide the commit options" } else { "Skip hooks, sign, or push after committing" }));
     kit::pressable(toggle, view::Action::CommitOptions(Action::ToggleOpen), cx)
 }
@@ -596,7 +596,7 @@ fn picker<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             div()
                 .p_2()
                 .border_b_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .key_context("CoauthorPicker")
                 .child(ui.commit_options.filter.clone()),
         )

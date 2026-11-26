@@ -304,16 +304,16 @@ pub(crate) fn bar<T: Desk>(ui: &Ui, cx: &Context<T>) -> Option<Div> {
             .flex()
             .items_center()
             .gap_2()
-            .bg(rgb(SELECTED))
+            .bg(rgb(palette().selected))
             .border_b_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(palette().line))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .text_size(px(TEXT_SMALL))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(rgb(TEXT))
+                    .text_color(rgb(palette().text))
                     .child(picked_text(pick.rows.len())),
             )
             .child(
@@ -332,9 +332,9 @@ pub(crate) fn gutter<T: Desk>(ui: &Ui, row: usize, cells: Div, cx: &Context<T>) 
         return cells;
     }
     cells
-        .when(picked(ui, row), |d| d.bg(rgb(SELECTED)))
+        .when(picked(ui, row), |d| d.bg(rgb(palette().selected)))
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(HOVER)))
+        .hover(|s| s.bg(rgb(palette().hover)))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |app, event: &MouseDownEvent, window, cx| {

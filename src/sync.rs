@@ -1032,7 +1032,7 @@ pub(crate) fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .refs
         .current(&ui.branch)
         .map_or((0, 0), |branch| (branch.ahead, branch.behind));
-    let divider = || div().w(px(1.)).h(px(CONTROL)).bg(rgb(LINE_STRONG));
+    let divider = || div().w(px(1.)).h(px(CONTROL)).bg(rgb(palette().line_strong));
     let fetch_tip = || fetch_tip(ui);
     let fetch = kit::btn("sync-fetch", "Fetch")
         .ghost()
@@ -1094,8 +1094,8 @@ pub(crate) fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .items_center()
         .rounded(px(RADIUS))
         .border_1()
-        .border_color(rgb(LINE_STRONG))
-        .bg(rgb(RAISED))
+        .border_color(rgb(palette().line_strong))
+        .bg(rgb(palette().raised))
         .child(fetch.on(view::Action::Sync(Action::FetchAll), cx))
         .child(divider())
         .child(pull.on(view::Action::Sync(Action::Button), cx))

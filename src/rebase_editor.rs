@@ -64,9 +64,9 @@ impl Choice {
     fn mark(self) -> Option<(&'static str, u32)> {
         match self {
             Choice::Pick => None,
-            Choice::Reword => Some(("reworded", REMOTE)),
-            Choice::Squash => Some(("squashed", MODIFIED)),
-            Choice::Drop => Some(("dropped", DELETED)),
+            Choice::Reword => Some(("reworded", palette().remote)),
+            Choice::Squash => Some(("squashed", palette().modified)),
+            Choice::Drop => Some(("dropped", palette().deleted)),
         }
     }
 }
@@ -940,10 +940,10 @@ impl Render for Preview {
                 .max_w(px(360.))
                 .rounded(px(RADIUS))
                 .border_1()
-                .border_color(rgb(ACCENT))
-                .bg(rgb(RAISED))
+                .border_color(rgb(palette().accent))
+                .bg(rgb(palette().raised))
                 .text_size(px(TEXT_SMALL))
-                .text_color(rgb(TEXT))
+                .text_color(rgb(palette().text))
                 .opacity(0.92)
                 .child(self.subject.clone()),
         )
@@ -956,11 +956,11 @@ fn choice_control<T: Desk>(index: usize, row: &Row, last: bool, cx: &mut Context
         let chosen = row.choice == choice;
         let refused = (choice == Choice::Squash && last).then_some(OLDEST);
         let ink = match (chosen, choice) {
-            (true, Choice::Drop) => DELETED,
-            (true, Choice::Squash) => MODIFIED,
-            (true, Choice::Reword) => REMOTE,
-            (true, Choice::Pick) => TEXT,
-            (false, _) => TEXT_3,
+            (true, Choice::Drop) => palette().deleted,
+            (true, Choice::Squash) => palette().modified,
+            (true, Choice::Reword) => palette().remote,
+            (true, Choice::Pick) => palette().text,
+            (false, _) => palette().text_3,
         };
         let tip: SharedString = match refused {
             Some(reason) => reason.into(),
@@ -977,7 +977,7 @@ fn choice_control<T: Desk>(index: usize, row: &Row, last: bool, cx: &mut Context
             .text_color(rgb(ink))
             .border_1()
             .border_color(kit::clear())
-            .when(chosen, |d| d.bg(rgb(RAISED)).font_weight(FontWeight::SEMIBOLD))
+            .when(chosen, |d| d.bg(rgb(palette().raised)).font_weight(FontWeight::SEMIBOLD))
             .when(refused.is_some(), |d| d.opacity(0.42))
             .tooltip(kit::tip(tip))
             .child(choice.label());
@@ -988,9 +988,9 @@ fn choice_control<T: Desk>(index: usize, row: &Row, last: bool, cx: &mut Context
                 let activate = action.clone();
                 segment
                     .cursor_pointer()
-                    .when(!chosen, |d| d.hover(|s| s.text_color(rgb(TEXT_2))))
+                    .when(!chosen, |d| d.hover(|s| s.text_color(rgb(palette().text_2))))
                     .focusable()
-                    .focus(|s| s.border_color(rgb(ACCENT)))
+                    .focus(|s| s.border_color(rgb(palette().accent)))
                     .key_context("DeskButton")
                     .tab_stop(true)
                     .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
@@ -1023,7 +1023,7 @@ fn editor_row<T: Desk>(index: usize, row: &Row, highlighted: bool, last: bool, n
         .pr_3()
         .gap_3()
         .child(choice_control(index, row, last, cx))
-        .child(div().flex_shrink_0().font_family(MONO).text_size(px(11.5)).text_color(rgb(TEXT_3)).child(short))
+        .child(div().flex_shrink_0().font_family(MONO).text_size(px(11.5)).text_color(rgb(palette().text_3)).child(short))
         .child(
             div()
                 .flex_1()
@@ -1034,7 +1034,7 @@ fn editor_row<T: Desk>(index: usize, row: &Row, highlighted: bool, last: bool, n
                 .child(
                     kit::fit(subject)
                         .weight(FontWeight::MEDIUM)
-                        .color(if dropped { TEXT_OFF } else { TEXT })
+                        .color(if dropped { palette().text_off } else { palette().text })
                         .grow(),
                 )
                 .when_some(row.choice.mark(), |d, (mark, ink)| {
@@ -1057,7 +1057,7 @@ fn editor_row<T: Desk>(index: usize, row: &Row, highlighted: bool, last: bool, n
                 .flex_shrink_0()
                 .w(px(220.))
                 .tooltip(kit::tip_with(move || view::exact_time(time)))
-                .child(kit::fit(format!("{} · {when}", commit.author)).size(11.5).color(TEXT_3).grow()),
+                .child(kit::fit(format!("{} · {when}", commit.author)).size(11.5).color(palette().text_3).grow()),
         )
         .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
             let action = match event.click_count() {
@@ -1076,7 +1076,7 @@ fn editor_row<T: Desk>(index: usize, row: &Row, highlighted: bool, last: bool, n
     element
         .drag_over::<Carried>(move |style, carried, _, _| match carried.from == index {
             true => style,
-            false => style.bg(soft(ACCENT, 0x2e)),
+            false => style.bg(soft(palette().accent, 0x2e)),
         })
         .on_drop(cx.listener(move |app, carried: &Carried, w, cx| {
             let action = Action::MoveRow { from: carried.from, to: index };
@@ -1095,15 +1095,15 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .flex_col()
         .gap_1()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(kit::icon("list").size(px(14.)).flex_shrink_0().text_color(rgb(TEXT_3)))
+                .child(kit::icon("list").size(px(14.)).flex_shrink_0().text_color(rgb(palette().text_3)))
                 .child(kit::fit(editor.heading()).size(TEXT_TITLE).weight(FontWeight::SEMIBOLD).grow())
                 .child(kit::icon_btn("close-rebase-editor", "x", "Cancel (Esc)", view::Action::RebaseEditor(Action::Cancel), cx)),
         )
@@ -1115,14 +1115,14 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         })
         .when_some(editor.loaded.forecast_pair(), |d, (tip, target)| {
             let Some(line) = crate::forecast::line(ui, tip, target, crate::forecast::Wording::Rebase) else { return d };
-            let ink = if crate::forecast::conflicting(ui, tip, target) { CONFLICT } else { TEXT_3 };
+            let ink = if crate::forecast::conflicting(ui, tip, target) { palette().conflict } else { palette().text_3 };
             d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(ink)).child(line))
         })
         .when_some(editor.loaded.upstream.as_ref(), |d, upstream| {
             d.child(
                 div()
                     .text_size(px(TEXT_SMALL))
-                    .text_color(rgb(MODIFIED))
+                    .text_color(rgb(palette().modified))
                     .child(format!("{upstream} already has some of these commits. You will need to force push afterwards.")),
             )
         });
@@ -1163,10 +1163,10 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_t_1()
-        .border_color(rgb(LINE))
-        .child(kit::fit(said).size(TEXT_SMALL).color(TEXT_2).grow())
+        .border_color(rgb(palette().line))
+        .child(kit::fit(said).size(TEXT_SMALL).color(palette().text_2).grow())
         .child(
             kit::btn("reset-rebase", "Reset")
                 .small()
@@ -1188,7 +1188,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .min_h_0()
         .flex()
         .flex_col()
-        .bg(rgb(CANVAS))
+        .bg(rgb(palette().canvas))
         .child(header)
         .child(list)
         .child(kit::scrollbar("rebase-editor-scrollbar", &editor.scroll))

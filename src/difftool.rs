@@ -815,7 +815,7 @@ pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
                 div()
                     .pt_2()
                     .text_size(px(TEXT_SMALL))
-                    .text_color(rgb(TEXT_3))
+                    .text_color(rgb(palette().text_3))
                     .child(format!("Runs {command}")),
             );
         }

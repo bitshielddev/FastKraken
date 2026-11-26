@@ -1067,7 +1067,7 @@ fn entry_row<T: Desk>(index: usize, row: &Row, chosen: bool, at: bool, cx: &mut 
             .pl(px(ROW_START + *depth as f32 * STEP_INDENT + CHEVRON))
             .pr_2()
             .when(*loading, |d| d.child(kit::spinner(("browse-loading", index))))
-            .child(kit::fit(text.clone()).size(TEXT_SMALL).color(TEXT_3).grow())
+            .child(kit::fit(text.clone()).size(TEXT_SMALL).color(palette().text_3).grow())
             .into_any_element(),
         Row::Entry { path, name, kind, depth, unfolded, ignored, count } => {
             let icon = match kind {
@@ -1087,11 +1087,11 @@ fn entry_row<T: Desk>(index: usize, row: &Row, chosen: bool, at: bool, cx: &mut 
                 Kind::File | Kind::Link => Some(Action::Choose(path.clone())),
                 Kind::Module => None,
             };
-            let ink = if *ignored || *kind == Kind::Module { TEXT_3 } else if *kind == Kind::Folder { TEXT_2 } else { TEXT };
+            let ink = if *ignored || *kind == Kind::Module { palette().text_3 } else if *kind == Kind::Folder { palette().text_2 } else { palette().text };
             let chevron = match kind {
                 Kind::Folder => kit::icon(if *unfolded { "chevron-down" } else { "chevron-right" })
                     .size(px(12.))
-                    .text_color(rgb(TEXT_3))
+                    .text_color(rgb(palette().text_3))
                     .into_any_element(),
                 _ => div().w(px(12.)).flex_shrink_0().into_any_element(),
             };
@@ -1101,7 +1101,7 @@ fn entry_row<T: Desk>(index: usize, row: &Row, chosen: bool, at: bool, cx: &mut 
                 .pr_2()
                 .gap(px(5.))
                 .child(chevron)
-                .child(kit::icon(icon).size(px(13.)).text_color(rgb(TEXT_3)))
+                .child(kit::icon(icon).size(px(13.)).text_color(rgb(palette().text_3)))
                 .child(
                     div()
                         .id(("browse-name", index))
@@ -1113,14 +1113,14 @@ fn entry_row<T: Desk>(index: usize, row: &Row, chosen: bool, at: bool, cx: &mut 
                         .child(kit::fit(name.clone()).size(12.5).color(ink).cut(kit::Cut::Middle).grow())
                         .tooltip(kit::tip_with(tip)),
                 )
-                .when(*ignored, |d| d.child(div().flex_shrink_0().text_size(px(TEXT_TINY)).text_color(rgb(TEXT_3)).child("Ignored")))
+                .when(*ignored, |d| d.child(div().flex_shrink_0().text_size(px(TEXT_TINY)).text_color(rgb(palette().text_3)).child("Ignored")))
                 .when_some(*count, |d, count| {
                     d.child(
                         div()
                             .flex_shrink_0()
                             .text_size(px(TEXT_TINY))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(TEXT_3))
+                            .text_color(rgb(palette().text_3))
                             .child(count.to_string()),
                     )
                 })
@@ -1166,13 +1166,13 @@ fn tree<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
-        .child(kit::icon("folder").size(px(14.)).flex_shrink_0().text_color(rgb(TEXT_3)))
+        .border_color(rgb(palette().line))
+        .child(kit::icon("folder").size(px(14.)).flex_shrink_0().text_color(rgb(palette().text_3)))
         .child(kit::fit(heading(ui)).size(12.5).weight(FontWeight::SEMIBOLD).grow())
         .child(kit::icon_btn("close-browse", "x", "Back to the graph", view::Action::Browse(Action::Close), cx));
-    let field = div().px_2().py(px(6.)).flex_shrink_0().border_b_1().border_color(rgb(LINE)).child(ui.browse.filter.clone());
+    let field = div().px_2().py(px(6.)).flex_shrink_0().border_b_1().border_color(rgb(palette().line)).child(ui.browse.filter.clone());
     let count = open.rows.len();
     let list = uniform_list(
         SharedString::from(format!("browse-rows-{:?}", open.rev)),
@@ -1200,15 +1200,15 @@ fn tree<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .min_h_0()
         .flex()
         .flex_col()
-        .bg(rgb(CANVAS))
+        .bg(rgb(palette().canvas))
         .border_r_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(header)
         .child(field)
         .child(list)
         .child(kit::scrollbar("browse-scrollbar", &open.scroll))
         .when_some(footer(ui), |d, text| {
-            d.child(div().flex_shrink_0().px_3().py_2().border_t_1().border_color(rgb(LINE)).child(kit::muted(text)))
+            d.child(div().flex_shrink_0().px_3().py_2().border_t_1().border_color(rgb(palette().line)).child(kit::muted(text)))
         })
 }
 

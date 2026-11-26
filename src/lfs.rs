@@ -1031,10 +1031,10 @@ fn strip_frame(text: String) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(soft(MODIFIED, 0x18))
+        .bg(soft(palette().modified, 0x18))
         .border_b_1()
-        .border_color(soft(MODIFIED, 0x48))
-        .child(kit::icon("alert").size(px(13.)).text_color(rgb(MODIFIED)))
+        .border_color(soft(palette().modified, 0x48))
+        .child(kit::icon("alert").size(px(13.)).text_color(rgb(palette().modified)))
         .child(div().flex_1().min_w_0().text_size(px(TEXT_SMALL)).child(text))
 }
 
@@ -1117,7 +1117,7 @@ pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     let mut body = body.child(settings_page::setting("Git LFS", Some(status.into()), control)).child(settings_page::group("TRACKED PATTERNS"));
     body = match &state.patterns {
         None => body.child(div().py_2().child(kit::muted("Reading the patterns…"))),
-        Some(Err(error)) => body.child(div().py_2().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(error.clone())),
+        Some(Err(error)) => body.child(div().py_2().text_size(px(TEXT_SMALL)).text_color(rgb(palette().deleted)).child(error.clone())),
         Some(Ok(patterns)) if patterns.is_empty() => body.child(div().py_2().child(kit::muted("No file patterns are stored with Git LFS yet."))),
         Some(Ok(patterns)) => {
             let mut list = div().flex().flex_col();

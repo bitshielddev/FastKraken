@@ -3,7 +3,7 @@ use crate::{
     commands::{Availability, Command, Group, Target, operating},
     settings::Settings,
     storage,
-    theme::{MONO, TEXT, TEXT_SMALL},
+    theme::{MONO, TEXT_SMALL, palette},
     view::{self, Desk, Selection, Ui},
 };
 use gpui::{App, Context, Pixels, TextRun, Window, px, rgb};
@@ -400,7 +400,7 @@ fn widest(window: &Window, texts: BTreeSet<String>, size: f32, mono: bool) -> f3
             let run = TextRun {
                 len: text.len(),
                 font: font.clone(),
-                color: rgb(TEXT).into(),
+                color: rgb(palette().text).into(),
                 background_color: None,
                 underline: None,
                 strikethrough: None,

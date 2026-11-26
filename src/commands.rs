@@ -734,7 +734,7 @@ fn row<T: Desk>(
     cx: &Context<T>,
 ) -> gpui::Stateful<Div> {
     if let Some(note) = entry.note {
-        let (icon, ink) = if note.warn { ("alert", crate::theme::CONFLICT) } else { (entry.icon.unwrap_or("ok"), crate::theme::TEXT_3) };
+        let (icon, ink) = if note.warn { ("alert", crate::theme::palette().conflict) } else { (entry.icon.unwrap_or("ok"), crate::theme::palette().text_3) };
         let item = kit::item(id, entry.title).icon(icon).ink(ink).highlighted(highlighted).tip(note.tip.map(SharedString::from));
         return item.inert().on_hover(cx.listener(move |app, hovered: &bool, w, cx| {
             if *hovered && app.ui().menu_cursor != here {

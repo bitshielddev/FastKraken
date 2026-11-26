@@ -22,8 +22,8 @@ pub(crate) struct Message {
 
 impl Message {
     pub(crate) fn new(cx: &mut Context<Tab>) -> Self {
-        let subject = Look { size: 14., line: 20., weight: FontWeight::SEMIBOLD, color: TEXT };
-        let body = Look { size: TEXT_SMALL, line: 18., weight: FontWeight::NORMAL, color: TEXT_2 };
+        let subject = Look { size: 14., line: 20., weight: FontWeight::SEMIBOLD, color: palette().text };
+        let body = Look { size: TEXT_SMALL, line: 18., weight: FontWeight::NORMAL, color: palette().text_2 };
         Self {
             subject: cx.new(|cx| CommitInput::reader(cx, "Commit subject", subject)),
             body: cx.new(|cx| CommitInput::reader(cx, "Commit message", body)),
@@ -395,9 +395,9 @@ fn person_row(index: usize, person: Person) -> gpui::Stateful<Div> {
                         .items_center()
                         .gap(px(6.))
                         .child(kit::fit(person.name).size(TEXT_SMALL))
-                        .child(kit::fit(person.email).size(TEXT_SMALL).color(TEXT_3).grow()),
+                        .child(kit::fit(person.email).size(TEXT_SMALL).color(palette().text_3).grow()),
                 )
-                .child(kit::fit(person.when).size(TEXT_SMALL).color(TEXT_3)),
+                .child(kit::fit(person.when).size(TEXT_SMALL).color(palette().text_3)),
         )
         .tooltip(kit::tip(tip))
 }
@@ -429,7 +429,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex_col()
         .gap(px(7.))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(
             div()
                 .flex()
@@ -489,7 +489,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .gap(px(6.))
                 .child(kit::avatar(&coauthor.name))
                 .child(kit::fit(coauthor.name.clone()).size(TEXT_SMALL))
-                .child(kit::fit("co-author").size(TEXT_SMALL).color(TEXT_3).grow())
+                .child(kit::fit("co-author").size(TEXT_SMALL).color(palette().text_3).grow())
                 .tooltip(kit::tip(coauthor.email.clone()))
         }))
         .children(crate::containing::lines(ui, oid, cx))
@@ -508,13 +508,13 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         .items_center()
                         .gap(px(5.))
                         .rounded(px(RADIUS_CHIP))
-                        .bg(rgb(RAISED))
+                        .bg(rgb(palette().raised))
                         .cursor_pointer()
-                        .hover(|s| s.bg(rgb(HOVER)))
+                        .hover(|s| s.bg(rgb(palette().hover)))
                         .font_family(MONO)
                         .text_size(px(11.5))
                         .child(short)
-                        .child(kit::icon("copy").size(px(11.)).text_color(rgb(TEXT_3)))
+                        .child(kit::icon("copy").size(px(11.)).text_color(rgb(palette().text_3)))
                         .tooltip(kit::tip("Copy the full SHA"))
                         .on_click(cx.listener({
                             let oid = oid.clone();
@@ -537,7 +537,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                 .cursor_pointer()
                                 .font_family(MONO)
                                 .text_size(px(11.5))
-                                .text_color(rgb(ACCENT))
+                                .text_color(rgb(palette().accent))
                                 .child(parent.chars().take(7).collect::<String>())
                                 .tooltip(kit::tip("Show this parent in the graph"))
                                 .on_click(cx.listener(move |app, _, w, cx| {
@@ -599,14 +599,14 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             d.child(
                 kit::label(format!("+{added}"))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(ADDED)),
+                    .text_color(rgb(palette().added)),
             )
         })
         .when(deleted > 0, |d| {
             d.child(
                 kit::label(format!("−{deleted}"))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(DELETED)),
+                    .text_color(rgb(palette().deleted)),
             )
         })
         .when(count > 1, |d| {
@@ -670,14 +670,14 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                         .when(added > 0, |d| {
                                             d.child(
                                                 div()
-                                                    .text_color(rgb(ADDED))
+                                                    .text_color(rgb(palette().added))
                                                     .child(format!("+{added}")),
                                             )
                                         })
                                         .when(deleted > 0, |d| {
                                             d.child(
                                                 div()
-                                                    .text_color(rgb(DELETED))
+                                                    .text_color(rgb(palette().deleted))
                                                     .child(format!("−{deleted}")),
                                             )
                                         }),

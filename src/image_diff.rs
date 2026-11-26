@@ -739,8 +739,8 @@ fn frame(id: String, picture: Option<&Picture>, height: Option<Pixels>) -> Div {
         .overflow_hidden()
         .rounded(px(RADIUS))
         .border_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(CANVAS));
+        .border_color(rgb(palette().line))
+        .bg(rgb(palette().canvas));
     let frame = match height {
         Some(height) => frame.w_full().h(height).flex_shrink_0(),
         None => frame.flex_1().min_h(px(96.)),
@@ -780,7 +780,7 @@ pub(crate) fn view(held: &Held) -> Div {
                 div()
                     .text_size(px(TEXT_SMALL))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(TEXT_2))
+                    .text_color(rgb(palette().text_2))
                     .child(labels[side]),
             )
             .child(frame(format!("image-diff-{side}"), picture, None))
@@ -788,7 +788,7 @@ pub(crate) fn view(held: &Held) -> Div {
                 div()
                     .h(px(16.))
                     .text_size(px(TEXT_SMALL))
-                    .text_color(rgb(TEXT_3))
+                    .text_color(rgb(palette().text_3))
                     .child(picture.map(|picture| caption(picture, true)).unwrap_or_default()),
             )
     });
@@ -809,7 +809,7 @@ pub(crate) fn chooser_card(ui: &Ui, side: usize) -> Option<Div> {
                 div()
                     .h(px(16.))
                     .text_size(px(TEXT_SMALL))
-                    .text_color(rgb(TEXT_3))
+                    .text_color(rgb(palette().text_3))
                     .child(picture.map(|picture| caption(picture, false)).unwrap_or_default()),
             ),
     )
@@ -829,9 +829,9 @@ pub(crate) fn toggle<T: view::Desk>(ui: &Ui, cx: &Context<T>) -> Div {
         .flex_shrink_0()
         .p(px(1.))
         .rounded(px(RADIUS))
-        .bg(rgb(CANVAS))
+        .bg(rgb(palette().canvas))
         .border_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(segment("image-as-text", "Text", Mode::Text))
         .child(segment("image-as-picture", "Image", Mode::Image))
 }

@@ -396,7 +396,7 @@ pub(crate) fn chooser<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Option<Div> {
     if all.is_empty() || ui.repo.is_empty() {
         return None;
     }
-    let mut row = div().flex().flex_wrap().items_center().gap_1().child(div().pr_1().text_size(px(TEXT_SMALL)).text_color(rgb(TEXT_2)).child("Use profile"));
+    let mut row = div().flex().flex_wrap().items_center().gap_1().child(div().pr_1().text_size(px(TEXT_SMALL)).text_color(rgb(palette().text_2)).child("Use profile"));
     for (index, profile) in all.iter().enumerate() {
         row = row.child(
             kit::btn(("identity-profile", index), profile.name.clone())
@@ -419,14 +419,14 @@ fn editor<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
         .flex_col()
         .rounded(px(RADIUS))
         .border_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(CANVAS))
+        .border_color(rgb(palette().line))
+        .bg(rgb(palette().canvas))
         .child(setting("Profile name", None, field(&state.title)))
         .child(setting("Name", Some("The author name its commits carry.".into()), field(&state.user_name)))
         .child(setting("Email", None, field(&state.email)))
         .child(setting("Signing key", Some("Written as user.signingKey; leave it empty to sign as Git otherwise would.".into()), field(&state.signing_key)))
         .child(setting("SSH key", Some("Written as this repository's core.sshCommand; leave it empty for your usual SSH settings.".into()), field(&state.ssh_key)))
-        .when_some(state.error.clone(), |d, error| d.child(div().pt_2().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(error)))
+        .when_some(state.error.clone(), |d, error| d.child(div().pt_2().text_size(px(TEXT_SMALL)).text_color(rgb(palette().deleted)).child(error)))
         .child(
             div()
                 .pt_3()
@@ -469,7 +469,7 @@ pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
                 .items_center()
                 .gap_3()
                 .border_b_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .child(
                     div()
                         .flex_1()
@@ -477,8 +477,8 @@ pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .child(kit::fit(profile.name.clone()).size(13.).color(TEXT))
-                        .child(kit::fit(profile.summary()).size(TEXT_SMALL).color(TEXT_3)),
+                        .child(kit::fit(profile.name.clone()).size(13.).color(palette().text))
+                        .child(kit::fit(profile.summary()).size(TEXT_SMALL).color(palette().text_3)),
                 )
                 .child(controls),
         );

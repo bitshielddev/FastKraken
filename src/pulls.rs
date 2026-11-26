@@ -300,18 +300,18 @@ pub(crate) fn checks_of<'a>(ui: &'a Ui, remote: &str, pull: &PullRequest) -> Opt
 
 pub(crate) fn colour(state: PullState) -> u32 {
     match state {
-        PullState::Open => ADDED,
-        PullState::Draft => TEXT_3,
-        PullState::Merged => TAG,
-        PullState::Closed => DELETED,
+        PullState::Open => palette().added,
+        PullState::Draft => palette().text_3,
+        PullState::Merged => palette().tag,
+        PullState::Closed => palette().deleted,
     }
 }
 
 fn dot(overall: Overall) -> u32 {
     match overall {
-        Overall::Running => ACCENT,
-        Overall::Passed => ADDED,
-        Overall::Failed => DELETED,
+        Overall::Running => palette().accent,
+        Overall::Passed => palette().added,
+        Overall::Failed => palette().deleted,
     }
 }
 
@@ -404,9 +404,9 @@ pub(crate) fn side_row<T: Desk>(ui: &Ui, index: usize, row: usize, pointed: bool
                 .font_weight(FontWeight::MEDIUM)
                 .child(format!("#{}", pull.number)),
         )
-        .child(kit::fit(pull.title.clone()).size(12.5).color(if shown { TEXT } else { TEXT_2 }).grow())
+        .child(kit::fit(pull.title.clone()).size(12.5).color(if shown { palette().text } else { palette().text_2 }).grow())
         .when(pull.state == PullState::Draft, |d| d.child(kit::label("draft")))
-        .child(div().max_w(px(90.)).flex_shrink_0().child(kit::fit(pull.author.clone()).size(TEXT_SMALL).color(TEXT_3)))
+        .child(div().max_w(px(90.)).flex_shrink_0().child(kit::fit(pull.author.clone()).size(TEXT_SMALL).color(palette().text_3)))
         .when(pointed, |d| d.tooltip(kit::tip(format!("{}\nClick to show its head commit. Double-click to check it out.", tip(ui, remote, pull)))))
         .on_click(cx.listener(move |app, event: &ClickEvent, w, cx| {
             let action = if event.click_count() > 1 {
@@ -438,7 +438,7 @@ pub(crate) fn note_row<T: Desk>(ui: &Ui, index: usize, row: usize, cx: &mut Cont
         .flex()
         .items_center()
         .gap_2()
-        .child(kit::fit(text.clone()).size(12.).color(TEXT_3).grow())
+        .child(kit::fit(text.clone()).size(12.).color(palette().text_3).grow())
         .tooltip(kit::tip(text))
         .when_some(offer, |d, (label, action)| {
             d.child(
@@ -447,7 +447,7 @@ pub(crate) fn note_row<T: Desk>(ui: &Ui, index: usize, row: usize, cx: &mut Cont
                     .flex_shrink_0()
                     .cursor_pointer()
                     .text_size(px(12.))
-                    .text_color(rgb(ACCENT))
+                    .text_color(rgb(palette().accent))
                     .child(label)
                     .on_click(cx.listener(move |app, _, w, cx| app.dispatch(action.clone(), w, cx))),
             )
@@ -1180,7 +1180,7 @@ mod tests {
         assert_eq!(numbered(&hosts, 9), None);
         assert_eq!(label(&pull(4, "x", "a/b", PullState::Draft)), "#4 Draft");
         assert_eq!(label(&pull(4, "x", "a/b", PullState::Open)), "#4");
-        assert_eq!(colour(PullState::Merged), TAG);
+        assert_eq!(colour(PullState::Merged), palette().tag);
     }
 
     #[test]

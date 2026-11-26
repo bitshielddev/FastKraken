@@ -902,8 +902,8 @@ fn button<T: Desk>(id: impl Into<gpui::ElementId>, label: &str) -> kit::Btn {
 
 fn side_color(side: Side) -> u32 {
     match side {
-        Side::Current => ACCENT,
-        Side::Incoming => REMOTE,
+        Side::Current => palette().accent,
+        Side::Incoming => palette().remote,
     }
 }
 
@@ -916,7 +916,7 @@ fn line_number(face: &Face, number: Option<usize>) -> Div {
         .justify_end()
         .font_family(face.family.clone())
         .text_size(face.small())
-        .text_color(rgb(TEXT_OFF))
+        .text_color(rgb(palette().text_off))
         .when_some(number.filter(|_| face.numbers), |d, n| d.child(n.to_string()))
 }
 
@@ -928,7 +928,7 @@ fn runs(ui: &view::Ui, pane: Pane, row: usize, code: &str, syntax: Option<&Spans
         found: &found,
         focus: &focus,
         words: &[],
-        changed: TEXT_SELECTION,
+        changed: palette().text_selection,
         syntax: syntax.map_or(&[][..], Vec::as_slice),
     };
     view::diff_clipped(marks.runs(), &(0..shown_length(code)))
@@ -967,7 +967,7 @@ fn conflict_strip(shown: Option<bool>) -> Div {
         .w(px(3.))
         .h_full()
         .flex_shrink_0()
-        .when_some(shown, |d, shown| d.bg(if shown { rgb(CONFLICT) } else { soft(CONFLICT, 0x60) }))
+        .when_some(shown, |d, shown| d.bg(if shown { rgb(palette().conflict) } else { soft(palette().conflict, 0x60) }))
 }
 
 fn source_cell<T: Desk>(app: &T, row: usize, side: Side, cx: &Context<T>) -> Div {
@@ -988,7 +988,7 @@ fn source_cell<T: Desk>(app: &T, row: usize, side: Side, cx: &Context<T>) -> Div
         .flex()
         .items_center()
         .overflow_hidden()
-        .when(side == Side::Incoming, |d| d.border_l_1().border_color(rgb(LINE)));
+        .when(side == Side::Incoming, |d| d.border_l_1().border_color(rgb(palette().line)));
     let range = editor.document.on(shown_row, side);
     let syntax = range.as_ref().and_then(|range| editor.colour_of(range));
     let text = |d: Div| d.child(line_text(ui, (text_id, row), pane, row, &state.source_pan, syntax, cx));
@@ -1023,7 +1023,7 @@ fn source_cell<T: Desk>(app: &T, row: usize, side: Side, cx: &Context<T>) -> Div
                             .tooltip(kit::tip(if range.is_some() { tip } else { "Use this side's deletion" }))
                             .child(kit::checkbox(selected))
                             .when(enabled, |d| {
-                                let d = d.cursor_pointer().focusable().focus(|s| s.border_color(rgb(ACCENT)));
+                                let d = d.cursor_pointer().focusable().focus(|s| s.border_color(rgb(palette().accent)));
                                 kit::pressable(d, action, cx)
                             }),
                     )
@@ -1100,8 +1100,8 @@ fn result_rows<T: Desk>(state: &State, editor: &Editor, face: &Face, cx: &mut Co
                     ResultRow::Unresolved { hunk, line } => base
                         .px_2()
                         .gap(px(4.))
-                        .bg(soft(CONFLICT, 0x18))
-                        .child(kit::fit(format!("Line {} unresolved", i + 1)).size(TEXT_SMALL).color(CONFLICT).grow())
+                        .bg(soft(palette().conflict, 0x18))
+                        .child(kit::fit(format!("Line {} unresolved", i + 1)).size(TEXT_SMALL).color(palette().conflict).grow())
                         .children([
                             ("result-current", "Use current", Choice::One(Side::Current)),
                             ("result-incoming", "Use incoming", Choice::One(Side::Incoming)),
@@ -1133,16 +1133,16 @@ fn original_pane<T: Desk>(state: &State, editor: &Editor, face: &Face, cx: &mut 
         .flex()
         .items_center()
         .gap(px(5.))
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_t_1()
         .border_b_1()
-        .border_color(rgb(LINE))
-        .child(div().size(px(8.)).flex_shrink_0().rounded_full().bg(rgb(TEXT_3)))
+        .border_color(rgb(palette().line))
+        .child(div().size(px(8.)).flex_shrink_0().rounded_full().bg(rgb(palette().text_3)))
         .child(div().flex_shrink_0().text_size(px(TEXT_SMALL)).font_weight(FontWeight::SEMIBOLD).child("Original"))
         .child(
             kit::fit(format!("Common ancestor of conflict {}", editor.hunk + 1))
                 .size(TEXT_SMALL)
-                .color(TEXT_3)
+                .color(palette().text_3)
                 .grow(),
         )
         .child(kit::icon_btn("close-original", "x", "Hide the original", view::Action::Merge(Action::ShowOriginal(false)), cx));
@@ -1163,7 +1163,7 @@ fn original_pane<T: Desk>(state: &State, editor: &Editor, face: &Face, cx: &mut 
                     .flex()
                     .items_center()
                     .overflow_hidden()
-                    .bg(soft(TEXT_3, 0x10))
+                    .bg(soft(palette().text_3, 0x10))
                     .child(div().w(px(8.)).flex_shrink_0())
                     .child(line_text(ui, ("merge-original-text", i), Pane::Original, i, &ui.merge.original_pan, None, cx))
             }).collect::<Vec<_>>()
@@ -1206,9 +1206,9 @@ pub(crate) fn resolver<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(
             kit::fit(editor.document.path.to_string_lossy().into_owned())
                 .size(12.5)
@@ -1238,9 +1238,9 @@ pub(crate) fn resolver<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap_1()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(kit::muted(format!("Conflict {} of {total}", i + 1)).flex_shrink_0().mr_1())
         .when(total > 1, |d| {
             d.child(
@@ -1262,7 +1262,7 @@ pub(crate) fn resolver<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                     .on(view::Action::Merge(Action::Hunk(i + 1)), cx),
             )
         })
-        .child(div().w(px(1.)).h(px(16.)).mx_1().flex_shrink_0().bg(rgb(LINE)))
+        .child(div().w(px(1.)).h(px(16.)).mx_1().flex_shrink_0().bg(rgb(palette().line)))
         .child(
             kit::btn("merge-whole-file", "Whole file")
                 .small()
@@ -1306,13 +1306,13 @@ pub(crate) fn resolver<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .flex()
             .items_center()
             .gap(px(5.))
-            .bg(rgb(PANEL))
+            .bg(rgb(palette().panel))
             .border_b_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(palette().line))
             .when(side == Side::Incoming, |d| d.border_l_1())
             .child(div().size(px(8.)).flex_shrink_0().rounded_full().bg(rgb(side_color(side))))
             .child(div().flex_shrink_0().text_size(px(TEXT_SMALL)).font_weight(FontWeight::SEMIBOLD).child(name))
-            .child(kit::fit(branch).size(TEXT_SMALL).color(TEXT_3).grow())
+            .child(kit::fit(branch).size(TEXT_SMALL).color(palette().text_3).grow())
             .child(button::<T>(id, "Use all").small().enabled(ready).selected(chosen).tip(tip)
                 .on(view::Action::Merge(Action::Choose(i, side)), cx))
     }));
@@ -1338,10 +1338,10 @@ pub(crate) fn resolver<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .px_3()
                 .flex()
                 .items_center()
-                .bg(rgb(PANEL))
+                .bg(rgb(palette().panel))
                 .border_t_1()
                 .border_b_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .child(
                     div()
                         .text_size(px(TEXT_SMALL))
@@ -1352,7 +1352,7 @@ pub(crate) fn resolver<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .child(
                     div()
                         .text_size(px(TEXT_SMALL))
-                        .text_color(rgb(if open == 0 { ADDED } else { CONFLICT }))
+                        .text_color(rgb(if open == 0 { palette().added } else { palette().conflict }))
                         .child(match open {
                             0 => "All lines resolved".to_owned(),
                             1 => "1 line unresolved".to_owned(),

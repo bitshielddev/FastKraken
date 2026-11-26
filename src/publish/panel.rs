@@ -13,7 +13,7 @@ fn close_menus() -> view::Action {
 fn note(text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(TEXT_SMALL))
-        .text_color(rgb(TEXT_2))
+        .text_color(rgb(palette().text_2))
         .child(text.into())
 }
 
@@ -22,14 +22,14 @@ fn status(state: &State) -> Option<Div> {
         return None;
     }
     let (mark, ink) = if state.working {
-        (kit::any(kit::spinner("publish-spinner")), TEXT_2)
+        (kit::any(kit::spinner("publish-spinner")), palette().text_2)
     } else if state.failed {
         (
-            kit::any(kit::icon("alert").text_color(rgb(DELETED))),
-            DELETED,
+            kit::any(kit::icon("alert").text_color(rgb(palette().deleted))),
+            palette().deleted,
         )
     } else {
-        (kit::any(kit::icon("ok").text_color(rgb(ADDED))), TEXT_2)
+        (kit::any(kit::icon("ok").text_color(rgb(palette().added))), palette().text_2)
     };
     Some(
         div()
@@ -114,7 +114,7 @@ pub(crate) fn branch_form<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .mb(px(-12.))
                 .py_1()
                 .border_t_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .child(
                     kit::item("remote-publish-new", "Publish somewhere new…")
                         .icon("plus")
@@ -168,19 +168,19 @@ pub(crate) fn branch_form<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .gap_2()
                 .rounded(px(RADIUS))
                 .border_1()
-                .border_color(rgb(if chosen { ACCENT } else { LINE_STRONG }))
-                .bg(rgb(if chosen { SELECTED } else { RAISED }))
+                .border_color(rgb(if chosen { palette().accent } else { palette().line_strong }))
+                .bg(rgb(if chosen { palette().selected } else { palette().raised }))
                 .cursor_pointer()
                 .child(kit::fit(remote.name.clone()).size(12.5))
                 .child(
                     kit::fit(address)
                         .size(11.5)
-                        .color(TEXT_3)
+                        .color(palette().text_3)
                         .cut(kit::Cut::Start)
                         .grow(),
                 )
                 .when(chosen, |d| {
-                    d.child(kit::icon("check").size(px(12.)).text_color(rgb(ACCENT)))
+                    d.child(kit::icon("check").size(px(12.)).text_color(rgb(palette().accent)))
                 })
                 .on_click(cx.listener(move |app, _, w, cx| {
                     app.dispatch(view::Action::Publish(Action::SelectRemote(i)), w, cx)
@@ -227,9 +227,9 @@ fn tabs<T: Desk>(page: Page, ready: bool, cx: &Context<T>) -> Div {
             .pb(px(8.))
             .mb(px(-1.))
             .border_b_2()
-            .border_color(if on { rgb(ACCENT) } else { kit::clear() })
+            .border_color(if on { rgb(palette().accent) } else { kit::clear() })
             .text_size(px(12.5))
-            .text_color(rgb(if on { TEXT } else { TEXT_2 }))
+            .text_color(rgb(if on { palette().text } else { palette().text_2 }))
             .font_weight(if on {
                 FontWeight::SEMIBOLD
             } else {
@@ -248,7 +248,7 @@ fn tabs<T: Desk>(page: Page, ready: bool, cx: &Context<T>) -> Div {
         .flex()
         .gap(px(18.))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(tab(
             "publish-tab-github",
             "GitHub",
@@ -297,8 +297,8 @@ fn remotes_page<T: Desk>(state: &State, ready: bool, cx: &Context<T>) -> Div {
             .track_scroll(&state.remote_scroll)
             .rounded(px(RADIUS))
             .border_1()
-            .border_color(rgb(LINE))
-            .bg(rgb(CANVAS));
+            .border_color(rgb(palette().line))
+            .bg(rgb(palette().canvas));
         for (i, remote) in state.remotes.iter().enumerate() {
             list = list.child(
                 div()
@@ -308,7 +308,7 @@ fn remotes_page<T: Desk>(state: &State, ready: bool, cx: &Context<T>) -> Div {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .when(i > 0, |d| d.border_t_1().border_color(rgb(LINE)))
+                    .when(i > 0, |d| d.border_t_1().border_color(rgb(palette().line)))
                     .child(
                         kit::fit(remote.name.clone())
                             .size(12.5)
@@ -321,7 +321,7 @@ fn remotes_page<T: Desk>(state: &State, ready: bool, cx: &Context<T>) -> Div {
                             remote.push_urls.join(" · ")
                         })
                         .size(TEXT_SMALL)
-                        .color(TEXT_3)
+                        .color(palette().text_3)
                         .cut(kit::Cut::Start)
                         .grow(),
                     )
@@ -448,8 +448,8 @@ fn device_page<T: Desk>(code: &str, cx: &Context<T>) -> Div {
                 .gap_3()
                 .rounded(px(8.))
                 .border_1()
-                .border_color(rgb(LINE))
-                .bg(rgb(CANVAS))
+                .border_color(rgb(palette().line))
+                .bg(rgb(palette().canvas))
                 .child(
                     div()
                         .font_family(MONO)
@@ -571,8 +571,8 @@ fn account_card(login: &str, slug: &str) -> Div {
         .gap(px(10.))
         .rounded(px(8.))
         .border_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(CANVAS))
+        .border_color(rgb(palette().line))
+        .bg(rgb(palette().canvas))
         .child(kit::avatar(login).size(px(26.)).text_size(px(10.5)))
         .child(
             div()
@@ -588,7 +588,7 @@ fn account_card(login: &str, slug: &str) -> Div {
                 .child(
                     kit::fit(format!("Connected through the {slug} app"))
                         .size(11.5)
-                        .color(TEXT_3),
+                        .color(palette().text_3),
                 ),
         )
 }
@@ -655,8 +655,8 @@ fn account_row<T: Desk>(
 
 fn step_line(done: Option<bool>, text: impl Into<SharedString>) -> Div {
     let mark = match done {
-        Some(true) => kit::any(kit::icon("check").text_color(rgb(ADDED))),
-        Some(false) => kit::any(kit::icon("alert").text_color(rgb(CONFLICT))),
+        Some(true) => kit::any(kit::icon("check").text_color(rgb(palette().added))),
+        Some(false) => kit::any(kit::icon("alert").text_color(rgb(palette().conflict))),
         None => kit::any(
             div()
                 .size(px(14.))
@@ -668,7 +668,7 @@ fn step_line(done: Option<bool>, text: impl Into<SharedString>) -> Div {
                         .size(px(6.))
                         .rounded_full()
                         .border_1()
-                        .border_color(rgb(TEXT_3)),
+                        .border_color(rgb(palette().text_3)),
                 ),
         ),
     };
@@ -681,7 +681,7 @@ fn step_line(done: Option<bool>, text: impl Into<SharedString>) -> Div {
             div()
                 .min_w_0()
                 .text_size(px(12.5))
-                .text_color(rgb(if done == Some(true) { TEXT } else { TEXT_2 }))
+                .text_color(rgb(if done == Some(true) { palette().text } else { palette().text_2 }))
                 .child(text.into()),
         )
 }
@@ -796,7 +796,7 @@ fn recovery_page<T: Desk>(state: &State, receipt: &Receipt, ready: bool, cx: &Co
                 .items_center()
                 .gap_3()
                 .border_t_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .child(div().flex_1().min_w_0().child(note(
                     "Discard the local recovery record? The repository on GitHub is kept.",
                 )))
@@ -915,7 +915,7 @@ fn github_page<T: Desk>(app: &T, ready: bool, over: &mut kit::Over, cx: &Context
                             d.child(kit::popover_over_modal(owners, false, close_menus(), over, cx))
                         }),
                 )
-                .child(div().text_color(rgb(TEXT_OFF)).child("/"))
+                .child(div().text_color(rgb(palette().text_off)).child("/"))
                 .child(
                     div()
                         .flex_1()
@@ -968,9 +968,9 @@ fn github_page<T: Desk>(app: &T, ready: bool, over: &mut kit::Over, cx: &Context
                 .cursor_pointer()
                 .rounded(px(4.))
                 .text_size(px(12.5))
-                .text_color(rgb(TEXT_2))
+                .text_color(rgb(palette().text_2))
                 .focusable()
-                .focus(|s| s.text_color(rgb(TEXT)))
+                .focus(|s| s.text_color(rgb(palette().text)))
                 .child(kit::checkbox(state.push_after))
                 .child(format!("Push {} now and track it", ui.branch)),
             view::Action::Publish(Action::TogglePush),

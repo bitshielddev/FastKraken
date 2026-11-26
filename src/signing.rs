@@ -179,10 +179,10 @@ impl Signature {
 
     fn shade(&self) -> u32 {
         match self.grade {
-            Grade::Verified => ADDED,
-            Grade::Bad | Grade::Revoked => DELETED,
-            Grade::Expired | Grade::ExpiredKey => MODIFIED,
-            Grade::Untrusted | Grade::Unknown => TEXT_2,
+            Grade::Verified => palette().added,
+            Grade::Bad | Grade::Revoked => palette().deleted,
+            Grade::Expired | Grade::ExpiredKey => palette().modified,
+            Grade::Untrusted | Grade::Unknown => palette().text_2,
         }
     }
 }
@@ -467,7 +467,7 @@ fn pill<T: Desk>(id: impl Into<gpui::ElementId>, signature: &Signature, cx: &Con
         .border_color(kit::clear())
         .cursor_pointer()
         .focusable()
-        .focus(|s| s.border_color(rgb(ACCENT)))
+        .focus(|s| s.border_color(rgb(palette().accent)))
         .child(
             div()
                 .h(px(18.))
@@ -481,7 +481,7 @@ fn pill<T: Desk>(id: impl Into<gpui::ElementId>, signature: &Signature, cx: &Con
                 .child(kit::icon(icon).size(px(10.)).text_color(rgb(shade)))
                 .child(div().text_size(px(TEXT_TINY)).text_color(rgb(shade)).whitespace_nowrap().child(signature.word())),
         )
-        .when(!signature.detail().is_empty(), |d| d.child(kit::fit(signature.detail()).size(TEXT_SMALL).color(TEXT_3).grow()))
+        .when(!signature.detail().is_empty(), |d| d.child(kit::fit(signature.detail()).size(TEXT_SMALL).color(palette().text_3).grow()))
         .tooltip(kit::tip(signature.tip()));
     kit::pressable(row, view::Action::Signing(Action::Recheck), cx)
 }
@@ -502,8 +502,8 @@ pub(crate) fn lines<T: Desk>(ui: &Ui, oid: &str, cx: &Context<T>) -> Option<Div>
                 .min_w_0()
                 .items_center()
                 .gap(px(6.))
-                .child(kit::icon("tag").size(px(11.)).text_color(rgb(TAG)))
-                .child(div().flex_shrink_0().text_size(px(TEXT_SMALL)).text_color(rgb(TAG)).child(name.clone()))
+                .child(kit::icon("tag").size(px(11.)).text_color(rgb(palette().tag)))
+                .child(div().flex_shrink_0().text_size(px(TEXT_SMALL)).text_color(rgb(palette().tag)).child(name.clone()))
                 .child(pill(("tag-signature", index), signature, cx).flex_1()),
         );
     }
@@ -529,9 +529,9 @@ pub(crate) fn commit_chip(ui: &Ui) -> Option<Stateful<Div>> {
             .items_center()
             .gap(px(4.))
             .rounded(px(RADIUS))
-            .bg(soft(ADDED, 0x1c))
-            .child(kit::icon("lock").size(px(11.)).text_color(rgb(ADDED)))
-            .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(ADDED)).child("Signed"))
+            .bg(soft(palette().added, 0x1c))
+            .child(kit::icon("lock").size(px(11.)).text_color(rgb(palette().added)))
+            .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().added)).child("Signed"))
             .tooltip(kit::tip(tip)),
     )
 }

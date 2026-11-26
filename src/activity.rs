@@ -543,9 +543,9 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child("Activity log"))
         .child(kit::muted(counted))
         .child(kit::grow())
@@ -558,11 +558,11 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .px_1()
                 .rounded(px(RADIUS_CHIP))
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(HOVER)))
+                .hover(|s| s.bg(rgb(palette().hover)))
                 .focusable()
-                .focus(|s| s.bg(rgb(HOVER)))
+                .focus(|s| s.bg(rgb(palette().hover)))
                 .child(kit::checkbox(reads))
-                .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(TEXT_2)).child("Show reads")),
+                .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().text_2)).child("Show reads")),
             view::Action::Activity(Action::ToggleReads),
             cx,
         ))
@@ -576,7 +576,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .items_center()
             .justify_center()
             .gap_1()
-            .child(div().text_color(rgb(TEXT_2)).child("No Git commands yet"))
+            .child(div().text_color(rgb(palette().text_2)).child("No Git commands yet"))
             .child(kit::muted(if reads {
                 "Commands appear here as FastKraken runs them."
             } else {
@@ -605,7 +605,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                         .flex_shrink_0()
                                         .font_family(MONO)
                                         .text_size(px(TEXT_TINY))
-                                        .text_color(rgb(TEXT_3))
+                                        .text_color(rgb(palette().text_3))
                                         .child(clock(entry.at)),
                                 )
                                 .child(kit::fit(entry.summary()).mono().size(TEXT_SMALL).grow())
@@ -613,7 +613,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                     div()
                                         .flex_shrink_0()
                                         .text_size(px(TEXT_TINY))
-                                        .text_color(rgb(TEXT_3))
+                                        .text_color(rgb(palette().text_3))
                                         .child(took(entry.duration)),
                                 )
                                 .child(
@@ -623,7 +623,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                                         .flex()
                                         .justify_end()
                                         .text_size(px(TEXT_TINY))
-                                        .text_color(rgb(if failed { DELETED } else { TEXT_3 }))
+                                        .text_color(rgb(if failed { palette().deleted } else { palette().text_3 }))
                                         .child(entry.result()),
                                 )
                                 .on_click(cx.listener(move |app, _, w, cx| {
@@ -645,7 +645,7 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .min_h_0()
         .flex()
         .flex_col()
-        .bg(rgb(CANVAS))
+        .bg(rgb(palette().canvas))
         .child(header)
         .child(list)
         .when_some(state.selected().cloned(), |d, entry| d.child(detail(app, &entry, cx)))
@@ -671,8 +671,8 @@ fn detail<T: Desk>(app: &T, entry: &Entry, cx: &mut Context<T>) -> Div {
         .px_3()
         .py_2()
         .border_t_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(PANEL))
+        .border_color(rgb(palette().line))
+        .bg(rgb(palette().panel))
         .child(
             div()
                 .flex()
@@ -701,14 +701,14 @@ fn detail<T: Desk>(app: &T, entry: &Entry, cx: &mut Context<T>) -> Div {
                 .flex()
                 .gap_2()
                 .text_size(px(TEXT_TINY))
-                .text_color(rgb(if entry.succeeded() { TEXT_3 } else { DELETED }))
+                .text_color(rgb(if entry.succeeded() { palette().text_3 } else { palette().deleted }))
                 .child(facts)
-                .child(kit::fit(place).size(TEXT_TINY).color(TEXT_3).cut(kit::Cut::Start).grow()),
+                .child(kit::fit(place).size(TEXT_TINY).color(palette().text_3).cut(kit::Cut::Start).grow()),
         )
         .child(if lines == 0 {
             div().flex_1().min_h_0().child(kit::muted("Git printed nothing."))
         } else {
-            div().flex_1().min_h_0().flex().rounded(px(RADIUS)).border_1().border_color(rgb(LINE)).bg(rgb(CANVAS)).p_1().child(
+            div().flex_1().min_h_0().flex().rounded(px(RADIUS)).border_1().border_color(rgb(palette().line)).bg(rgb(palette().canvas)).p_1().child(
                 uniform_list(
                     "activity-output",
                     lines,
@@ -722,7 +722,7 @@ fn detail<T: Desk>(app: &T, entry: &Entry, cx: &mut Context<T>) -> Div {
                                     .px_1()
                                     .font_family(MONO)
                                     .text_size(px(TEXT_TINY))
-                                    .text_color(rgb(TEXT_2))
+                                    .text_color(rgb(palette().text_2))
                                     .whitespace_nowrap()
                                     .child(line)
                             })

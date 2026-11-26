@@ -604,8 +604,8 @@ pub(crate) fn bar(percent: u8) -> Div {
         .h(px(3.))
         .w_full()
         .rounded(px(2.))
-        .bg(rgb(LINE_STRONG))
-        .child(div().h_full().rounded(px(2.)).bg(rgb(ACCENT)).w(relative(f32::from(percent.min(100)) / 100.)))
+        .bg(rgb(palette().line_strong))
+        .child(div().h_full().rounded(px(2.)).bg(rgb(palette().accent)).w(relative(f32::from(percent.min(100)) / 100.)))
 }
 
 pub(crate) fn cancel_button<T: view::Desk>(id: u64, cx: &mut Context<T>) -> impl IntoElement + use<T> {

@@ -524,9 +524,9 @@ pub(crate) fn conflict_row<T: Desk>(app: &T, index: usize, conflict: &Conflict, 
         .gap_2()
         .child(kit::badge("Conflicted"))
         .child(kit::fit(name).size(12.5).cut(kit::Cut::Middle))
-        .child(kit::fit(folder).size(11.5).color(TEXT_3).cut(kit::Cut::Start).grow())
+        .child(kit::fit(folder).size(11.5).color(palette().text_3).cut(kit::Cut::Start).grow())
         .when_some(kind_word(conflict.shape), |d, word| {
-            d.child(div().flex_shrink_0().text_size(px(TEXT_TINY)).text_color(rgb(TEXT_3)).child(word))
+            d.child(div().flex_shrink_0().text_size(px(TEXT_TINY)).text_color(rgb(palette().text_3)).child(word))
         })
         .on_click(cx.listener(move |app, _, w, cx| {
             if !app.ui().busy() {
@@ -578,8 +578,8 @@ pub(crate) fn resolved_row<T: Desk>(app: &T, index: usize, path: &Path, cx: &mut
         .gap_2()
         .child(kit::badge("Modified"))
         .child(kit::fit(name).size(12.5).cut(kit::Cut::Middle))
-        .child(kit::fit(folder).size(11.5).color(TEXT_3).cut(kit::Cut::Start).grow())
-        .child(kit::icon("check").size(px(13.)).text_color(rgb(ADDED)))
+        .child(kit::fit(folder).size(11.5).color(palette().text_3).cut(kit::Cut::Start).grow())
+        .child(kit::icon("check").size(px(13.)).text_color(rgb(palette().added)))
         .children(again)
         .on_mouse_down(
             MouseButton::Right,
@@ -635,9 +635,9 @@ pub(crate) fn chooser<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(kit::fit(named(path)).size(12.5).weight(FontWeight::SEMIBOLD).cut(kit::Cut::Start))
         .children(kind_word(conflict.shape).map(|word| kit::muted(word).flex_shrink_0()))
         .child(kit::grow())
@@ -659,8 +659,8 @@ pub(crate) fn chooser<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         };
         let button = take(id).map(|entry| command_button(entry, tip_for(id, snapshot), cx));
         let dot = match side {
-            Side::Current => ACCENT,
-            Side::Incoming => REMOTE,
+            Side::Current => palette().accent,
+            Side::Incoming => palette().remote,
         };
         cards.push(
             div()
@@ -672,8 +672,8 @@ pub(crate) fn chooser<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .gap_2()
                 .rounded(px(RADIUS))
                 .border_1()
-                .border_color(rgb(LINE_STRONG))
-                .bg(rgb(RAISED))
+                .border_color(rgb(palette().line_strong))
+                .bg(rgb(palette().raised))
                 .child(
                     div()
                         .flex()
@@ -681,10 +681,10 @@ pub(crate) fn chooser<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         .gap(px(6.))
                         .child(div().size(px(8.)).flex_shrink_0().rounded_full().bg(rgb(dot)))
                         .child(div().flex_shrink_0().text_size(px(TEXT_SMALL)).font_weight(FontWeight::SEMIBOLD).child(name))
-                        .child(kit::fit(full).size(TEXT_SMALL).color(TEXT_3).grow()),
+                        .child(kit::fit(full).size(TEXT_SMALL).color(palette().text_3).grow()),
                 )
                 .children(crate::image_diff::chooser_card(ui, index))
-                .child(div().text_size(px(TEXT_BASE)).text_color(rgb(TEXT_2)).child(holds(version)))
+                .child(div().text_size(px(TEXT_BASE)).text_color(rgb(palette().text_2)).child(holds(version)))
                 .children(button),
         );
     }
@@ -702,7 +702,7 @@ pub(crate) fn chooser<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             d.child(
                 div()
                     .text_size(px(TEXT_SMALL))
-                    .text_color(rgb(TEXT_2))
+                    .text_color(rgb(palette().text_2))
                     .child(format!("The line resolver cannot open this file: {note}")),
             )
         })
@@ -724,7 +724,7 @@ pub(crate) fn chooser<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .flex_col()
         .overflow_hidden()
-        .bg(rgb(CANVAS))
+        .bg(rgb(palette().canvas))
         .child(header)
         .child(body)
 }

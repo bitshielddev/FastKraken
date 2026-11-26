@@ -602,7 +602,7 @@ fn found_place(found: Option<&Found>, home: Option<&Path>, missing: &str) -> Str
 }
 
 fn problem_line(text: &str) -> Div {
-    div().py_1().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(text.to_owned())
+    div().py_1().text_size(px(TEXT_SMALL)).text_color(rgb(palette().deleted)).child(text.to_owned())
 }
 
 pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
@@ -711,7 +711,7 @@ pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
         .child(setting(
             "Git uses",
             from.map(Into::into),
-            div().max_w(px(260.)).child(kit::fit(used).size(12.5).color(TEXT_2)),
+            div().max_w(px(260.)).child(kit::fit(used).size(12.5).color(palette().text_2)),
         ))
         .child(setting(
             "Proxy for every repository",

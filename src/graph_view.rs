@@ -599,7 +599,7 @@ pub(crate) fn picker<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             div()
                 .p_2()
                 .border_b_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .key_context("AuthorPicker")
                 .child(ui.author_picker.filter.clone()),
         )
@@ -629,11 +629,11 @@ pub(crate) fn strip<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<gpui::State
             .flex()
             .items_center()
             .gap_2()
-            .bg(rgb(RAISED))
+            .bg(rgb(palette().raised))
             .border_b_1()
-            .border_color(rgb(LINE))
-            .child(kit::icon("funnel").size(px(12.)).text_color(rgb(ACCENT)))
-            .child(kit::fit(parts.join(" · ")).size(TEXT_SMALL).color(TEXT_2).grow())
+            .border_color(rgb(palette().line))
+            .child(kit::icon("funnel").size(px(12.)).text_color(rgb(palette().accent)))
+            .child(kit::fit(parts.join(" · ")).size(TEXT_SMALL).color(palette().text_2).grow())
             .when(author, |d| {
                 d.child(kit::link("graph-filter-author", "Author…", view::Action::GraphView(Action::OpenAuthors), cx))
             })
@@ -662,11 +662,11 @@ pub(crate) fn eye<T: Desk>(
     }
     let (icon, tip, color, action, always) = if let Some(entry) = view.hidden_by(&full) {
         let tip = if entry == full { "Show in the graph".to_owned() } else { format!("Show in the graph, with everything in {}", short(entry)) };
-        ("eye-off", tip, TEXT_3, Action::Show(full), true)
+        ("eye-off", tip, palette().text_3, Action::Show(full), true)
     } else if view.solo.contains(&full) {
-        ("crosshair", "Stop soloing".to_owned(), ACCENT, Action::Unsolo(full), true)
+        ("crosshair", "Stop soloing".to_owned(), palette().accent, Action::Unsolo(full), true)
     } else {
-        ("eye", "Hide in the graph".to_owned(), TEXT_2, Action::Hide(full), false)
+        ("eye", "Hide in the graph".to_owned(), palette().text_2, Action::Hide(full), false)
     };
     let action = view::Action::GraphView(action);
     Some(
@@ -679,7 +679,7 @@ pub(crate) fn eye<T: Desk>(
             .justify_center()
             .rounded(px(4.))
             .when(!always, |d| d.invisible().group_hover(group, |s| s.visible()))
-            .hover(|s| s.bg(rgb(RAISED)))
+            .hover(|s| s.bg(rgb(palette().raised)))
             .child(kit::icon(icon).size(px(12.)).text_color(rgb(color)))
             .tooltip(kit::tip(tip))
             .on_click(cx.listener(move |app, _, w, cx| {

@@ -1074,7 +1074,7 @@ fn line<T: Desk>(id: (&'static str, usize), title: String, detail: String, on: O
         .items_center()
         .gap_3()
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .when_some(on, |d, on| d.child(radio(on)))
         .child(
             div()
@@ -1083,11 +1083,11 @@ fn line<T: Desk>(id: (&'static str, usize), title: String, detail: String, on: O
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(kit::fit(title).size(13.).color(TEXT))
-                .child(kit::fit(detail).size(TEXT_SMALL).color(TEXT_3)),
+                .child(kit::fit(title).size(13.).color(palette().text))
+                .child(kit::fit(detail).size(TEXT_SMALL).color(palette().text_3)),
         );
     match action {
-        Some(action) => kit::pressable(row.cursor_pointer().focusable().focus(|s| s.bg(rgb(HOVER))), action, cx),
+        Some(action) => kit::pressable(row.cursor_pointer().focusable().focus(|s| s.bg(rgb(palette().hover))), action, cx),
         None => row,
     }
 }
@@ -1104,9 +1104,9 @@ fn scope_row<T: Desk>(scope: Scope, chosen: bool, cx: &Context<T>) -> gpui::Stat
         .gap_2()
         .cursor_pointer()
         .text_size(px(12.5))
-        .text_color(rgb(if chosen { TEXT } else { TEXT_2 }))
+        .text_color(rgb(if chosen { palette().text } else { palette().text_2 }))
         .focusable()
-        .focus(|s| s.text_color(rgb(TEXT)))
+        .focus(|s| s.text_color(rgb(palette().text)))
         .child(radio(chosen))
         .child(scope.title());
     kit::pressable(row, view::Action::Keys(Action::SetScope(scope)), cx)
@@ -1118,8 +1118,8 @@ pub(crate) fn signing_page<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     let scope = state.scope_for(repository);
     let mut page = div().flex().flex_col();
     let signing = match &state.signing {
-        None => return page.child(note("Reading your signing settings…", TEXT_3)),
-        Some(Err(error)) => return page.child(note(error.clone(), DELETED)),
+        None => return page.child(note("Reading your signing settings…", palette().text_3)),
+        Some(Err(error)) => return page.child(note(error.clone(), palette().deleted)),
         Some(Ok(signing)) => signing,
     };
     let shown = signing.shown(scope);
@@ -1175,8 +1175,8 @@ pub(crate) fn signing_page<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             }
         }
         _ => match &state.gpg {
-            None => list = list.child(note("Reading your GPG keys…", TEXT_3)),
-            Some(Err(error)) => list = list.child(note(error.clone(), TEXT_3)),
+            None => list = list.child(note("Reading your GPG keys…", palette().text_3)),
+            Some(Err(error)) => list = list.child(note(error.clone(), palette().text_3)),
             Some(Ok(keys)) => {
                 if keys.is_empty() {
                     list = list.child(kit::muted("Your GPG keyring has no secret keys. Make one with gpg --full-generate-key."));
@@ -1214,9 +1214,9 @@ pub(crate) fn signing_page<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             cx,
         ));
     if saving {
-        page = page.child(note("Saving…", TEXT_3));
+        page = page.child(note("Saving…", palette().text_3));
     }
-    page.when_some(state.error.clone(), |d, error| d.child(note(error, DELETED)))
+    page.when_some(state.error.clone(), |d, error| d.child(note(error, palette().deleted)))
 }
 
 pub(crate) fn ssh_page<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
@@ -1227,8 +1227,8 @@ pub(crate) fn ssh_page<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     let used = state.used_here();
     let mut list = div().flex().flex_col();
     match &state.ssh {
-        None => list = list.child(note("Reading your SSH keys…", TEXT_3)),
-        Some(Err(error)) => list = list.child(note(error.clone(), DELETED)),
+        None => list = list.child(note("Reading your SSH keys…", palette().text_3)),
+        Some(Err(error)) => list = list.child(note(error.clone(), palette().deleted)),
         Some(Ok(keys)) if keys.is_empty() => list = list.child(kit::muted(format!("No SSH keys in {folder} yet."))),
         Some(Ok(keys)) => {
             for (index, key) in keys.iter().enumerate() {
@@ -1263,7 +1263,7 @@ pub(crate) fn ssh_page<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
                         .items_center()
                         .gap_3()
                         .border_b_1()
-                        .border_color(rgb(LINE))
+                        .border_color(rgb(palette().line))
                         .child(
                             div()
                                 .flex_1()
@@ -1271,8 +1271,8 @@ pub(crate) fn ssh_page<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
                                 .flex()
                                 .flex_col()
                                 .gap(px(2.))
-                                .child(kit::fit(key.name()).size(13.).color(TEXT))
-                                .child(kit::fit(key.detail()).size(TEXT_SMALL).color(TEXT_3)),
+                                .child(kit::fit(key.name()).size(13.).color(palette().text))
+                                .child(kit::fit(key.detail()).size(TEXT_SMALL).color(palette().text_3)),
                         )
                         .child(controls),
                 );
@@ -1282,7 +1282,7 @@ pub(crate) fn ssh_page<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     let mut agent = div().flex().flex_col();
     match &state.agent {
         None => {}
-        Some(Err(error)) => agent = agent.child(note(error.clone(), TEXT_3)),
+        Some(Err(error)) => agent = agent.child(note(error.clone(), palette().text_3)),
         Some(Ok(keys)) if keys.is_empty() => agent = agent.child(kit::muted("The agent holds no keys.")),
         Some(Ok(keys)) => {
             for (index, key) in keys.iter().enumerate() {
@@ -1331,7 +1331,7 @@ pub(crate) fn ssh_page<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     page.child(group("ADD A KEY TO YOUR HOST"))
         .child(kit::muted("Copy a public key above, then paste it on your host's page for SSH keys."))
         .child(hosts)
-        .when_some(state.error.clone(), |d, error| d.child(note(error, DELETED)))
+        .when_some(state.error.clone(), |d, error| d.child(note(error, palette().deleted)))
 }
 
 #[cfg(test)]

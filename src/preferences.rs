@@ -332,7 +332,7 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex_col()
         .gap_1()
         .p_3()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .child(div().px_2().pb_1().child(kit::label("PREFERENCES")));
     let row = |section: Section, cx: &Context<T>| {
         let chosen = state.section == section;
@@ -341,9 +341,9 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .px_2()
             .rounded(px(RADIUS_CHIP))
             .text_size(px(12.5))
-            .text_color(rgb(if chosen { TEXT } else { TEXT_2 }))
+            .text_color(rgb(if chosen { palette().text } else { palette().text_2 }))
             .child(kit::fit(section.title(ui)).size(12.5));
-        kit::pressable(item.focusable().focus(|s| s.border_color(rgb(ACCENT))), view::Action::Preferences(Action::Show(section)), cx)
+        kit::pressable(item.focusable().focus(|s| s.border_color(rgb(palette().accent))), view::Action::Preferences(Action::Show(section)), cx)
     };
     for section in sections(false) {
         nav = nav.child(row(section, cx));
@@ -398,7 +398,7 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .min_h_0()
         .flex()
         .child(nav)
-        .child(div().w(px(1.)).h_full().flex_shrink_0().bg(rgb(LINE)))
+        .child(div().w(px(1.)).h_full().flex_shrink_0().bg(rgb(palette().line)))
         .child(content)
 }
 
@@ -407,7 +407,7 @@ fn heading(title: impl Into<SharedString>) -> Div {
         .pb_2()
         .text_size(px(TEXT_TITLE))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(TEXT))
+        .text_color(rgb(palette().text))
         .child(title.into())
 }
 
@@ -422,7 +422,7 @@ pub(crate) fn setting(title: impl Into<SharedString>, help: Option<SharedString>
         .items_center()
         .gap_4()
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(
             div()
                 .flex_1()
@@ -430,7 +430,7 @@ pub(crate) fn setting(title: impl Into<SharedString>, help: Option<SharedString>
                 .flex()
                 .flex_col()
                 .gap(px(3.))
-                .child(div().text_size(px(13.)).text_color(rgb(TEXT)).child(title.into()))
+                .child(div().text_size(px(13.)).text_color(rgb(palette().text)).child(title.into()))
                 .when_some(help, |d, help| d.child(kit::muted(help))),
         )
         .child(div().flex_shrink_0().child(control))
@@ -451,10 +451,10 @@ pub(crate) fn tick<T: Desk>(
         .items_start()
         .gap_3()
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .cursor_pointer()
         .focusable()
-        .focus(|s| s.bg(rgb(HOVER)))
+        .focus(|s| s.bg(rgb(palette().hover)))
         .child(div().pt(px(2.)).child(kit::checkbox(on)))
         .child(
             div()
@@ -463,7 +463,7 @@ pub(crate) fn tick<T: Desk>(
                 .flex()
                 .flex_col()
                 .gap(px(3.))
-                .child(div().text_size(px(13.)).text_color(rgb(TEXT)).child(title))
+                .child(div().text_size(px(13.)).text_color(rgb(palette().text)).child(title))
                 .child(kit::muted(help)),
         );
     kit::pressable(row, action, cx)
@@ -505,7 +505,7 @@ fn general<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(div().max_w(px(220.)).child(kit::fit(folder_text).size(12.5).color(TEXT_2)))
+                .child(div().max_w(px(220.)).child(kit::fit(folder_text).size(12.5).color(palette().text_2)))
                 .when(folder.is_some(), |d| {
                     d.child(kit::link(
                         "preferences-clone-reset",
@@ -561,7 +561,7 @@ fn accounts<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     let ui = app.ui();
     let saved = match ui.preferences.saved() {
         None => div().py_2().child(kit::muted("Reading saved passwords…")),
-        Some(Err(error)) => div().py_2().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(error.clone()),
+        Some(Err(error)) => div().py_2().text_size(px(TEXT_SMALL)).text_color(rgb(palette().deleted)).child(error.clone()),
         Some(Ok(entries)) if entries.is_empty() => {
             div().py_2().child(kit::muted("FastKraken has not saved a password for any host."))
         }
@@ -659,9 +659,9 @@ fn repository<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             .gap_2()
             .cursor_pointer()
             .text_size(px(12.5))
-            .text_color(rgb(TEXT_2))
+            .text_color(rgb(palette().text_2))
             .focusable()
-            .focus(|s| s.text_color(rgb(TEXT)))
+            .focus(|s| s.text_color(rgb(palette().text)))
             .child(radio(ui.merge.mode == mode))
             .child(mode.title());
         merges = merges.child(kit::pressable(row, view::Action::Merge(crate::merge::Action::SetDefault(mode)), cx));
@@ -701,9 +701,9 @@ pub(crate) fn radio(on: bool) -> Div {
         .justify_center()
         .rounded_full()
         .border_1()
-        .border_color(rgb(if on { ACCENT } else { LINE_STRONG }))
-        .bg(rgb(CANVAS))
-        .when(on, |d| d.child(div().size(px(6.)).rounded_full().bg(rgb(ACCENT))))
+        .border_color(rgb(if on { palette().accent } else { palette().line_strong }))
+        .bg(rgb(palette().canvas))
+        .when(on, |d| d.child(div().size(px(6.)).rounded_full().bg(rgb(palette().accent))))
 }
 
 fn shortcuts<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {

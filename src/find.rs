@@ -417,10 +417,10 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
 }
 
 pub(crate) fn styles() -> (HighlightStyle, HighlightStyle) {
-    let found = HighlightStyle { background_color: Some(rgb(FIND_MATCH).into()), ..Default::default() };
+    let found = HighlightStyle { background_color: Some(rgb(palette().find_match).into()), ..Default::default() };
     let focus = HighlightStyle {
-        background_color: Some(rgb(FIND_CURRENT).into()),
-        color: Some(rgb(FIND_CURRENT_INK).into()),
+        background_color: Some(rgb(palette().find_current).into()),
+        color: Some(rgb(palette().find_current_ink).into()),
         ..Default::default()
     };
     (found, focus)
@@ -469,17 +469,17 @@ pub(crate) fn bar<T: Desk>(app: &T, surface: Surface, cx: &Context<T>) -> Option
             .flex()
             .items_center()
             .gap_2()
-            .bg(rgb(PANEL))
+            .bg(rgb(palette().panel))
             .border_b_1()
-            .border_color(rgb(LINE))
-            .child(kit::icon("search").text_color(rgb(TEXT_3)))
+            .border_color(rgb(palette().line))
+            .child(kit::icon("search").text_color(rgb(palette().text_3)))
             .child(div().w(px(240.)).flex_shrink_0().child(state.input.clone()))
             .child(
                 div()
                     .min_w(px(70.))
                     .flex_shrink_0()
                     .text_size(px(TEXT_SMALL))
-                    .text_color(rgb(if stepping || state.query.is_empty() { TEXT_2 } else { DELETED }))
+                    .text_color(rgb(if stepping || state.query.is_empty() { palette().text_2 } else { palette().deleted }))
                     .children(state.counter()),
             )
             .child(step("find-previous", "chevron-up", "Previous match (⇧⌘G)", -1))

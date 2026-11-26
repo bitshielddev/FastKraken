@@ -1473,8 +1473,8 @@ fn sidebar_filter<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement {
                             .justify_center()
                             .rounded(px(4.))
                             .cursor_pointer()
-                            .hover(|s| s.bg(rgb(HOVER)))
-                            .child(kit::icon("x").size(px(11.)).text_color(rgb(TEXT_3)))
+                            .hover(|s| s.bg(rgb(palette().hover)))
+                            .child(kit::icon("x").size(px(11.)).text_color(rgb(palette().text_3)))
                             .tooltip(kit::tip("Clear the filter (Esc)"))
                             .on_click(cx.listener(|app, _, w, cx| {
                                 cx.stop_propagation();
@@ -1656,9 +1656,9 @@ fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .gap(px(6.))
         .pl(px(if cfg!(target_os = "macos") { 78. } else { 12. }))
         .pr(px(10.))
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .on_mouse_down(MouseButton::Left, |event, window, _| {
             if event.click_count > 1 {
                 window.titlebar_double_click();
@@ -1686,7 +1686,7 @@ fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     )
     .when(!ui.branch.is_empty(), |d| {
         let ready = !ui.operation.active() && !ui.busy();
-        d.child(div().text_color(rgb(TEXT_OFF)).child("/")).child(
+        d.child(div().text_color(rgb(palette().text_off)).child("/")).child(
             held(
                 kit::btn("branch-selector", ui.branch.clone())
                     .ghost()
@@ -1707,7 +1707,7 @@ fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .h(px(18.))
             .mx_1()
             .flex_shrink_0()
-            .bg(rgb(LINE_STRONG)),
+            .bg(rgb(palette().line_strong)),
     )
     .child(held(crate::sync::toolbar(app, cx)))
     .child(kit::grow())
@@ -2008,8 +2008,8 @@ fn change_bar(size: crate::changes::Size, most: u32, room: f32) -> Div {
         .flex()
         .rounded(px(2.))
         .overflow_hidden()
-        .child(div().h_full().w(px(added)).bg(rgb(ADDED)))
-        .child(div().h_full().flex_1().bg(rgb(DELETED)))
+        .child(div().h_full().w(px(added)).bg(rgb(palette().added)))
+        .child(div().h_full().flex_1().bg(rgb(palette().deleted)))
 }
 
 fn tipped<F: Fn(&mut Window, &mut App) -> gpui::AnyView + 'static>(
@@ -2046,7 +2046,7 @@ fn history_metadata(
     pointed: bool,
 ) -> Div {
     let Written { author, email, date, time, oid } = written;
-    let color = if selected { TEXT_2 } else { TEXT_3 };
+    let color = if selected { palette().text_2 } else { palette().text_3 };
     let named = widths.author >= crate::columns::NAMED_AUTHOR;
     div()
         .flex()
@@ -2064,7 +2064,7 @@ fn history_metadata(
                 .gap(px(6.))
                 .child(kit::avatar(author))
                 .when(named, |d| {
-                    let name = kit::fit(author.to_owned()).size(12.5).color(TEXT_2).grow();
+                    let name = kit::fit(author.to_owned()).size(12.5).color(palette().text_2).grow();
                     d.child(if pointed { name.clipped(&clipped) } else { name })
                 });
             let cell = if !pointed {
@@ -2109,7 +2109,7 @@ fn subject_cell(id: &'static str, subject: &str, body: Option<&str>, color: u32,
         .flex()
         .items_center()
         .child(if body.is_some() { text } else { text.grow() })
-        .when_some(body, |d, body| d.child(kit::fit(format!("   {body}")).color(TEXT_3).grow()));
+        .when_some(body, |d, body| d.child(kit::fit(format!("   {body}")).color(palette().text_3).grow()));
     if pointed {
         cell.id(id).tooltip(kit::tip_when_clipped(subject, &clipped)).into_any_element()
     } else {
@@ -2182,7 +2182,7 @@ fn history_tail<T: Desk>(ui: &Ui, graph_width: Pixels, cx: &Context<T>) -> gpui:
         .child(
             div()
                 .text_size(px(TEXT_SMALL))
-                .text_color(rgb(TEXT_3))
+                .text_color(rgb(palette().text_3))
                 .whitespace_nowrap()
                 .child(crate::paging::tail(ui).unwrap_or_default()),
         )
@@ -2208,8 +2208,8 @@ fn heading_divider<T: Desk>(column: crate::columns::Column, at_right: bool, cx: 
             div()
                 .w(px(1.))
                 .h_full()
-                .bg(rgb(LINE))
-                .group_hover("column-divider", |style| style.bg(rgb(LINE_STRONG))),
+                .bg(rgb(palette().line))
+                .group_hover("column-divider", |style| style.bg(rgb(palette().line_strong))),
         )
         .on_mouse_down(
             MouseButton::Left,
@@ -2262,7 +2262,7 @@ fn author_heading<T: Desk>(ui: &Ui, title: Option<&'static str>, cx: &Context<T>
             kit::icon("funnel")
                 .size(px(11.))
                 .flex_shrink_0()
-                .text_color(rgb(if chosen.is_some() { ACCENT } else { TEXT_3 })),
+                .text_color(rgb(if chosen.is_some() { palette().accent } else { palette().text_3 })),
         )
         .tooltip(kit::tip(tip))
         .on_click(cx.listener(|app, _, w, cx| {
@@ -2290,8 +2290,8 @@ fn graph_heading<T: Desk>(ui: &Ui, cx: &Context<T>) -> gpui::AnyElement {
                     .justify_center()
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .child(kit::icon("pin").size(px(11.)).text_color(rgb(TEXT_3)))
-                    .hover(|s| s.bg(rgb(RAISED)))
+                    .child(kit::icon("pin").size(px(11.)).text_color(rgb(palette().text_3)))
+                    .hover(|s| s.bg(rgb(palette().raised)))
                     .tooltip(kit::tip("Jump to the pinned branch".to_owned()))
                     .on_click(cx.listener(|app, _, w, cx| {
                         cx.stop_propagation();
@@ -2323,9 +2323,9 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .pl(px(crate::columns::ROW_EDGE))
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(|app, event: &MouseDownEvent, w, cx| {
@@ -2413,7 +2413,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                         .items_center()
                                         .gap(px(6.))
                                         .child(kit::chip(kit::Chip::Stash, "stash"))
-                                        .child(subject_cell("subject", &entry.title, None, TEXT_2, pointed == Some(index))),
+                                        .child(subject_cell("subject", &entry.title, None, palette().text_2, pointed == Some(index))),
                                 )
                                 .child(history_metadata(
                                     Written { author: &entry.author, email: "", date: &entry.date, time: entry.time, oid: &entry.oid },
@@ -2461,7 +2461,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     };
                     shown_row
                         .h(px(ROW))
-                        .when(marked && !active, |d| d.bg(soft(FIND_MATCH, 0x8c)).border_color(rgb(FIND_CURRENT)))
+                        .when(marked && !active, |d| d.bg(soft(palette().find_match, 0x8c)).border_color(rgb(palette().find_current)))
                         .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
                             if !cx.has_active_drag() {
                                 click_commit(app, &oid, event.modifiers(), w, cx)
@@ -2504,11 +2504,11 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                     &row.subject,
                                     ui.bodies.then_some(row.body.as_str()),
                                     if marking && !marked {
-                                        TEXT_3
+                                        palette().text_3
                                     } else if merge {
-                                        TEXT_2
+                                        palette().text_2
                                     } else {
-                                        TEXT
+                                        palette().text
                                     },
                                     pointed == Some(index),
                                 )),
@@ -2570,7 +2570,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                         .rounded_full()
                                         .border_1()
                                         .border_dashed()
-                                        .border_color(rgb(if conflicted { CONFLICT } else { ACCENT })),
+                                        .border_color(rgb(if conflicted { palette().conflict } else { palette().accent })),
                                 ),
                         )
                     })
@@ -2582,11 +2582,11 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                             .items_center()
                             .gap_2()
                             .child(if conflicted {
-                                kit::any(kit::fit(title).color(CONFLICT).weight(FontWeight::MEDIUM))
+                                kit::any(kit::fit(title).color(palette().conflict).weight(FontWeight::MEDIUM))
                             } else {
                                 kit::any(div().flex_shrink_0().child(title))
                             })
-                            .child(kit::fit(summary).size(TEXT_SMALL).color(TEXT_3).grow()),
+                            .child(kit::fit(summary).size(TEXT_SMALL).color(palette().text_3).grow()),
                     )
                     .on_click(cx.listener(|app, event: &gpui::ClickEvent, w, cx| match crate::compare::how(event.modifiers()) {
                         Some(how) => {
@@ -2618,7 +2618,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     .justify_center()
                     .gap_1()
                     .child(div().text_size(px(TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).child(NO_COMMITS.0))
-                    .child(div().text_color(rgb(TEXT_2)).child(NO_COMMITS.1)),
+                    .child(div().text_color(rgb(palette().text_2)).child(NO_COMMITS.1)),
             )
         })
 }
@@ -2843,7 +2843,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .items_center()
         .gap_2()
         .text_size(px(TEXT_SMALL))
-        .text_color(rgb(TEXT_2))
+        .text_color(rgb(palette().text_2))
         .rounded(px(4.))
         .border_1()
         .border_color(kit::clear())
@@ -2851,7 +2851,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .child("Amend last commit")
         .tooltip(kit::tip("Replace the last commit with this message and any staged changes."))
         .when(ui.can_edit_index() && ui.head.is_some(), |d| {
-            let d = d.cursor_pointer().focusable().focus(|s| s.border_color(rgb(ACCENT)));
+            let d = d.cursor_pointer().focusable().focus(|s| s.border_color(rgb(palette().accent)));
             kit::pressable(d, Action::ToggleAmend, cx)
         })
         .when(!ui.can_edit_index() || ui.head.is_none(), |d| d.opacity(0.42));
@@ -2882,7 +2882,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .p_3()
                 .flex_shrink_0()
                 .border_t_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(palette().line))
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -2912,7 +2912,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         div()
                             .id("amend-pushed")
                             .text_size(px(TEXT_SMALL))
-                            .text_color(rgb(MODIFIED))
+                            .text_color(rgb(palette().modified))
                             .child(warning),
                     )
                 })
@@ -2968,20 +2968,20 @@ fn detached_note<T: Desk>(app: &T, warning: &'static str, cx: &mut Context<T>) -
         .gap_2()
         .rounded(px(RADIUS))
         .border_1()
-        .border_color(rgb(LINE_STRONG))
-        .bg(rgb(RAISED))
+        .border_color(rgb(palette().line_strong))
+        .bg(rgb(palette().raised))
         .child(
             div()
                 .flex()
                 .items_start()
                 .gap_2()
-                .child(kit::icon("alert").size(px(14.)).mt(px(1.)).flex_shrink_0().text_color(rgb(MODIFIED)))
+                .child(kit::icon("alert").size(px(14.)).mt(px(1.)).flex_shrink_0().text_color(rgb(palette().modified)))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .text_size(px(TEXT_SMALL))
-                        .text_color(rgb(TEXT_2))
+                        .text_color(rgb(palette().text_2))
                         .child(warning),
                 ),
         )
@@ -3050,7 +3050,7 @@ fn panel<T: Desk>(app: &T, width: Pixels, cx: &mut Context<T>) -> Div {
         .flex()
         .flex_col()
         .overflow_hidden()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .children(crate::operation::reminder_strip(app, cx));
     match &ui.selection {
         Some(Selection::Changes | Selection::File { .. }) => shell.child(changes(app, cx)),
@@ -3138,10 +3138,10 @@ fn divider<T: Desk>(column: Column, cx: &Context<T>) -> impl IntoElement + use<T
         .flex_shrink_0()
         .flex()
         .justify_center()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .cursor(CursorStyle::ResizeLeftRight)
-        .hover(|style| style.bg(rgb(LINE_STRONG)))
-        .child(div().w(px(1.)).h_full().bg(rgb(LINE)))
+        .hover(|style| style.bg(rgb(palette().line_strong)))
+        .child(div().w(px(1.)).h_full().bg(rgb(palette().line)))
         .on_drag(column, move |column, _, window, cx| {
             let _ = tab.update(cx, |app, cx| {
                 resize_column(app, *column, window.mouse_position().x, window, cx);
@@ -3242,8 +3242,8 @@ pub fn render<T: Desk>(
         .relative()
         .flex()
         .flex_col()
-        .bg(rgb(CANVAS))
-        .text_color(rgb(TEXT))
+        .bg(rgb(palette().canvas))
+        .text_color(rgb(palette().text))
         .text_size(px(TEXT_BASE))
         .on_drag_move(cx.listener(|app, event: &DragMoveEvent<Column>, w, cx| {
             let column = *event.drag(cx);
@@ -3456,7 +3456,7 @@ pub fn render<T: Desk>(
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(rgb(PANEL))
+            .bg(rgb(palette().panel))
             .child(sidebar_filter(app, cx))
             .child(crate::refs::sidebar(app, cx))
             .child(kit::scrollbar("sidebar-scrollbar", &ui.refs.scroll));

@@ -380,9 +380,9 @@ fn mini<T: Desk>(
         .text_size(px(11.5))
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
-        .text_color(rgb(if danger { DELETED } else { TEXT }))
+        .text_color(rgb(if danger { palette().deleted } else { palette().text }))
         .when(!danger, |d| {
-            d.bg(rgb(RAISED)).border_1().border_color(rgb(LINE_STRONG))
+            d.bg(rgb(palette().raised)).border_1().border_color(rgb(palette().line_strong))
         })
         .child(label);
     if !enabled {
@@ -391,9 +391,9 @@ fn mini<T: Desk>(
     base.cursor_pointer()
         .hover(move |s| {
             s.bg(if danger {
-                soft(DELETED, 0x26)
+                soft(palette().deleted, 0x26)
             } else {
-                rgb(HOVER)
+                rgb(palette().hover)
             })
         })
         .on_click(cx.listener(move |app, _, w, cx| app.dispatch(action.clone(), w, cx)))
@@ -449,9 +449,9 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
             .items_center()
             .gap_x_2()
             .gap_y_1()
-            .bg(rgb(PANEL))
+            .bg(rgb(palette().panel))
             .border_b_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(palette().line))
             .child(
                 kit::fit(match &open_file {
                     Some(path) => path.to_string_lossy().into_owned(),
@@ -465,7 +465,7 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                 d.child(
                     kit::fit(format!("from {}", from.display()))
                         .size(11.5)
-                        .color(TEXT_3)
+                        .color(palette().text_3)
                         .cut(kit::Cut::Start),
                 )
             })
@@ -599,9 +599,9 @@ pub(super) fn render<T: Desk>(app: &T, window: &Window, cx: &mut Context<T>) -> 
                             let path = text.rsplit_once(" b/").map_or(text, |(_, path)| path);
                             base_row(face)
                                 .pl_3()
-                                .bg(rgb(PANEL))
+                                .bg(rgb(palette().panel))
                                 .border_b_1()
-                                .border_color(rgb(LINE))
+                                .border_color(rgb(palette().line))
                                 .child(kit::fit(path.to_owned()).size(12.5).weight(FontWeight::SEMIBOLD))
                         }
                         Kind::Note | Kind::NoNewline => base_row(face)
@@ -726,9 +726,9 @@ fn blame_header<T: Desk>(ui: &Ui, cx: &Context<T>) -> Div {
         .items_center()
         .gap_x_2()
         .gap_y_1()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(kit::fit(path).size(12.5).weight(FontWeight::SEMIBOLD).cut(kit::Cut::Start))
         .when(!at.is_empty(), |d| d.child(kit::chip(kit::Chip::Plain, at)))
         .when(ui.blame.reading(), |d| d.child(kit::spinner("blame-header-reading")))
@@ -752,9 +752,9 @@ fn browse_header<T: Desk>(ui: &Ui, cx: &Context<T>) -> Div {
         .items_center()
         .gap_x_2()
         .gap_y_1()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(kit::fit(path).size(12.5).weight(FontWeight::SEMIBOLD).cut(kit::Cut::Start))
         .child(kit::chip(kit::Chip::Plain, at))
         .when(crate::browse::ignored(ui), |d| d.child(kit::chip(kit::Chip::Plain, "Ignored")))
@@ -821,7 +821,7 @@ fn placeholder(ui: &Ui, renamed: bool) -> Div {
                 .max_w(px(420.))
                 .text_center()
                 .text_size(px(TEXT_SMALL))
-                .text_color(rgb(TEXT_2))
+                .text_color(rgb(palette().text_2))
                 .child(text),
         )
 }
@@ -859,16 +859,16 @@ fn bars(ui: &Ui) -> Vec<Div> {
                 .flex()
                 .items_center()
                 .gap_2()
-                .bg(rgb(RAISED))
+                .bg(rgb(palette().raised))
                 .border_b_1()
-                .border_color(rgb(LINE))
-                .child(kit::icon("alert").text_color(rgb(MODIFIED)))
+                .border_color(rgb(palette().line))
+                .child(kit::icon("alert").text_color(rgb(palette().modified)))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .text_size(px(TEXT_SMALL))
-                        .text_color(rgb(TEXT_2))
+                        .text_color(rgb(palette().text_2))
                         .child(text),
                 )
         })
@@ -917,9 +917,9 @@ fn options_control<T: Desk>(ui: &Ui, file_view: bool, cx: &Context<T>) -> Div {
                     .items_center()
                     .p(px(1.))
                     .rounded(px(RADIUS))
-                    .bg(rgb(CANVAS))
+                    .bg(rgb(palette().canvas))
                     .border_1()
-                    .border_color(rgb(LINE))
+                    .border_color(rgb(palette().line))
                     .child(context("diff-hunks", "3 lines", false))
                     .child(context("diff-whole-file", "Whole file", true)),
             )
@@ -971,9 +971,9 @@ fn mode_control<T: Desk>(mode: Mode, cx: &Context<T>) -> Div {
         .flex_shrink_0()
         .p(px(1.))
         .rounded(px(RADIUS))
-        .bg(rgb(CANVAS))
+        .bg(rgb(palette().canvas))
         .border_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(segment("diff-unified", "Unified", Mode::Unified))
         .child(segment("diff-split", "Split", Mode::Split))
 }
@@ -1001,7 +1001,7 @@ fn base_row(face: &Face) -> Div {
 }
 
 fn split_divider() -> Div {
-    div().w(px(1.)).h_full().flex_shrink_0().bg(rgb(LINE))
+    div().w(px(1.)).h_full().flex_shrink_0().bg(rgb(palette().line))
 }
 
 fn split_headings() -> Div {
@@ -1011,11 +1011,11 @@ fn split_headings() -> Div {
         .flex()
         .items_center()
         .flex_shrink_0()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .text_size(px(TEXT_TINY))
-        .text_color(rgb(TEXT_2))
+        .text_color(rgb(palette().text_2))
         .child(div().pl_3().flex_1().child("Before"))
         .child(split_divider())
         .child(div().pl_3().flex_1().child("After"))
@@ -1043,7 +1043,7 @@ fn split_cell<T: Desk>(
         .overflow_hidden();
     let doc = &ui.diff;
     let Some((at, row)) = side.and_then(|i| Some((i, doc.lines.get(i)?))) else {
-        return cell.bg(rgb(PANEL));
+        return cell.bg(rgb(palette().panel));
     };
     if row.kind == Kind::NoNewline {
         return if part == 0 { cell.pl_3().child(note(doc.text(row))) } else { cell };
@@ -1075,8 +1075,8 @@ fn split_cell<T: Desk>(
 
 fn line_background(kind: Kind) -> Option<u32> {
     match kind {
-        Kind::Added => Some(ADDED_BG),
-        Kind::Deleted => Some(DELETED_BG),
+        Kind::Added => Some(palette().added_bg),
+        Kind::Deleted => Some(palette().deleted_bg),
         _ => None,
     }
 }
@@ -1090,15 +1090,15 @@ fn number(face: &Face, number: Option<u32>, width: f32) -> Div {
         .justify_end()
         .font_family(face.family.clone())
         .text_size(face.small())
-        .text_color(rgb(TEXT_OFF))
+        .text_color(rgb(palette().text_off))
         .when_some(number, |d, number| d.child(number.to_string()))
 }
 
 fn marker(face: &Face, kind: Kind) -> Div {
     let (sign, ink) = match kind {
-        Kind::Added => ("+", ADDED),
-        Kind::Deleted => ("−", DELETED),
-        _ => ("", TEXT_3),
+        Kind::Added => ("+", palette().added),
+        Kind::Deleted => ("−", palette().deleted),
+        _ => ("", palette().text_3),
     };
     div()
         .w(px(face.marker()))
@@ -1112,7 +1112,7 @@ fn marker(face: &Face, kind: Kind) -> Div {
 }
 
 pub(crate) fn highlights(ui: &Ui, index: usize, row: &Line, column: Column) -> Vec<(Range<usize>, HighlightStyle)> {
-    let color = if row.kind == Kind::Added { ADDED_HI } else { DELETED_HI };
+    let color = if row.kind == Kind::Added { palette().added_hi } else { palette().deleted_hi };
     let chosen: Vec<Range<usize>> = diff_select::span(ui, index, column).into_iter().collect();
     let (found, focus) = crate::find::marks(ui, crate::find::Pane::Diff, index);
     Marks { chosen: &chosen, found: &found, focus: &focus, words: &row.words, changed: color, syntax: &row.syntax }.runs()
@@ -1134,7 +1134,7 @@ impl Marks<'_> {
             ..Default::default()
         };
         let selected = HighlightStyle {
-            background_color: Some(rgb(TEXT_SELECTION).into()),
+            background_color: Some(rgb(palette().text_selection).into()),
             ..Default::default()
         };
         let (chosen, found, focus, words, syntax) = (self.chosen, self.found, self.focus, self.words, self.syntax);
@@ -1158,7 +1158,7 @@ impl Marks<'_> {
             })
             .filter(|layer| !layer.0.is_empty())
             .collect();
-        let readable = HighlightStyle { color: Some(rgb(TEXT).into()), ..Default::default() };
+        let readable = HighlightStyle { color: Some(rgb(palette().text).into()), ..Default::default() };
         let chosen_focus: Vec<Range<usize>> = chosen
             .iter()
             .flat_map(|chosen| focus.iter().map(move |hit| chosen.start.max(hit.start)..chosen.end.min(hit.end)))
@@ -1211,14 +1211,14 @@ pub(crate) fn drawn(face: &Face, text: &str, highlights: Vec<(Range<usize>, High
         .font_family(face.family.clone())
         .whitespace_nowrap()
         .text_size(face.text())
-        .text_color(rgb(TEXT))
+        .text_color(rgb(palette().text))
         .child(StyledText::new(text).with_highlights(highlights))
 }
 
 fn note(text: &str) -> impl IntoElement {
     kit::fit(text.trim_start_matches("\\ ").to_owned())
         .size(TEXT_SMALL)
-        .color(TEXT_3)
+        .color(palette().text_3)
 }
 
 fn hunk_row<T: Desk>(
@@ -1240,23 +1240,23 @@ fn hunk_row<T: Desk>(
         .pl_3()
         .pr_2()
         .gap_2()
-        .bg(rgb(HUNK))
+        .bg(rgb(palette().hunk))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .font_family(face.family.clone())
         .text_size(hunk_size)
         .whitespace_nowrap()
         .child(
             div()
                 .flex_shrink_0()
-                .text_color(rgb(TEXT_3))
+                .text_color(rgb(palette().text_3))
                 .child(format!("@@ {range} @@")),
         )
         .when(split, |d| {
-            d.child(kit::fit(context.to_owned()).family(face.family.clone()).size(f32::from(hunk_size)).color(TEXT_2).grow())
+            d.child(kit::fit(context.to_owned()).family(face.family.clone()).size(f32::from(hunk_size)).color(palette().text_2).grow())
         })
         .when(!split, |d| {
-            d.child(div().text_color(rgb(TEXT_2)).child(context.to_owned()))
+            d.child(div().text_color(rgb(palette().text_2)).child(context.to_owned()))
         });
     let row = row.when_some(undo, |d, hunk| {
         d.child(
@@ -1310,12 +1310,12 @@ mod tests {
     #[test]
     fn layered_highlights_split_into_runs_that_do_not_overlap_and_the_first_layer_wins() {
         let paint = |color: u32| HighlightStyle { background_color: Some(rgb(color).into()), ..Default::default() };
-        let (top, under) = (paint(TEXT_SELECTION), paint(ADDED_HI));
+        let (top, under) = (paint(palette().text_selection), paint(palette().added_hi));
         let runs = layered(&[(&[2..6], top), (&[0..3, 5..9], under)]);
         assert_eq!(runs, [(0..2, under), (2..6, top), (6..9, under)]);
         assert_eq!(layered(&[(&[], top), (&[1..4], under)]), [(1..4, under)]);
         assert_eq!(layered(&[(&[0..2, 2..5], top)]), [(0..5, top)]);
-        let ink = HighlightStyle { color: Some(rgb(TEXT_2).into()), ..Default::default() };
+        let ink = HighlightStyle { color: Some(rgb(palette().text_2).into()), ..Default::default() };
         let runs = layered(&[(&[0..4], top), (&[2..8], ink)]);
         assert_eq!(runs, [(0..2, top), (2..4, ink.highlight(top)), (4..8, ink)]);
         assert!(layered(&[]).is_empty());

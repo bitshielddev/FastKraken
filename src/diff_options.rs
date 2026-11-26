@@ -115,14 +115,14 @@ pub(crate) fn marks(ui: &Ui) -> Vec<Mark> {
     let split = ui.shown_mode() == DiffMode::Split;
     let mut marks: Vec<Mark> = Vec::new();
     for change in view::diff_changes(ui) {
-        let sides = [(change.deleted, DELETED), (change.added, ADDED)];
+        let sides = [(change.deleted, palette().deleted), (change.added, palette().added)];
         for (row, color) in sides.into_iter().filter_map(|(row, color)| Some((row?, color))) {
             let Some(visual) = view::diff_visual_of(ui, row) else { continue };
             let at = visual as f32 / total as f32;
             match marks.last_mut() {
                 Some(last) if (at - last.at).abs() < MARK_GAP || (split && last.at == at) => {
                     if last.color != color {
-                        last.color = MODIFIED;
+                        last.color = palette().modified;
                     }
                 }
                 _ => marks.push(Mark { at, color }),

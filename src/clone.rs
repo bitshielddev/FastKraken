@@ -777,8 +777,8 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                 .py(px(6.))
                 .rounded(px(RADIUS))
                 .border_1()
-                .border_color(rgb(LINE))
-                .bg(rgb(CANVAS))
+                .border_color(rgb(palette().line))
+                .bg(rgb(palette().canvas))
                 .child(kit::fit(request.parent.display().to_string()).cut(kit::Cut::Start).grow()),
         )
         .child(kit::btn("clone-choose", "Choose…").on(view::Action::Clone(Action::ChooseParent), cx));
@@ -809,7 +809,7 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
         .child(kit::field("Clone into", parent, None))
         .child(div().on_key_down(submit(cx)).child(kit::field("Folder name", state.name.clone(), name.map(Into::into))))
         .child(full.text_size(px(TEXT_SMALL)))
-        .when_some(taken, |d, taken| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(taken)))
+        .when_some(taken, |d, taken| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().deleted)).child(taken)))
         .child(advanced(app, &request, cx))
         .child(
             div()
@@ -844,7 +844,7 @@ fn github<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::Div
     let ui = app.ui();
     let state = &ui.cloning;
     let body = div().flex().flex_col().gap_2();
-    let problem = |text: String| div().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(text);
+    let problem = |text: String| div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().deleted)).child(text);
     match &state.listing {
         Listing::Idle | Listing::Loading => body.child(
             div()
@@ -862,7 +862,7 @@ fn github<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::Div
             } else {
                 div().flex().child(kit::btn("clone-github-connect", "Connect GitHub…").primary().on(view::Action::Clone(Action::ConnectGitHub), cx)).into_any_element()
             };
-            body.child(div().text_size(px(12.5)).text_color(rgb(TEXT)).child("Connect GitHub to list the repositories you can clone."))
+            body.child(div().text_size(px(12.5)).text_color(rgb(palette().text)).child("Connect GitHub to list the repositories you can clone."))
                 .when_some(why.clone(), |d, why| d.child(kit::muted(why)))
                 .child(connect)
         }
@@ -882,8 +882,8 @@ fn github<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::Div
                 .track_scroll(&state.list_scroll)
                 .rounded(px(RADIUS))
                 .border_1()
-                .border_color(rgb(LINE))
-                .bg(rgb(CANVAS));
+                .border_color(rgb(palette().line))
+                .bg(rgb(palette().canvas));
             if shown.is_empty() {
                 let empty = if account.repositories.is_empty() {
                     "No repositories yet on the accounts where FastKraken is installed.".to_owned()
@@ -900,9 +900,9 @@ fn github<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::Div
                     .px(px(10.))
                     .gap_2()
                     .focusable()
-                    .focus(|s| s.bg(rgb(HOVER)))
-                    .when(i > 0, |d| d.border_t_1().border_color(rgb(LINE)))
-                    .child(kit::icon(if repository.private { "lock" } else { "globe" }).size(px(12.)).text_color(rgb(TEXT_3)))
+                    .focus(|s| s.bg(rgb(palette().hover)))
+                    .when(i > 0, |d| d.border_t_1().border_color(rgb(palette().line)))
+                    .child(kit::icon(if repository.private { "lock" } else { "globe" }).size(px(12.)).text_color(rgb(palette().text_3)))
                     .child(kit::fit(full_name.clone()).size(12.5).grow())
                     .child(kit::muted(if repository.private { "Private" } else { "Public" }))
                     .when_some(pushed(repository, now), |d, pushed| d.child(kit::muted(pushed).w(px(112.)).flex().justify_end()));
@@ -939,7 +939,7 @@ fn choice<T: Desk>(state: &State, choice: Choice, title: &'static str, help: &'s
         .py(px(3.))
         .cursor_pointer()
         .focusable()
-        .focus(|s| s.bg(rgb(HOVER)))
+        .focus(|s| s.bg(rgb(palette().hover)))
         .child(div().pt(px(2.)).child(kit::checkbox(state.chosen(choice))))
         .child(
             div()
@@ -948,7 +948,7 @@ fn choice<T: Desk>(state: &State, choice: Choice, title: &'static str, help: &'s
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(div().text_size(px(12.5)).text_color(rgb(TEXT)).child(title))
+                .child(div().text_size(px(12.5)).text_color(rgb(palette().text)).child(title))
                 .child(kit::muted(help).text_size(px(11.5))),
         );
     kit::pressable(row, view::Action::Clone(Action::Toggle(choice)), cx)
@@ -964,10 +964,10 @@ fn advanced<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::D
         .gap_1()
         .cursor_pointer()
         .text_size(px(TEXT_SMALL))
-        .text_color(rgb(TEXT_2))
+        .text_color(rgb(palette().text_2))
         .focusable()
-        .focus(|s| s.text_color(rgb(TEXT)))
-        .child(kit::icon(if open { "chevron-down" } else { "chevron-right" }).size(px(12.)).text_color(rgb(TEXT_3)))
+        .focus(|s| s.text_color(rgb(palette().text)))
+        .child(kit::icon(if open { "chevron-down" } else { "chevron-right" }).size(px(12.)).text_color(rgb(palette().text_3)))
         .child("Advanced")
         .when(!open && request.options.any(), |d| d.child(kit::muted("· options chosen")));
     let body = div().flex().flex_col().gap_1().child(kit::pressable(disclosure, view::Action::Clone(Action::ToggleAdvanced), cx));
@@ -983,7 +983,7 @@ fn advanced<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::D
             .flex_col()
             .gap(px(3.))
             .child(div().w(px(width)).on_key_down(submit(cx)).child(input))
-            .when_some(problem, |d, problem| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(problem)))
+            .when_some(problem, |d, problem| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().deleted)).child(problem)))
     };
     let mut options = div().pl_1().flex().flex_col().gap_1();
     options = options.child(choice(state, Choice::Shallow, "Only the latest commits", "Downloads less history. Fetch the full history later from the end of the graph.", cx));

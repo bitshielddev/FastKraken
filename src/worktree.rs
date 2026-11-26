@@ -1161,19 +1161,19 @@ pub(crate) fn side_row<T: Desk>(ui: &Ui, index: usize, row: usize, pointed: bool
                 .flex_shrink_0()
                 .flex()
                 .justify_center()
-                .when(current, |d| d.child(div().size(px(6.)).rounded_full().bg(rgb(ACCENT)))),
+                .when(current, |d| d.child(div().size(px(6.)).rounded_full().bg(rgb(palette().accent)))),
         )
         .child(
             kit::fit(worktree.name())
                 .size(12.5)
-                .color(if current || shown { TEXT } else { TEXT_2 })
+                .color(if current || shown { palette().text } else { palette().text_2 })
                 .weight(if current { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
                 .grow(),
         )
-        .when(dirty, |d| d.child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(rgb(MODIFIED))))
-        .when(worktree.locked.is_some(), |d| d.child(kit::icon("lock").size(px(10.)).text_color(rgb(TEXT_3))))
+        .when(dirty, |d| d.child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(rgb(palette().modified))))
+        .when(worktree.locked.is_some(), |d| d.child(kit::icon("lock").size(px(10.)).text_color(rgb(palette().text_3))))
         .when(worktree.prunable.is_some(), |d| d.child(kit::label("missing")))
-        .child(div().max_w(px(110.)).flex_shrink_0().child(kit::fit(worktree.on()).size(TEXT_SMALL).color(TEXT_3)))
+        .child(div().max_w(px(110.)).flex_shrink_0().child(kit::fit(worktree.on()).size(TEXT_SMALL).color(palette().text_3)))
         .when(pointed, |d| d.tooltip(kit::tip(tip(&ui.worktree, worktree))))
         .on_click(cx.listener(move |app, event: &ClickEvent, w, cx| {
             if event.click_count() > 1 && !current {

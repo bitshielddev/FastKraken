@@ -618,13 +618,13 @@ pub(crate) fn choice<T: Desk>(
         .items_center()
         .gap_3()
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .cursor_pointer()
         .focusable()
-        .focus(|s| s.bg(rgb(HOVER)))
+        .focus(|s| s.bg(rgb(palette().hover)))
         .child(crate::preferences::radio(on))
-        .child(div().w(px(130.)).flex_shrink_0().text_size(px(13.)).text_color(rgb(TEXT)).child(title))
-        .child(div().flex_1().min_w_0().when_some(place, |d, place| d.child(kit::fit(place).size(TEXT_SMALL).color(TEXT_3))));
+        .child(div().w(px(130.)).flex_shrink_0().text_size(px(13.)).text_color(rgb(palette().text)).child(title))
+        .child(div().flex_1().min_w_0().when_some(place, |d, place| d.child(kit::fit(place).size(TEXT_SMALL).color(palette().text_3))));
     kit::pressable(item, action, cx)
 }
 

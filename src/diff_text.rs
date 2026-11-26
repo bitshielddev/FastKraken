@@ -452,7 +452,7 @@ fn preview(face: &Face) -> Div {
             .flex()
             .justify_end()
             .text_size(face.small())
-            .text_color(rgb(TEXT_OFF))
+            .text_color(rgb(palette().text_off))
             .when_some(value, |d, value| d.child(value.to_string()))
     };
     let mut rows = div()
@@ -462,15 +462,15 @@ fn preview(face: &Face) -> Div {
         .flex_col()
         .rounded(px(RADIUS))
         .border_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(CANVAS))
+        .border_color(rgb(palette().line))
+        .bg(rgb(palette().canvas))
         .overflow_hidden()
         .font_family(face.family.clone());
     for (old, new, mark, code) in SAMPLE {
         let (background, ink) = match mark {
-            '-' => (Some(DELETED_BG), DELETED),
-            '+' => (Some(ADDED_BG), ADDED),
-            _ => (None, TEXT_3),
+            '-' => (Some(palette().deleted_bg), palette().deleted),
+            '+' => (Some(palette().added_bg), palette().added),
+            _ => (None, palette().text_3),
         };
         rows = rows.child(
             div()
@@ -497,7 +497,7 @@ fn preview(face: &Face) -> Div {
                     div()
                         .whitespace_nowrap()
                         .text_size(face.text())
-                        .text_color(rgb(TEXT))
+                        .text_color(rgb(palette().text))
                         .child(StyledText::new(expanded(code, face.tab).into_owned())),
                 ),
         );

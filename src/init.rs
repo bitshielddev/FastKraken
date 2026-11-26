@@ -569,8 +569,8 @@ fn chooser<T: Desk>(path: &Path, cx: &mut Context<T>) -> impl IntoElement + use<
                 .py(px(6.))
                 .rounded(px(RADIUS))
                 .border_1()
-                .border_color(rgb(LINE))
-                .bg(rgb(CANVAS))
+                .border_color(rgb(palette().line))
+                .bg(rgb(palette().canvas))
                 .child(kit::fit(shown).cut(kit::Cut::Start).grow()),
         )
         .child(kit::btn("init-choose", "Choose…").on(view::Action::Init(Action::Choose), cx))
@@ -631,9 +631,9 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
         .rounded(px(RADIUS_CHIP))
         .text_size(px(12.5))
         .cursor_pointer()
-        .text_color(rgb(TEXT_2))
+        .text_color(rgb(palette().text_2))
         .focusable()
-        .focus(|s| s.text_color(rgb(TEXT)))
+        .focus(|s| s.text_color(rgb(palette().text)))
         .child(kit::checkbox(state.readme))
         .child(format!("Add a {README} and make it the first commit"));
     let body = body
@@ -648,14 +648,14 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                 .rounded(px(RADIUS_CHIP))
                 .text_size(px(12.5))
                 .cursor_pointer()
-                .text_color(rgb(TEXT_2))
+                .text_color(rgb(palette().text_2))
                 .focusable()
-                .focus(|s| s.text_color(rgb(TEXT)))
+                .focus(|s| s.text_color(rgb(palette().text)))
                 .child(kit::checkbox(state.lfs))
                 .child("Set up Git LFS for large files");
             d.child(kit::pressable(tick, view::Action::Init(Action::ToggleLfs), cx))
         })
-        .when_some(place, |d, place| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(place)))
+        .when_some(place, |d, place| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().deleted)).child(place)))
         .child(
             div()
                 .mt_1()

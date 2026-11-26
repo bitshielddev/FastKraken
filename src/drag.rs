@@ -58,7 +58,7 @@ impl Render for Preview {
         let left = (self.grabbed.x - px(8.)).max(px(0.));
         let top = (self.grabbed.y - px(9.)).max(px(0.));
         div().pl(left).pt(top).when(!self.inert, |d| {
-            d.child(kit::chip(self.chip, self.name.clone()).opacity(0.9).shadow(ring(LINE_STRONG)))
+            d.child(kit::chip(self.chip, self.name.clone()).opacity(0.9).shadow(ring(palette().line_strong)))
         })
     }
 }
@@ -101,8 +101,8 @@ pub(crate) fn target<T: Desk>(
                 return style;
             }
             match look {
-                Look::Row => style.bg(soft(ACCENT, 0x2e)),
-                Look::Chip => style.shadow(ring(ACCENT)),
+                Look::Row => style.bg(soft(palette().accent, 0x2e)),
+                Look::Chip => style.shadow(ring(palette().accent)),
             }
         })
         .can_drop(move |value, _, _| value.downcast_ref::<Carried>().is_some_and(|carried| accepts(carried, &checked_ends)))

@@ -524,8 +524,8 @@ fn card<T: Desk>(notice: &Notice, busy: bool, cx: &mut Context<T>) -> impl IntoE
     let id = notice.id;
     let mark = match notice.tone {
         Tone::Progress => kit::any(kit::spinner(("notice-spinner", id))),
-        Tone::Success => kit::any(kit::icon("ok").size(px(16.)).text_color(rgb(ADDED))),
-        Tone::Error => kit::any(kit::icon("alert").size(px(16.)).text_color(rgb(DELETED))),
+        Tone::Success => kit::any(kit::icon("ok").size(px(16.)).text_color(rgb(palette().added))),
+        Tone::Error => kit::any(kit::icon("alert").size(px(16.)).text_color(rgb(palette().deleted))),
         Tone::Info => kit::any(kit::icon("commit").size(px(16.))),
     };
     let output = notice.output.clone();
@@ -565,9 +565,9 @@ fn card<T: Desk>(notice: &Notice, busy: bool, cx: &mut Context<T>) -> impl IntoE
                                     .flex_shrink_0()
                                     .px(px(5.))
                                     .rounded(px(RADIUS_CHIP))
-                                    .bg(rgb(RAISED))
+                                    .bg(rgb(palette().raised))
                                     .text_size(px(TEXT_TINY))
-                                    .text_color(rgb(TEXT_2))
+                                    .text_color(rgb(palette().text_2))
                                     .child(format!("×{}", notice.count)),
                             )
                         }),
@@ -576,7 +576,7 @@ fn card<T: Desk>(notice: &Notice, busy: bool, cx: &mut Context<T>) -> impl IntoE
                     d.child(
                         div()
                             .text_size(px(TEXT_SMALL))
-                            .text_color(rgb(TEXT_2))
+                            .text_color(rgb(palette().text_2))
                             .line_clamp(4)
                             .child(notice.detail.clone()),
                     )
@@ -600,11 +600,11 @@ fn card<T: Desk>(notice: &Notice, busy: bool, cx: &mut Context<T>) -> impl IntoE
                                     .p_2()
                                     .rounded(px(RADIUS))
                                     .border_1()
-                                    .border_color(rgb(LINE))
-                                    .bg(rgb(CANVAS))
+                                    .border_color(rgb(palette().line))
+                                    .bg(rgb(palette().canvas))
                                     .font_family(MONO)
                                     .text_size(px(TEXT_TINY))
-                                    .text_color(rgb(TEXT_2))
+                                    .text_color(rgb(palette().text_2))
                                     .children(raw.lines().map(|line| div().child(line.to_owned()))),
                             )
                             .child(kit::scrollbar(("notice-output-scrollbar", notice.id as usize), &notice.output_scroll)),

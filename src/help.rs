@@ -251,7 +251,7 @@ fn about<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> gpui::Div {
                         .child(format!("FastKraken {}", env!("CARGO_PKG_VERSION"))),
                 )
                 .child(kit::muted("Git for the impatient. One repository, one window."))
-                .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(TEXT_2)).child(git)),
+                .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().text_2)).child(git)),
         )
         .child(
             div()
@@ -317,7 +317,7 @@ pub(crate) fn shortcut_list<T: Desk>(
                             .pb_1()
                             .text_size(px(TEXT_TINY))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(TEXT_3))
+                            .text_color(rgb(palette().text_3))
                             .child(section.to_uppercase()),
                         Line::Shortcut { keys, title } => div()
                             .id(("shortcut-line", index))
@@ -333,9 +333,9 @@ pub(crate) fn shortcut_list<T: Desk>(
                                     .flex_shrink_0()
                                     .px_2()
                                     .rounded(px(RADIUS_CHIP))
-                                    .bg(rgb(RAISED))
+                                    .bg(rgb(palette().raised))
                                     .text_size(px(TEXT_SMALL))
-                                    .text_color(rgb(TEXT_2))
+                                    .text_color(rgb(palette().text_2))
                                     .child(keys),
                             ),
                     })

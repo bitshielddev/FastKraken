@@ -211,7 +211,7 @@ fn holder_link<T: Desk>(index: usize, holder: &Holder, cx: &Context<T>) -> impl 
         .id(("containing-branch", index))
         .flex_shrink_0()
         .cursor_pointer()
-        .text_color(rgb(if holder.kind == Kind::Branch { ACCENT } else { REMOTE }))
+        .text_color(rgb(if holder.kind == Kind::Branch { palette().accent } else { palette().remote }))
         .hover(|style| style.underline())
         .child(holder.name.clone())
         .tooltip(kit::tip(tip))
@@ -227,8 +227,8 @@ pub(crate) fn lines<T: Desk>(ui: &view::Ui, oid: &str, cx: &Context<T>) -> Optio
         .items_center()
         .gap_x(px(4.))
         .text_size(px(TEXT_SMALL))
-        .text_color(rgb(TEXT_3))
-        .child(kit::icon("branch").size(px(11.)).text_color(rgb(TEXT_3)))
+        .text_color(rgb(palette().text_3))
+        .child(kit::icon("branch").size(px(11.)).text_color(rgb(palette().text_3)))
         .child(if shown.is_empty() { "Not on any branch" } else { "On" });
     for (index, holder) in shown.iter().enumerate() {
         let after = shown.len() - index - 1;
@@ -243,7 +243,7 @@ pub(crate) fn lines<T: Desk>(ui: &view::Ui, oid: &str, cx: &Context<T>) -> Optio
         on = on.child(
             div()
                 .id("containing-more")
-                .text_color(rgb(TEXT_2))
+                .text_color(rgb(palette().text_2))
                 .child(format!("{more} more"))
                 .tooltip(kit::tip(rest(found))),
         );
@@ -255,14 +255,14 @@ pub(crate) fn lines<T: Desk>(ui: &view::Ui, oid: &str, cx: &Context<T>) -> Optio
                 .items_center()
                 .gap_x(px(4.))
                 .text_size(px(TEXT_SMALL))
-                .text_color(rgb(TEXT_3))
-                .child(kit::icon("tag").size(px(11.)).text_color(rgb(TEXT_3)))
+                .text_color(rgb(palette().text_3))
+                .child(kit::icon("tag").size(px(11.)).text_color(rgb(palette().text_3)))
                 .child("First in")
                 .child(
                     div()
                         .id("containing-tag")
                         .cursor_pointer()
-                        .text_color(rgb(TAG))
+                        .text_color(rgb(palette().tag))
                         .hover(|style| style.underline())
                         .child(tag.clone())
                         .tooltip(kit::tip(format!("Show {tag} in the graph")))

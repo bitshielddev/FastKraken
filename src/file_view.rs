@@ -477,9 +477,9 @@ pub(crate) fn toggle<T: view::Desk>(ui: &Ui, cx: &Context<T>) -> Div {
         .flex_shrink_0()
         .p(px(1.))
         .rounded(px(RADIUS))
-        .bg(rgb(CANVAS))
+        .bg(rgb(palette().canvas))
         .border_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(segment("show-diff", "Diff", "Show the changes", View::Diff))
         .child(segment("show-file", "File", "Show the whole file at this version", View::File))
 }
@@ -489,10 +489,10 @@ pub(crate) fn gutter_mark(mark: Option<Touch>, first_part: bool, width: f32) -> 
     let Some(mark) = mark.filter(|mark| first_part || *mark != Touch::Removed) else { return cell };
     match mark {
         Touch::Removed => {
-            cell.child(div().absolute().top_0().left(px(((width - 10.) / 2.).floor())).w(px(10.)).h(px(2.)).bg(rgb(DELETED)))
+            cell.child(div().absolute().top_0().left(px(((width - 10.) / 2.).floor())).w(px(10.)).h(px(2.)).bg(rgb(palette().deleted)))
         }
         Touch::Added | Touch::Changed => {
-            let ink = if mark == Touch::Added { ADDED } else { MODIFIED };
+            let ink = if mark == Touch::Added { palette().added } else { palette().modified };
             cell.child(div().absolute().top_0().bottom_0().left(px(((width - 3.) / 2.).floor())).w(px(3.)).bg(rgb(ink)))
         }
     }

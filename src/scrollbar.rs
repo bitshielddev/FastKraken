@@ -354,10 +354,10 @@ impl Element for Scrollbar {
                 if held || frame.always {
                     let lane = segment(strip, axis, 0., track);
                     window.paint_quad(
-                        fill(lane, Hsla::from(rgb(LINE)).opacity(alpha)).corner_radii(px(THICKNESS / 2.)),
+                        fill(lane, Hsla::from(rgb(palette().line)).opacity(alpha)).corner_radii(px(THICKNESS / 2.)),
                     );
                 }
-                let color = if held { TEXT_2 } else { TEXT_3 };
+                let color = if held { palette().text_2 } else { palette().text_3 };
                 window.paint_quad(
                     fill(segment(strip, axis, thumb.start, thumb.length), Hsla::from(rgb(color)).opacity(alpha))
                         .corner_radii(px(THICKNESS / 2.)),

@@ -247,8 +247,8 @@ pub(crate) fn warning<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Option<impl Into
             .items_center()
             .justify_center()
             .rounded(px(4.))
-            .hover(|s| s.bg(rgb(HOVER)))
-            .child(kit::icon("alert").size(px(12.)).text_color(rgb(MODIFIED)))
+            .hover(|s| s.bg(rgb(palette().hover)))
+            .child(kit::icon("alert").size(px(12.)).text_color(rgb(palette().modified)))
             .tooltip(kit::tip(failed.tip()))
             .when_some(entry, |d, entry| {
                 d.cursor_pointer().on_click(cx.listener(move |app, _, window, cx| {

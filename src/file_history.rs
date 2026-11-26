@@ -640,7 +640,7 @@ fn entry_row<T: Desk>(index: usize, entry: &Revision, chosen: bool, now: i64, cx
                                 .flex_shrink_0()
                                 .font_family(MONO)
                                 .text_size(px(11.5))
-                                .text_color(rgb(TEXT_3))
+                                .text_color(rgb(palette().text_3))
                                 .child(short),
                         ),
                 )
@@ -651,9 +651,9 @@ fn entry_row<T: Desk>(index: usize, entry: &Revision, chosen: bool, now: i64, cx
                         .items_center()
                         .gap_2()
                         .tooltip(kit::tip_with(move || view::exact_time(time)))
-                        .child(kit::fit(format!("{} · {when}", entry.author)).size(11.5).color(TEXT_3).grow())
+                        .child(kit::fit(format!("{} · {when}", entry.author)).size(11.5).color(palette().text_3).grow())
                         .when_some(entry.moved(), |d, moved| {
-                            d.child(kit::fit(moved).size(11.5).color(TEXT_2).cut(kit::Cut::Start))
+                            d.child(kit::fit(moved).size(11.5).color(palette().text_2).cut(kit::Cut::Start))
                         }),
                 ),
         )
@@ -680,10 +680,10 @@ fn list<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .bg(rgb(PANEL))
+        .bg(rgb(palette().panel))
         .border_b_1()
-        .border_color(rgb(LINE))
-        .child(kit::icon("history").size(px(14.)).flex_shrink_0().text_color(rgb(TEXT_3)))
+        .border_color(rgb(palette().line))
+        .child(kit::icon("history").size(px(14.)).flex_shrink_0().text_color(rgb(palette().text_3)))
         .child(kit::fit(open.request.shown.to_string_lossy().into_owned()).size(12.5).weight(FontWeight::SEMIBOLD).cut(kit::Cut::Start).grow())
         .child(kit::icon_btn("close-file-history", "x", "Back to where you were (Esc)", view::Action::FileHistory(Action::Close), cx));
     let column = div()
@@ -693,9 +693,9 @@ fn list<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .min_h_0()
         .flex()
         .flex_col()
-        .bg(rgb(CANVAS))
+        .bg(rgb(palette().canvas))
         .border_r_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(palette().line))
         .child(header);
     if let Some(text) = message(ui) {
         return column.child(div().p_4().child(kit::muted(text)));
@@ -719,7 +719,7 @@ fn list<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     .track_scroll(open.scroll.clone())
     .flex_1()
     .min_h_0();
-    let footer = div().flex_shrink_0().px_3().py_2().flex().items_center().border_t_1().border_color(rgb(LINE));
+    let footer = div().flex_shrink_0().px_3().py_2().flex().items_center().border_t_1().border_color(rgb(palette().line));
     let footer = if open.more {
         footer.justify_end().child(
             kit::btn("older-file-history", "Load older")

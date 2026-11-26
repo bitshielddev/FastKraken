@@ -847,7 +847,7 @@ pub(crate) fn tools<T: Desk>(ui: &Ui, panel: Panel, cx: &Context<T>) -> Div {
                 .justify_center()
                 .rounded(px(5.))
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(HOVER)))
+                .hover(|s| s.bg(rgb(palette().hover)))
                 .child(kit::icon("sort"))
                 .tooltip(kit::tip("Sort and view options"))
                 .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
@@ -918,8 +918,8 @@ pub(crate) fn filter_field<T: Desk>(ui: &Ui, panel: Panel, cx: &Context<T>) -> O
                                 .justify_center()
                                 .rounded(px(4.))
                                 .cursor_pointer()
-                                .hover(|s| s.bg(rgb(HOVER)))
-                                .child(kit::icon("x").size(px(11.)).text_color(rgb(TEXT_3)))
+                                .hover(|s| s.bg(rgb(palette().hover)))
+                                .child(kit::icon("x").size(px(11.)).text_color(rgb(palette().text_3)))
                                 .tooltip(kit::tip("Clear the filter (Esc)"))
                                 .on_click(cx.listener(move |app, _, w, cx| {
                                     cx.stop_propagation();
@@ -989,8 +989,8 @@ pub(crate) fn folder_row<T: Desk>(
         .pl(px(ROW_START + *depth as f32 * INDENT))
         .pr_2()
         .gap(px(5.))
-        .child(kit::icon(if *folded { "chevron-right" } else { "chevron-down" }).size(px(12.)).text_color(rgb(TEXT_3)))
-        .child(kit::icon("folder").size(px(13.)).text_color(rgb(TEXT_3)))
+        .child(kit::icon(if *folded { "chevron-right" } else { "chevron-down" }).size(px(12.)).text_color(rgb(palette().text_3)))
+        .child(kit::icon("folder").size(px(13.)).text_color(rgb(palette().text_3)))
         .child(
             div()
                 .id((id.0, id.1 + 1_000_000))
@@ -999,7 +999,7 @@ pub(crate) fn folder_row<T: Desk>(
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .child(kit::fit(name.clone()).size(12.5).color(TEXT_2).cut(kit::Cut::Start).grow())
+                .child(kit::fit(name.clone()).size(12.5).color(palette().text_2).cut(kit::Cut::Start).grow())
                 .tooltip(kit::tip(tip)),
         )
         .children(actions)
@@ -1008,7 +1008,7 @@ pub(crate) fn folder_row<T: Desk>(
                 .flex_shrink_0()
                 .text_size(px(TEXT_TINY))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(TEXT_3))
+                .text_color(rgb(palette().text_3))
                 .child(count.to_string()),
         )
         .on_click(cx.listener(move |app, _, w, cx| {

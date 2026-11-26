@@ -245,8 +245,8 @@ impl Replay<'_> {
 
         let marks = self.tab.read_with(self.cx, |tab, _| crate::diff_options::marks(&tab.ui))?;
         let colours: Vec<u32> = marks.iter().map(|mark| mark.color).collect();
-        use crate::theme::{ADDED, DELETED};
-        if colours != [DELETED, ADDED, ADDED, DELETED, DELETED, ADDED] {
+        use crate::theme::palette;
+        if colours != [palette().deleted, palette().added, palette().added, palette().deleted, palette().deleted, palette().added] {
             return Err(format!("The scrollbar marks the changes with {marks:?}").into());
         }
         let expected = self.tab.read_with(self.cx, |tab, _| {
@@ -1053,8 +1053,8 @@ const REEF: &str = "/*\n Reef survey notes.\n The north wall is steep.\n Coral g
 
 impl Replay<'_> {
     async fn comment_coloured_from_the_file(&mut self, dir: &Path) -> Result<()> {
-        use crate::theme::{SYNTAX_COMMENT, SYNTAX_KEYWORD};
-        if SYNTAX_KEYWORD == SYNTAX_COMMENT {
+        use crate::theme::palette;
+        if palette().syntax_keyword == palette().syntax_comment {
             return Err("Keywords and comments share a colour".into());
         }
         self.start("GAP0709");
@@ -1088,7 +1088,7 @@ impl Replay<'_> {
             settled(tab, "+ Divers stay by the buoys.") && coloured(tab, "+ Divers stay by the buoys.").is_some_and(|runs| !runs.is_empty())
         })
         .await?;
-        let comment = |text: &str| vec![(text.to_owned(), ink(SYNTAX_COMMENT))];
+        let comment = |text: &str| vec![(text.to_owned(), ink(palette().syntax_comment))];
         let (added, deleted, inside, after) = self.tab.read_with(self.cx, |tab, _| {
             (
                 coloured(tab, "+ Divers stay by the buoys."),
@@ -1557,7 +1557,7 @@ impl Replay<'_> {
             let runs = crate::view::diff_highlights(&tab.ui, hit.row, line, Column::Unified);
             runs.into_iter().find(|(range, _)| range.start <= hit.range.start && hit.range.start < range.end).map(|(_, style)| style)
         })?;
-        let readable = (Some(gpui::rgb(crate::theme::TEXT_SELECTION).into()), Some(gpui::rgb(crate::theme::TEXT).into()));
+        let readable = (Some(gpui::rgb(crate::theme::palette().text_selection).into()), Some(gpui::rgb(crate::theme::palette().text).into()));
         if selected.map(|style| (style.background_color, style.color)) != Some(readable) {
             return Err(format!("The current match under a text selection is drawn {selected:?}").into());
         }

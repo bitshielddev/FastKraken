@@ -70,16 +70,16 @@ impl Token {
 
     pub(crate) fn color(self) -> u32 {
         match self {
-            Token::Keyword => theme::SYNTAX_KEYWORD,
-            Token::String => theme::SYNTAX_STRING,
-            Token::Comment => theme::SYNTAX_COMMENT,
-            Token::Number => theme::SYNTAX_NUMBER,
-            Token::Type => theme::SYNTAX_TYPE,
-            Token::Function => theme::SYNTAX_FUNCTION,
-            Token::Constant => theme::SYNTAX_CONSTANT,
-            Token::Punctuation => theme::SYNTAX_PUNCTUATION,
-            Token::Tag => theme::SYNTAX_TAG,
-            Token::Attribute => theme::SYNTAX_ATTRIBUTE,
+            Token::Keyword => theme::palette().syntax_keyword,
+            Token::String => theme::palette().syntax_string,
+            Token::Comment => theme::palette().syntax_comment,
+            Token::Number => theme::palette().syntax_number,
+            Token::Type => theme::palette().syntax_type,
+            Token::Function => theme::palette().syntax_function,
+            Token::Constant => theme::palette().syntax_constant,
+            Token::Punctuation => theme::palette().syntax_punctuation,
+            Token::Tag => theme::palette().syntax_tag,
+            Token::Attribute => theme::palette().syntax_attribute,
         }
     }
 }
