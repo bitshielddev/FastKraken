@@ -93,7 +93,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
                 Availability::unless(busy(ui).or_else(|| operating(ui)).or_else(|| {
                     match split_remote(&ui.refs.remotes, name) {
                         None => Some("No configured remote has this branch".to_owned()),
-                        Some((_, local)) => checked_out(ui, &local),
+                        Some((_, local)) => checked_out(ui, &local).or_else(|| crate::worktree::in_use(ui, &local)),
                     }
                 }))
             },
@@ -459,6 +459,9 @@ fn checkout_remote(tab: &mut Tab, name: OsString, cx: &mut Context<Tab>) {
         return;
     }
     let Some((_, local)) = split_remote(&tab.ui.refs.remotes, &name) else { return };
+    if crate::worktree::refused_switch(tab, &local, cx) {
+        return;
+    }
     let existing = tab.ui.refs.local(&local);
     if existing.is_some_and(|item| item.oid.is_none()) {
         return;

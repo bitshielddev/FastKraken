@@ -595,6 +595,7 @@ pub enum Action {
     Recover(crate::recover::Action),
     Discard(crate::discard::Action),
     Journal(crate::journal::Action),
+    Worktree(crate::worktree::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
     Rewrite(crate::rewrite::Action),
@@ -782,6 +783,7 @@ pub struct Ui {
     pub(crate) drag: crate::drag::State,
     pub(crate) forecast: crate::forecast::State,
     pub(crate) journal: crate::journal::State,
+    pub(crate) worktree: crate::worktree::State,
     pub(crate) rebase_editor: crate::rebase_editor::State,
     pub(crate) chrome_drawn: bool,
 }
@@ -882,6 +884,7 @@ impl Ui {
             drag: Default::default(),
             forecast: Default::default(),
             journal: Default::default(),
+            worktree: Default::default(),
             rebase_editor: Default::default(),
             chrome_drawn: false,
             diff_layout: DiffLayout::default(),
@@ -1857,6 +1860,7 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
                 _ => None,
             };
             let distance = branch.and_then(crate::refs::distance);
+            let elsewhere = branch.and_then(|_| ui.worktree.holding(std::ffi::OsStr::new(&label.name)));
             let carried = label.target.clone().map(|target| {
                 let also = label.remote.as_ref().map(|name| crate::commands::Target::RemoteBranch(name.into()));
                 crate::drag::Carried::new(target, also, label.chip, label.name.clone()).at(Some(oid.to_owned()))
@@ -1865,15 +1869,23 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
                 Some(distance) => format!("{} {distance}", label.name),
                 None => label.name,
             };
-            let marks: &[&'static str] = match (pinned, label.remote.is_some()) {
-                (true, true) => &["cloud", "pin"],
-                (true, false) => &["pin"],
-                (false, true) => &["cloud"],
-                (false, false) => &[],
-            };
+            let mut marks: Vec<&'static str> = Vec::new();
+            if label.remote.is_some() {
+                marks.push("cloud");
+            }
+            if pinned {
+                marks.push("pin");
+            }
+            if elsewhere.is_some() {
+                marks.push("folder");
+            }
             let tip = if pinned { format!("{tip}\nPinned to the left of the graph") } else { tip };
+            let tip = match elsewhere {
+                Some(worktree) => format!("{tip}\nChecked out in worktree {}", worktree.name()),
+                None => tip,
+            };
             let hovered = oid.to_owned();
-            let chip = kit::chip_marked(label.chip, text, marks)
+            let chip = kit::chip_marked(label.chip, text, &marks)
                 .id(("label", i))
                 .tooltip(kit::tip(tip))
                 .on_hover(cx.listener(move |app, hovered_now: &bool, w, cx| {
@@ -1886,6 +1898,7 @@ fn ref_chips<T: Desk>(ui: &Ui, oid: &str, decorations: &str, cx: &Context<T>) ->
                 _ => chip.into_any_element(),
             }
         }))
+        .children(crate::worktree::chips(ui, oid, cx))
         .when(hidden > 0, |d| {
             let (left, right) = (oid.to_owned(), oid.to_owned());
             d.child(
@@ -2298,6 +2311,9 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                     HistoryItem::Stash { .. } => None,
                 })
             };
+            if ui.worktree.wanted() && shown_commits().any(|row| ui.worktree.at(&row.oid).next().is_some()) {
+                cx.defer_in(window, |app, w, cx| app.dispatch(Action::Worktree(crate::worktree::Action::Count), w, cx));
+            }
             if let Some(oid) = ui.highlight.scrolled_away(shown_commits().map(|row| row.oid.as_str())) {
                 cx.defer_in(window, move |app, w, cx| app.dispatch(Action::Highlight(crate::highlight::Action::Leave(oid)), w, cx));
             }
@@ -2419,7 +2435,7 @@ fn history<T: Desk>(app: &T, centre_width: f32, cx: &mut Context<T>) -> Div {
                                 .gap(px(6.))
                                 .when(dimmed, |d| d.opacity(DIMMED))
                                 .when(
-                                    crate::refs::show_labels(&ui.refs) && !row.refs.is_empty(),
+                                    crate::refs::show_labels(&ui.refs) && (!row.refs.is_empty() || ui.worktree.at(&row.oid).next().is_some()),
                                     |d| d.child(ref_chips(ui, &row.oid, &row.refs, cx)),
                                 )
                                 .child(subject_cell(

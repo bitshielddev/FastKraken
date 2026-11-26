@@ -34,6 +34,12 @@ fn operation_marker(relative: &Path) -> bool {
         || ["rebase-merge", "rebase-apply", "sequencer"].iter().any(|dir| relative.starts_with(dir))
 }
 
+fn other_worktree(relative: &Path) -> bool {
+    let Ok(inside) = relative.strip_prefix("worktrees") else { return false };
+    let parts: Vec<_> = inside.components().collect();
+    parts.len() <= 1 || (parts.len() == 2 && ["HEAD", "locked", "gitdir"].iter().any(|name| parts[1].as_os_str() == *name))
+}
+
 fn changed_path(path: &Path, metadata: &[PathBuf]) -> u8 {
     for dir in metadata {
         if let Ok(relative) = path.strip_prefix(dir) {
@@ -46,6 +52,7 @@ fn changed_path(path: &Path, metadata: &[PathBuf]) -> u8 {
                 || relative == Path::new("logs/refs/stash")
                 || relative.starts_with("refs")
                 || operation_marker(relative)
+                || other_worktree(relative)
             {
                 return WORK | REFS;
             }
@@ -136,5 +143,17 @@ mod tests {
             0
         );
         assert_eq!(changed_path(Path::new("/working/notes.txt"), &roots), WORK);
+    }
+
+    #[test]
+    fn another_worktree_appearing_switching_or_going_refreshes_the_list() {
+        let common = PathBuf::from("/fixture/.git");
+        let roots = vec![common.clone()];
+        for changed in ["worktrees", "worktrees/ridge", "worktrees/ridge/HEAD", "worktrees/ridge/locked", "worktrees/ridge/gitdir"] {
+            assert_eq!(changed_path(&common.join(changed), &roots), WORK | REFS, "{changed}");
+        }
+        for quiet in ["worktrees/ridge/index", "worktrees/ridge/logs/HEAD", "worktrees/ridge/ORIG_HEAD", "worktreesx/HEAD"] {
+            assert_eq!(changed_path(&common.join(quiet), &roots), 0, "{quiet}");
+        }
     }
 }

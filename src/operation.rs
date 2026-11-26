@@ -1225,7 +1225,8 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::MenuKey(_)
         | A::MenuHover(_)
         | A::Navigate(_)
-        | A::Journal(_) => true,
+        | A::Journal(_)
+        | A::Worktree(_) => true,
         A::Refs(action) => {
             use crate::refs::Action as R;
             matches!(action, R::Inspect(..) | R::ToggleSection(_) | R::ToggleFolder(_) | R::FoldAll { .. } | R::ToggleList | R::Escape)

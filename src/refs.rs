@@ -84,6 +84,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
                 Availability::unless(busy(ui).or_else(|| operating(ui)).or_else(|| {
                     (*name == *ui.branch && !ui.detached)
                         .then(|| format!("{} is already checked out", ui.branch))
+                        .or_else(|| crate::worktree::in_use(ui, name))
                 }))
             },
             |_, target| match target {
@@ -188,6 +189,7 @@ pub enum Section {
     Remotes,
     Tags,
     Stashes,
+    Worktrees,
 }
 
 #[derive(Clone, Debug)]
@@ -257,6 +259,7 @@ pub(crate) enum SideRow {
         label: String,
     },
     Stash(usize),
+    Worktree(usize),
     Note,
 }
 
@@ -848,6 +851,9 @@ pub(crate) fn switch_to(tab: &mut Tab, name: OsString, stash: bool, window: &mut
     if !tab.ui.refs.items.iter().any(|item| item.kind == Kind::Branch && item.name == name) {
         return;
     }
+    if crate::worktree::refused_switch(tab, &name, cx) {
+        return;
+    }
     view::focus(&tab.ui, window);
     switch_then(tab, name, stash, |_, _| {}, cx);
 }
@@ -977,6 +983,14 @@ pub(crate) fn activate_row(tab: &mut Tab, index: usize, window: &mut Window, cx:
         Some(SideRow::Stash(index)) => {
             view::Action::Reveal(crate::reveal::Action::Stash(tab.ui.stash.entries[*index].oid.clone()))
         }
+        Some(SideRow::Worktree(index)) => match tab.ui.worktree.list.get(*index) {
+            Some(worktree) if !worktree.current => view::Action::Worktree(crate::worktree::Action::Open(worktree.path.clone())),
+            Some(worktree) => match worktree.head.clone() {
+                Some(oid) => view::Action::Reveal(crate::reveal::Action::Commit(oid)),
+                None => return,
+            },
+            None => return,
+        },
         Some(SideRow::Note) => view::Action::Publish(crate::publish::Action::Publish),
         None => return,
     };
@@ -989,7 +1003,7 @@ fn kind_of(section: Section) -> Option<Kind> {
         Section::Branches => Some(Kind::Branch),
         Section::Remotes => Some(Kind::Remote),
         Section::Tags => Some(Kind::Tag),
-        Section::Stashes => None,
+        Section::Stashes | Section::Worktrees => None,
     }
 }
 
@@ -1036,6 +1050,7 @@ pub(crate) fn rebuild_rows(ui: &mut view::Ui, cx: &App) {
     for (section, kind) in [
         (Section::Branches, Some(Kind::Branch)),
         (Section::Remotes, Some(Kind::Remote)),
+        (Section::Worktrees, None),
         (Section::Tags, Some(Kind::Tag)),
         (Section::Stashes, None),
     ] {
@@ -1043,6 +1058,23 @@ pub(crate) fn rebuild_rows(ui: &mut view::Ui, cx: &App) {
             continue;
         }
         let open = !state.closed.contains(&section);
+        if section == Section::Worktrees {
+            let listed = &ui.worktree.list;
+            if !ui.worktree.linked() {
+                continue;
+            }
+            rows.push(SideRow::Header { section, count: listed.len(), open });
+            if open {
+                rows.extend((0..listed.len()).filter_map(|i| {
+                    let worktree = &listed[i];
+                    (filter.is_empty()
+                        || worktree.name().to_lowercase().contains(&filter)
+                        || worktree.on().to_lowercase().contains(&filter))
+                    .then_some(SideRow::Worktree(i))
+                }));
+            }
+            continue;
+        }
         let Some(kind) = kind else {
             let count = ui.stash.entries.len();
             rows.push(SideRow::Header {
@@ -1219,6 +1251,9 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
         count,
         cx.processor(|app, range: Range<usize>, window, cx| {
             let ui = app.ui();
+            if ui.worktree.wanted() && range.clone().any(|i| matches!(ui.refs.rows.get(i), Some(SideRow::Worktree(_)))) {
+                cx.defer_in(window, |app, w, cx| app.dispatch(view::Action::Worktree(crate::worktree::Action::Count), w, cx));
+            }
             let cursor = ui.navigate.side_cursor(ui);
             let pointed = view::pointed_item(&ui.refs.scroll, TREE_ROW, window);
             range
@@ -1237,6 +1272,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 Section::Remotes => "Remotes",
                                 Section::Tags => "Tags",
                                 Section::Stashes => "Stashes",
+                                Section::Worktrees => "Worktrees",
                             };
                             let add = match section {
                                 Section::Branches => Some("New branch"),
@@ -1245,8 +1281,9 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                             };
                             let left_out = match crate::graph_view::section_prefix(section) {
                                 Some(prefix) => ui.graph_view.hidden.contains(prefix),
-                                None => ui.graph_view.hide_stashes,
+                                None => section == Section::Stashes && ui.graph_view.hide_stashes,
                             };
+                            let has_menu = section != Section::Worktrees;
                             div()
                                 .id(("side-header", i))
                                 .group("side-header")
@@ -1300,7 +1337,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                             )),
                                     )
                                 })
-                                .child(
+                                .when(has_menu, |d| d.child(
                                     div()
                                         .id(("side-more", i))
                                         .invisible()
@@ -1324,7 +1361,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                                 cx,
                                             )
                                         })),
-                                )
+                                ))
                                 .when(left_out, |d| {
                                     d.child(
                                         div()
@@ -1344,6 +1381,9 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 .on_mouse_down(
                                     MouseButton::Right,
                                     cx.listener(move |app, event: &MouseDownEvent, w, cx| {
+                                        if !has_menu {
+                                            return;
+                                        }
                                         app.dispatch(
                                             view::Action::Menu(Some(Menu::Object {
                                                 target: Target::Section(section),
@@ -1518,9 +1558,19 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         .grow(),
                                 )
                                 .when(kind == Kind::Branch, |d| {
+                                    let elsewhere = crate::worktree::in_use(ui, &item.name);
                                     d.children(count_buttons(item, current, i, pointed == Some(i), cx))
                                         .when(item.gone, |d| d.child(kit::label("gone")))
-                                        .when(pointed == Some(i), |d| d.tooltip(kit::tip(crate::tracking::tooltip(item))))
+                                        .when(elsewhere.is_some(), |d| {
+                                            d.child(kit::icon("folder").flex_shrink_0().size(px(11.)).text_color(rgb(TEXT_3)))
+                                        })
+                                        .when(pointed == Some(i), |d| {
+                                            let tip = match &elsewhere {
+                                                Some(reason) => format!("{}\n{reason}", crate::tracking::tooltip(item)),
+                                                None => crate::tracking::tooltip(item),
+                                            };
+                                            d.tooltip(kit::tip(tip))
+                                        })
                                 })
                                 .when(kind == Kind::Tag && pointed == Some(i), |d| d.tooltip(kit::tip(crate::tag::tooltip(item))))
                                 .children(eye)
@@ -1604,6 +1654,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                 )
                                 .into_any_element()
                         }
+                        SideRow::Worktree(index) => crate::worktree::side_row(ui, *index, i, pointed == Some(i), cx),
                         SideRow::Note => div()
                             .id(("side-note", i))
                             .h(px(TREE_ROW))

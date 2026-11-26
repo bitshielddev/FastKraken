@@ -93,6 +93,7 @@ mod theme;
 mod tools;
 mod view;
 mod watch;
+mod worktree;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -312,6 +313,7 @@ impl Tab {
                 commit_options::restore(tab, cx);
                 commit_options::load_template(tab, cx);
                 refs::refresh(tab, cx);
+                worktree::refresh(tab, cx);
                 stash::refresh(tab, cx);
                 operation::refresh(tab, cx);
                 tab.load_history(true, cx);
@@ -595,6 +597,7 @@ impl Tab {
         if refs_changed {
             self.load_history(true, cx);
             refs::refresh(self, cx);
+            worktree::refresh(self, cx);
             stash::refresh(self, cx);
             search::refresh(self, true, cx);
             containing::refresh(self, cx);
@@ -1698,6 +1701,7 @@ impl Tab {
             Action::Recover(action) => recover::dispatch(self, action, window, cx),
             Action::Discard(action) => discard::dispatch(self, action, window, cx),
             Action::Journal(action) => journal::dispatch(self, action, window, cx),
+            Action::Worktree(action) => worktree::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
             Action::Rewrite(action) => rewrite::dispatch(self, action, window, cx),

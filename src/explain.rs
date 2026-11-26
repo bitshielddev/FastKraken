@@ -93,6 +93,7 @@ pub(crate) enum Cause {
     NotFound { hook: Option<String>, command: Option<String> },
     NoRemote,
     HookSkipped { hook: String, path: String },
+    InWorktree { branch: Option<String>, path: Option<String> },
 }
 
 impl Cause {
@@ -191,6 +192,15 @@ pub(crate) fn classify(said: &str) -> Option<Cause> {
         Cause::Protected { branch: rejected_branch(said) }
     } else if has("hook declined") {
         Cause::Declined { lines: remote_lines(said) }
+    } else if has("' is already used by worktree at '") || has("' is already checked out at '") {
+        let markers = ["' is already used by worktree at '", "' is already checked out at '"];
+        let path = markers.iter().find_map(|marker| between(said, marker, "'"));
+        let branch = markers.iter().find_map(|marker| {
+            let before = &said[..said.find(marker)?];
+            let named = &before[before.rfind('\'')? + 1..];
+            (!named.is_empty() && !named.contains('\n')).then(|| named.to_owned())
+        });
+        Cause::InWorktree { branch, path }
     } else if has("No such remote") || has("No configured push destination") || has("No remotes are configured") {
         Cause::NoRemote
     } else if let Some((hook, path)) = skipped_hooks(said).into_iter().next() {
@@ -629,6 +639,19 @@ fn words(cause: &Cause, host: &str, remote: &str, about: &About) -> (String, Str
             "Add one to fetch, pull and push.".to_owned(),
             vec![("Add remote…".into(), view::Action::Publish(crate::publish::Action::Add))],
         ),
+        Cause::InWorktree { branch, path } => {
+            let folder = path.as_deref().and_then(|path| Path::new(path).file_name()).map(|name| name.to_string_lossy().into_owned());
+            let title = match (branch, &folder) {
+                (Some(branch), Some(folder)) => format!("{branch} is checked out in worktree {folder}"),
+                (Some(branch), None) => format!("{branch} is checked out in another worktree"),
+                (None, _) => "That branch is checked out in another worktree".to_owned(),
+            };
+            let offers = path
+                .iter()
+                .map(|path| (SharedString::from("Open that worktree"), view::Action::Worktree(crate::worktree::Action::Open(PathBuf::from(path)))))
+                .collect();
+            (title, "Git keeps a branch in one worktree at a time.".to_owned(), offers)
+        }
         Cause::HookSkipped { hook, path } => (
             format!("{hook} is not executable, so Git skipped it"),
             "Make it executable so that Git runs it.".to_owned(),
@@ -945,10 +968,24 @@ mod tests {
             (SSH_COMMAND, Cause::NotFound { hook: None, command: Some("ssh-with-agent".into()) }),
             (NO_PUSH_DESTINATION, Cause::NoRemote),
             (NO_SUCH_REMOTE, Cause::NoRemote),
+            (IN_WORKTREE, Cause::InWorktree { branch: Some("ridge".into()), path: Some("/work/ridge-tree".into()) }),
+            (CHECKED_OUT_AT, Cause::InWorktree { branch: Some("ridge".into()), path: Some("/work/ridge-tree".into()) }),
         ] {
             assert_eq!(classify(said), Some(cause), "{said}");
         }
         assert_eq!(classify("fatal: Not possible to fast-forward, aborting."), None);
+    }
+
+    const IN_WORKTREE: &str = "fatal: 'ridge' is already used by worktree at '/work/ridge-tree'";
+    const CHECKED_OUT_AT: &str = "fatal: 'ridge' is already checked out at '/work/ridge-tree'";
+
+    #[test]
+    fn a_branch_used_by_another_worktree_offers_to_open_it() {
+        let notice = shown("Switch Failed", IN_WORKTREE, &About { local: true, ..About::default() });
+        assert_eq!(notice.title, "ridge is checked out in worktree ridge-tree");
+        assert_eq!(notice.detail, "Switch failed. Git keeps a branch in one worktree at a time.");
+        assert_eq!(offers(&notice), ["Open that worktree"]);
+        assert!(matches!(&notice.actions[0].1, view::Action::Worktree(crate::worktree::Action::Open(path)) if path == Path::new("/work/ridge-tree")));
     }
 
     #[test]

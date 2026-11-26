@@ -37,6 +37,7 @@ pub(crate) enum Target {
     Lines { path: PathBuf, side: Side, count: usize },
     Columns,
     Section(crate::refs::Section),
+    Worktree(PathBuf),
     Pair { dragged: Box<Target>, onto: Box<Target> },
 }
 
@@ -317,6 +318,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::push_to::COMMANDS,
         crate::drag::COMMANDS,
         crate::journal::COMMANDS,
+        crate::worktree::COMMANDS,
     ]
     .into_iter()
     .flatten()
@@ -828,6 +830,7 @@ pub(crate) fn default_command(target: &Target) -> Option<&'static str> {
         Target::Branch(_) => Some("branch.switch"),
         Target::RemoteBranch(_) => Some("branch.checkout-remote"),
         Target::Tag(_) => Some("tag.checkout"),
+        Target::Worktree(_) => Some("worktree.open"),
         _ => None,
     }
 }

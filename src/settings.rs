@@ -779,7 +779,7 @@ mod tests {
             r#"{"columns": {"sidebar": 260, "panel": 320, "graph": 400},
                 "window": {"x": 1, "y": 2, "width": 900, "height": 600, "mode": "tiled"},
                 "repositories": [
-                    {"directory": [47, 114], "closed": ["tags", "worktrees"], "folded": ["origin"]},
+                    {"directory": [47, 114], "closed": ["tags", "pull-requests"], "folded": ["origin"]},
                     {"directory": [47, 115], "pull": {"fetch": true, "strategy": "squash"}},
                     {"directory": [47, 116], "pull": "sometimes", "merge": "octopus"},
                     {"directory": [47, 117], "merge": "no-fast-forward"},

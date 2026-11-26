@@ -213,7 +213,7 @@ pub(crate) fn section_prefix(section: Section) -> Option<&'static str> {
         Section::Branches => Some(BRANCHES),
         Section::Remotes => Some(REMOTES),
         Section::Tags => Some(TAGS),
-        Section::Stashes => None,
+        Section::Stashes | Section::Worktrees => None,
     }
 }
 
@@ -733,6 +733,7 @@ fn section_title(section: Section, show: bool) -> String {
         Section::Remotes => "remotes",
         Section::Tags => "tags",
         Section::Stashes => "stashes",
+        Section::Worktrees => "worktrees",
     };
     format!("{} all {what}", if show { "Show" } else { "Hide" })
 }
