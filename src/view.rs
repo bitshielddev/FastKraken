@@ -273,8 +273,19 @@ pub(crate) fn describe_discard(ask: &DiscardAsk) -> crate::prompt::Spec {
 pub use crate::notice::Tone;
 
 
-pub(crate) const REPO_MENU: &[&str] =
-    &["repo.open", "repo.close", "repo.refresh", "repo.reveal", "repo.terminal", "repo.editor", "repo.labels"];
+pub(crate) const REPO_MENU: &[&str] = &[
+    "repo.open",
+    "repo.close",
+    "repo.refresh",
+    "repo.reveal",
+    "repo.terminal",
+    "repo.editor",
+    "repo.labels",
+    "lfs.setup",
+    "lfs.fetch",
+    "lfs.pull",
+    "lfs.prune",
+];
 
 pub(crate) const CHANGES_MENU: &[&str] =
     &["repo.stage-all", "repo.unstage-all", "repo.stash", "repo.stash-options", "repo.discard-all", "repo.browse-files", "repo.save-patch"];

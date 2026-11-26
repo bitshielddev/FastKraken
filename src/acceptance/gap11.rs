@@ -24,6 +24,11 @@ const BASE_MIRROR: &str = "Base-atlas-mirror.git";
 const ATLAS: &str = "vendor/atlas";
 const STUDIO: &str = "Lfs-studio";
 const COVER: &str = "art/cover.psd";
+const GALLERY: &str = "Lfs-gallery";
+const SUNSET: &str = "photos/sunset.png";
+const STUB_VERSION: &str = "git-lfs/3.6.1 (FastKraken acceptance stub)";
+const PNG_LINE: &str = "*.png filter=lfs diff=lfs merge=lfs -text\n";
+const PSD_LINE: &str = "*.psd filter=lfs diff=lfs merge=lfs -text\n";
 
 fn path(path: &Path) -> Result<&str> {
     path.to_str().ok_or_else(|| format!("{} is not UTF-8", path.display()).into())
@@ -36,6 +41,50 @@ fn scripted(root: &Path, args: &[&str]) -> Result<String> {
         return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
     Ok(String::from_utf8(output.stdout)?)
+}
+
+fn stub_lfs(log: &Path) -> Result<String> {
+    let log = path(log)?;
+    Ok(format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> '{log}'
+case "$1" in
+version) echo '{STUB_VERSION}' ;;
+install)
+  git config --local filter.lfs.clean 'git-lfs clean -- %f' || exit 2
+  git config --local filter.lfs.smudge 'git-lfs smudge -- %f' || exit 2
+  echo 'Git LFS initialized.' ;;
+clean|smudge) exec /bin/cat ;;
+track)
+  shift
+  [ "$1" = --filename ] && shift
+  [ "$1" = -- ] && shift
+  if [ $# -eq 0 ]; then
+    [ -f .gitattributes ] || exit 0
+    echo 'Listing tracked patterns'
+    while read -r pattern rest; do
+      case "$rest" in *filter=lfs*) printf '    %s (.gitattributes)\n' "$pattern" ;; esac
+    done < .gitattributes
+    echo 'Listing excluded patterns'
+    exit 0
+  fi
+  printf '%s filter=lfs diff=lfs merge=lfs -text\n' "$1" >> .gitattributes
+  echo "Tracking \"$1\"" ;;
+untrack)
+  shift
+  [ "$1" = -- ] && shift
+  : > .gitattributes.kept
+  while IFS= read -r line; do
+    case "$line" in "$1 "*) ;; *) printf '%s\n' "$line" >> .gitattributes.kept ;; esac
+  done < .gitattributes
+  /bin/mv .gitattributes.kept .gitattributes
+  echo "Untracking \"$1\"" ;;
+fetch|pull) echo "$1: Fetching reference refs/heads/main" ;;
+prune) echo 'prune: 6 local objects, 2 retained, done.' >&2 ;;
+*) exit 1 ;;
+esac
+"#
+    ))
 }
 
 fn private_refs(root: &Path, space: &str) -> Result<String> {
@@ -52,7 +101,8 @@ impl Replay<'_> {
         self.update_a_submodule(&summit).await?;
         self.pull_a_moved_submodule(dir, &summit, &maps).await?;
         self.add_and_remove_a_submodule(dir).await?;
-        self.lfs_without_the_helper(dir).await
+        self.lfs_without_the_helper(dir).await?;
+        self.track_a_pattern_with_a_stub_git_lfs(dir).await
     }
 
     async fn until_tab_count(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
@@ -1304,6 +1354,167 @@ impl Replay<'_> {
         }
         git_is(&root, &["symbolic-ref", "HEAD"], "refs/heads/main\n")?;
         git_is(&root, &["rev-parse", "HEAD"], &format!("{first}\n"))?;
+        self.pass();
+        Ok(())
+    }
+
+    fn lfs_rows(&mut self, target: &Target) -> Result<(Vec<(&'static str, String, Option<String>)>, Vec<String>)> {
+        let target = target.clone();
+        Ok(self.tab.read_with(self.cx, move |tab, cx| {
+            let menu = if target == Target::Repo {
+                commands::entries_of(&tab.ui, &view::Menu::Repo, cx)
+            } else {
+                commands::menu(&tab.ui, &target, cx)
+            };
+            let rows = menu.iter().filter(|entry| entry.id.starts_with("lfs.") || entry.id == "file.lfs-menu");
+            let children = rows.clone().flat_map(|entry| entry.children.iter().map(|child| child.title.clone())).collect();
+            (rows.map(|entry| (entry.id, entry.title.clone(), entry.disabled.clone())).collect(), children)
+        })?)
+    }
+
+    fn calls(log: &Path) -> Vec<String> {
+        fs::read_to_string(log).unwrap_or_default().lines().filter(|line| !line.starts_with("clean ") && !line.starts_with("smudge ")).map(str::to_owned).collect()
+    }
+
+    async fn track_a_pattern_with_a_stub_git_lfs(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1110");
+        let root = init(dir, GALLERY)?;
+        record(&root, "readme.txt", "Gallery notes\n", "Start the gallery")?;
+        let first = oid(&root, "HEAD")?;
+        let origin = dir.join("Lfs-gallery-origin.git");
+        git(dir, &["init", "-q", "--bare", path(&origin)?])?;
+        git(&root, &["remote", "add", "origin", path(&origin)?])?;
+        fs::create_dir(root.join("photos"))?;
+        fs::write(root.join(SUNSET), b"\x89PNG\r\n\x1a\nsunset")?;
+        let attributes = root.join(".gitattributes");
+        let sunset = Target::File { path: SUNSET.into(), side: Side::Unstaged };
+
+        self.open(&root)?;
+        self.until("Lfs-gallery open with the new photo and no Git LFS", |tab| {
+            tab.ui.repo == GALLERY && tab.ui.head.as_deref() == Some(first.as_str()) && files(tab, &[], &[SUNSET]) && tab.ui.lfs.helper == Some(None)
+        })
+        .await?;
+        let hidden = (self.lfs_rows(&Target::Repo)?, self.lfs_rows(&sunset)?);
+        if !hidden.0.0.is_empty() || !hidden.1.0.is_empty() {
+            return Err(format!("Without Git LFS the menus offer {hidden:?}").into());
+        }
+
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin)?;
+        let stub = bin.join("git-lfs");
+        let log = dir.join("lfs-stub-calls.txt");
+        fs::write(&stub, stub_lfs(&log)?)?;
+        fs::set_permissions(&stub, <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755))?;
+        self.action(Action::Lfs(lfs::Action::CheckAgain))?;
+        self.until_said(&format!("Found Git LFS: {STUB_VERSION}")).await?;
+        let (repo_rows, _) = self.lfs_rows(&Target::Repo)?;
+        if repo_rows != [("lfs.setup", lfs::SET_UP_TITLE.to_owned(), None)] {
+            return Err(format!("With the stub Git LFS found, the repository menu offers {repo_rows:?}").into());
+        }
+        let (file_rows, children) = self.lfs_rows(&sunset)?;
+        let tracks = ["Track all .png files with Git LFS", "Track sunset.png with Git LFS", "Track everything in photos/ with Git LFS"];
+        if file_rows != [("file.lfs-menu", "Git LFS".to_owned(), Some(lfs::SET_UP_FIRST.to_owned()))] || children != tracks {
+            return Err(format!("Before setting up, the photo's menu offers {file_rows:?} with {children:?}").into());
+        }
+
+        self.choose(&Target::Repo, "lfs.setup")?;
+        self.until_said(lfs::SET_UP_TITLE).await?;
+        git_is(&root, &["config", "--local", "filter.lfs.clean"], "git-lfs clean -- %f\n")?;
+        self.until("the repository counted as set up", |tab| tab.ui.lfs.configured && !tab.ui.lfs.offer_shown()).await?;
+        let (file_rows, _) = self.lfs_rows(&sunset)?;
+        if file_rows != [("file.lfs-menu", "Git LFS".to_owned(), None)] {
+            return Err(format!("After setting up, the photo's menu offers {file_rows:?}").into());
+        }
+
+        self.choose_in(&sunset, "file.lfs-menu", "lfs.track-extension")?;
+        self.until_said("Tracking *.png with Git LFS").await?;
+        if fs::read_to_string(&attributes)? != PNG_LINE {
+            return Err(format!(".gitattributes reads {:?}", fs::read_to_string(&attributes)?).into());
+        }
+        git_is(&root, &["check-attr", "filter", "--", SUNSET], "photos/sunset.png: filter: lfs\n")?;
+        self.until("the photo marked LFS beside the new .gitattributes", |tab| {
+            files(tab, &[], &[".gitattributes", SUNSET]) && tab.ui.lfs.used && tab.ui.lfs.marked(&lfs::Source::Working, Path::new(SUNSET))
+        })
+        .await?;
+        let (file_rows, _) = self.lfs_rows(&sunset)?;
+        if file_rows != [("file.lfs-menu", "Git LFS".to_owned(), Some("It is already stored with Git LFS".to_owned()))] {
+            return Err(format!("Once tracked, the photo's menu offers {file_rows:?}").into());
+        }
+
+        let (repo_rows, _) = self.lfs_rows(&Target::Repo)?;
+        let ids: Vec<&str> = repo_rows.iter().filter(|row| row.2.is_none()).map(|row| row.0).collect();
+        if ids != ["lfs.fetch", "lfs.pull", "lfs.prune"] {
+            return Err(format!("With LFS in use, the repository menu offers {repo_rows:?}").into());
+        }
+        for (id, title) in [("lfs.fetch", "Fetched LFS files"), ("lfs.pull", "Pulled LFS files"), ("lfs.prune", "Removed old LFS files")] {
+            self.choose(&Target::Repo, id)?;
+            self.until_said(title).await?;
+            self.until("Git LFS finished", |tab| tab.ui.jobs.idle()).await?;
+        }
+        let said = self.said()?.ok_or("No notice after removing old LFS files")?;
+        if said.2 != lfs::pruned_text(Some(4)) {
+            return Err(format!("Removing old LFS files said {said:?}").into());
+        }
+
+        self.action(Action::Preferences(crate::preferences::Action::Open(Some(crate::preferences::Section::Repository))))?;
+        let pattern = |text: &str| lfs::Pattern { pattern: text.to_owned(), source: ".gitattributes".to_owned() };
+        let (png, psd) = (pattern("*.png"), pattern("*.psd"));
+        let wanted = [png.clone()];
+        self.until("*.png listed in Preferences", move |tab| tab.ui.lfs.listed() == wanted).await?;
+        self.action(Action::Lfs(lfs::Action::AddPattern))?;
+        self.until("the pattern prompt", |tab| {
+            matches!(tab.ui.prompt.asked(), Some(prompt::Kind::Lfs(_)))
+                && prompt::shown(&tab.ui).is_some_and(|spec| spec.title == "Track a pattern with Git LFS")
+        })
+        .await?;
+        let problems = self.prompt_problems("*.png", "")?;
+        if problems != (Some("*.png is already tracked with Git LFS.".to_owned()), None) {
+            return Err(format!("The pattern prompt's check reads {problems:?}").into());
+        }
+        self.type_first("*.psd")?;
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        self.until_said("Tracking *.psd with Git LFS").await?;
+        if fs::read_to_string(&attributes)? != format!("{PNG_LINE}{PSD_LINE}") {
+            return Err(format!("After adding *.psd, .gitattributes reads {:?}", fs::read_to_string(&attributes)?).into());
+        }
+        let wanted = [png.clone(), psd.clone()];
+        self.until("both patterns listed", move |tab| tab.ui.lfs.listed() == wanted).await?;
+
+        self.action(Action::Lfs(lfs::Action::Untrack(png.clone())))?;
+        self.until_said("Stopped tracking *.png with Git LFS").await?;
+        if fs::read_to_string(&attributes)? != PSD_LINE {
+            return Err(format!("After removing *.png, .gitattributes reads {:?}", fs::read_to_string(&attributes)?).into());
+        }
+        let wanted = [psd.clone()];
+        self.until("only *.psd listed", move |tab| tab.ui.lfs.listed() == wanted).await?;
+        let before = Self::calls(&log).len();
+        self.action(Action::Lfs(lfs::Action::Untrack(png)))?;
+        let refused = "*.png is no longer tracked in .gitattributes. Look again.";
+        self.until("removing *.png again refused", move |tab| {
+            !tab.ui.busy() && tab.ui.notices.newest().is_some_and(|notice| notice.title.contains(refused) || notice.detail.contains(refused))
+        })
+        .await?;
+        let calls = Self::calls(&log);
+        if calls[before..].iter().any(|call| call.starts_with("untrack")) || fs::read_to_string(&attributes)? != PSD_LINE {
+            return Err(format!("A stale removal ran {:?}", &calls[before..]).into());
+        }
+        let ran: Vec<&str> = calls.iter().map(String::as_str).filter(|call| *call != "version" && *call != "track").collect();
+        let expected = ["install --local", "track -- *.png", "fetch", "pull", "prune", "track -- *.psd", "untrack -- *.png"];
+        if ran != expected {
+            return Err(format!("The stub Git LFS was asked {ran:?}").into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{first}\n"))?;
+        git_is(&root, &["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"], "refs/heads/main\n")?;
+        git_is(&root, &["diff", "--cached", "--name-only"], "")?;
+        self.action(Action::Preferences(crate::preferences::Action::Close))?;
+
+        fs::remove_file(&stub)?;
+        self.action(Action::Lfs(lfs::Action::CheckAgain))?;
+        self.until_said("Git LFS is still not found. Install it, or add its folder to PATH in your shell's login files, then check again.").await?;
+        let hidden = (self.lfs_rows(&Target::Repo)?, self.lfs_rows(&sunset)?);
+        if !hidden.0.0.is_empty() || !hidden.1.0.is_empty() {
+            return Err(format!("With the stub gone, the menus still offer {hidden:?}").into());
+        }
         self.pass();
         Ok(())
     }

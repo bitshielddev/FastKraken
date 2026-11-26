@@ -30,6 +30,8 @@ const PHASES: &[&str] = &[
     "Checking connectivity",
     "Updating files",
     "Finding sources",
+    "Downloading LFS objects",
+    "Uploading LFS objects",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -298,6 +300,7 @@ pub(crate) enum Kind {
     Clone,
     Submodules,
     AddSubmodule,
+    Lfs,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -335,6 +338,10 @@ impl Spec {
 
     pub(crate) fn adding_submodule() -> Self {
         Self::of(Kind::AddSubmodule, None, true)
+    }
+
+    pub(crate) fn lfs() -> Self {
+        Self::of(Kind::Lfs, None, true)
     }
 
     pub(crate) fn clone_from(host: Option<String>) -> Self {
@@ -425,6 +432,7 @@ impl State {
                 Kind::Clone => "A clone is already running",
                 Kind::Submodules => "Submodules are being updated",
                 Kind::AddSubmodule => "A submodule is being added",
+                Kind::Lfs => "Git LFS is already at work",
                 Kind::Publish | Kind::Write => "Wait for publishing to finish",
             }
             .to_owned(),
@@ -464,6 +472,7 @@ pub(crate) fn cancelled(spec: &Spec) -> Notice {
         Kind::AddSubmodule => {
             Notice::new(Tone::Info, "Adding the submodule cancelled", "Look at the staged changes to see whether Git added anything.")
         }
+        Kind::Lfs => Notice::new(Tone::Info, "Git LFS cancelled", "Files it already downloaded stay downloaded."),
         Kind::Publish | Kind::Write => Notice::new(Tone::Info, "Cancelled", ""),
     }
 }
@@ -618,6 +627,8 @@ mod tests {
         assert_eq!(writing.detail, "3 of 3, 250 bytes | 250.00 KiB/s");
         let rebasing = Progress::parse("Rebasing (3/7)").unwrap();
         assert_eq!((rebasing.phase.as_str(), rebasing.percent, rebasing.text().as_str()), ("Rebasing", Some(42), "Rebasing 42% · commit 3 of 7"));
+        let downloading = Progress::parse("Downloading LFS objects:  50% (1/2), 6.2 MB | 1.3 MB/s").unwrap();
+        assert_eq!(downloading.text(), "Downloading LFS objects 50% · 1 of 2, 6.2 MB | 1.3 MB/s");
         for other in [
             "remote: Create a pull request for 'topic' on GitHub by visiting:",
             "fatal: could not read from remote repository.",

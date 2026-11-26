@@ -321,6 +321,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::journal::COMMANDS,
         crate::worktree::COMMANDS,
         crate::submodule::COMMANDS,
+        crate::lfs::COMMANDS,
     ]
     .into_iter()
     .flatten()

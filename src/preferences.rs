@@ -222,6 +222,7 @@ fn show(tab: &mut Tab, section: Section, cx: &mut Context<Tab>) {
         }
         Section::Tools => crate::tools::start(false, cx),
         Section::Diff => crate::diff_text::look(tab, cx),
+        Section::Repository => crate::lfs::read_patterns(tab, cx),
         Section::Git => {
             crate::identity::read_global(tab, cx);
             if tab.ui.preferences.git.is_none() {
@@ -685,6 +686,7 @@ fn repository<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             view::Action::Submodule(crate::submodule::Action::ToggleOffer),
             cx,
         ))
+        .child(crate::lfs::preferences(ui, cx))
 }
 
 pub(crate) fn radio(on: bool) -> Div {

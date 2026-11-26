@@ -47,6 +47,7 @@ pub(crate) struct Request {
     pub folder: PathBuf,
     pub branch: String,
     pub readme: bool,
+    pub lfs: bool,
 }
 
 impl Request {
@@ -105,6 +106,7 @@ fn git_folder(folder: &Path) -> bool {
 pub(crate) struct Created {
     pub root: PathBuf,
     pub commit: Option<Result<(), String>>,
+    pub lfs: Option<Result<(), String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +118,7 @@ pub(crate) enum Action {
     SetParent(PathBuf),
     SetFolder(PathBuf),
     ToggleReadme,
+    ToggleLfs,
     Submit,
     Close,
     Show(PathBuf),
@@ -130,6 +133,8 @@ pub(crate) struct State {
     parent: PathBuf,
     folder: PathBuf,
     readme: bool,
+    lfs: bool,
+    lfs_found: bool,
 }
 
 impl State {
@@ -138,7 +143,17 @@ impl State {
         let branch = cx.new(|cx| CommitInput::with_placeholder(cx, "main"));
         cx.observe(&name, |_, _, cx| cx.notify()).detach();
         cx.observe(&branch, |_, _, cx| cx.notify()).detach();
-        Self { open: false, mode: Mode::New, name, branch, parent: PathBuf::new(), folder: PathBuf::new(), readme: true }
+        Self {
+            open: false,
+            mode: Mode::New,
+            name,
+            branch,
+            parent: PathBuf::new(),
+            folder: PathBuf::new(),
+            readme: true,
+            lfs: false,
+            lfs_found: false,
+        }
     }
 
     pub(crate) fn open(&self) -> bool {
@@ -153,6 +168,7 @@ impl State {
             folder: self.folder.clone(),
             branch: self.branch.read(cx).text().trim().to_owned(),
             readme: self.readme,
+            lfs: self.lfs && self.lfs_found,
         }
     }
 }
@@ -191,8 +207,9 @@ pub(crate) fn create(request: &Request) -> Result<Created, String> {
         return Err(failed(error));
     }
     let root = fs::canonicalize(&folder).map_err(|error| failed(format!("{} cannot be read: {error}.", folder.display())))?;
+    let lfs = request.lfs.then(|| crate::lfs::set_up_new(&root));
     let commit = request.readme.then(|| readme(&root, &request.branch));
-    Ok(Created { root, commit })
+    Ok(Created { root, commit, lfs })
 }
 
 fn readme(root: &Path, branch: &str) -> Result<(), String> {
@@ -407,10 +424,15 @@ fn show(tab: &mut Tab, mode: Mode, folder: Option<PathBuf>, window: &mut Window,
     state.parent = parent;
     state.folder = folder.unwrap_or_default();
     state.readme = mode == Mode::New;
+    state.lfs = false;
     state.name.update(cx, |name, cx| name.set_text("", cx));
     state.branch.update(cx, |field, cx| field.set_text(&branch, cx));
     let field = if mode == Mode::New { &tab.ui.init.name } else { &tab.ui.init.branch };
     window.focus(&field.focus_handle(cx));
+    Tab::work(cx, crate::lfs::helper_on_path, |tab, found, cx| {
+        tab.ui.init.lfs_found = found;
+        cx.notify();
+    });
 }
 
 fn close(tab: &mut Tab, window: &mut Window) {
@@ -454,6 +476,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::SetParent(path) => tab.ui.init.parent = path,
         Action::SetFolder(path) => tab.ui.init.folder = path,
         Action::ToggleReadme => tab.ui.init.readme = !tab.ui.init.readme,
+        Action::ToggleLfs => tab.ui.init.lfs = !tab.ui.init.lfs,
         Action::Submit => {
             let request = tab.ui.init.request(cx);
             if request.problem().is_some() {
@@ -491,10 +514,21 @@ pub(crate) fn start(tab: &mut Tab, request: Request, cx: &mut Context<Tab>) {
             }
         };
         let branch = &request.branch;
-        let made = match &created.commit {
-            None => Notice::new(Tone::Success, format!("Created {title}"), format!("On {branch}, with no commits yet.")),
-            Some(Ok(())) => Notice::new(Tone::Success, format!("Created {title}"), format!("On {branch}, with {README} as its first commit.")),
-            Some(Err(reason)) => Notice::new(Tone::Info, format!("Created {title}"), reason.clone()).sticky(),
+        let made = match (&created.commit, &created.lfs) {
+            (Some(Err(reason)), _) => Notice::new(Tone::Info, format!("Created {title}"), reason.clone()).sticky(),
+            (_, Some(Err(reason))) => {
+                Notice::new(Tone::Info, format!("Created {title}"), format!("Git LFS was not set up for it: {reason}")).sticky()
+            }
+            (commit, lfs) => {
+                let mut detail = match commit {
+                    None => format!("On {branch}, with no commits yet."),
+                    _ => format!("On {branch}, with {README} as its first commit."),
+                };
+                if lfs.is_some() {
+                    detail.push_str(" Git LFS is set up for it.");
+                }
+                Notice::new(Tone::Success, format!("Created {title}"), detail)
+            }
         };
         let root = created.root;
         let in_the_way = tab.ui.dialog_open() || tab.ui.modal_open();
@@ -597,6 +631,22 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
     let body = body
         .child(div().on_key_down(submit(cx)).child(kit::field("Default branch", state.branch.clone(), branch.map(Into::into))))
         .child(kit::pressable(tick, view::Action::Init(Action::ToggleReadme), cx))
+        .when(state.lfs_found, |d| {
+            let tick = div()
+                .id("init-lfs")
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded(px(RADIUS_CHIP))
+                .text_size(px(12.5))
+                .cursor_pointer()
+                .text_color(rgb(TEXT_2))
+                .focusable()
+                .focus(|s| s.text_color(rgb(TEXT)))
+                .child(kit::checkbox(state.lfs))
+                .child("Set up Git LFS for large files");
+            d.child(kit::pressable(tick, view::Action::Init(Action::ToggleLfs), cx))
+        })
         .when_some(place, |d, place| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(DELETED)).child(place)))
         .child(
             div()
@@ -622,11 +672,19 @@ mod tests {
     }
 
     fn new(parent: &Path, name: &str, branch: &str, readme: bool) -> Request {
-        Request { mode: Mode::New, parent: parent.into(), name: name.into(), folder: PathBuf::new(), branch: branch.into(), readme }
+        Request { mode: Mode::New, parent: parent.into(), name: name.into(), folder: PathBuf::new(), branch: branch.into(), readme, lfs: false }
     }
 
     fn existing(folder: &Path, readme: bool) -> Request {
-        Request { mode: Mode::Existing, parent: PathBuf::new(), name: String::new(), folder: folder.into(), branch: "main".into(), readme }
+        Request {
+            mode: Mode::Existing,
+            parent: PathBuf::new(),
+            name: String::new(),
+            folder: folder.into(),
+            branch: "main".into(),
+            readme,
+            lfs: false,
+        }
     }
 
     fn identity(dir: &Path) -> GlobalConfig {
@@ -652,6 +710,30 @@ mod tests {
         assert_eq!(git(root, &["show", "HEAD:README.md"]), "# Aspen-ridge\n");
         assert_eq!(git(root, &["status", "--porcelain"]), "");
         assert_eq!(git(root, &["for-each-ref", "--format=%(refname)"]), "refs/heads/trunk\n");
+    }
+
+    #[test]
+    fn a_new_repository_can_start_with_git_lfs_set_up_and_says_when_it_could_not() {
+        use crate::lfs::tests::{MANAGER, with_stub};
+        let dir = tempfile::tempdir().unwrap();
+        let _identity = identity(dir.path());
+        let bin = dir.path().join("stub-bin");
+        let request = Request { lfs: true, ..new(dir.path(), "Large-files", "main", true) };
+        let created = with_stub(&bin, MANAGER, || create(&request)).unwrap();
+        assert_eq!((created.lfs.clone(), created.commit.clone()), (Some(Ok(())), Some(Ok(()))));
+        let root = &created.root;
+        assert_eq!(git(root, &["config", "--local", "filter.lfs.clean"]), "git-lfs clean -- %f\n");
+        assert_eq!(fs::read_to_string(bin.join("calls")).unwrap(), "install --local\n");
+        assert_eq!(git(root, &["rev-list", "--count", "HEAD"]), "1\n");
+        assert_eq!(git(root, &["status", "--porcelain"]), "");
+
+        let refused = "#!/bin/sh\necho 'Hook already exists: pre-push' >&2\nexit 2\n";
+        let broken = Request { lfs: true, ..new(dir.path(), "No-large-files", "main", false) };
+        let created = with_stub(&bin, refused, || create(&broken)).unwrap();
+        assert_eq!(created.lfs, Some(Err("Hook already exists: pre-push".to_owned())));
+        assert!(!git(&created.root, &["config", "--local", "--list"]).contains("filter.lfs"));
+        let plain = with_stub(&bin, refused, || create(&new(dir.path(), "Plain-files", "main", false))).unwrap();
+        assert_eq!(plain.lfs, None);
     }
 
     #[test]

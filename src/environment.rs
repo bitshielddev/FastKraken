@@ -52,7 +52,15 @@ fn start(cx: &gpui::App) {
 pub(crate) fn host_dirs() -> &'static [PathBuf] {
     let process = || env::var_os("PATH");
     if isolated() {
-        return EARLY.get_or_init(|| compose(None, process().as_deref(), false));
+        return EARLY.get_or_init(|| {
+            let mut dirs = compose(None, process().as_deref(), false);
+            if let Some(bin) = crate::acceptance::sandbox().map(|sandbox| sandbox.join("bin")) {
+                if !dirs.contains(&bin) {
+                    dirs.push(bin);
+                }
+            }
+            dirs
+        });
     }
     match answered(LOGIN.get(), USE_LOGIN.load(Ordering::Relaxed)) {
         Some(login) => RESOLVED.get_or_init(|| compose(login.as_deref(), process().as_deref(), true)),
