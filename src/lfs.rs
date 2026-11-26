@@ -46,6 +46,7 @@ pub(crate) struct State {
     pub(crate) dismissed: bool,
     declared: bool,
     read_at: Option<Option<String>>,
+    attributes_listed: bool,
     marked: HashMap<Source, HashSet<PathBuf>>,
     trees: VecDeque<String>,
     ticket: u64,
@@ -67,6 +68,10 @@ impl State {
 
     pub(crate) fn strip_text(&self) -> String {
         format!("{NOT_INSTALLED} {}", if self.configured { WILL_FAIL } else { AS_POINTERS })
+    }
+
+    fn rereads(&self, head: &Option<String>, attributes: bool) -> bool {
+        attributes || self.attributes_listed || self.read_at.as_ref() != Some(head)
     }
 
     fn keep(&mut self, source: Source, paths: HashSet<PathBuf>) {
@@ -300,8 +305,7 @@ pub(crate) fn status_changed(tab: &mut Tab, cx: &mut Context<Tab>) {
     let head = tab.ui.head.clone();
     let attributes = paths.iter().any(|path| path.file_name().is_some_and(|name| name == ".gitattributes"));
     let state = &mut tab.ui.lfs;
-    let reread = attributes || state.read_at.as_ref() != Some(&head);
-    state.read_at = Some(head);
+    let reread = state.rereads(&head, attributes);
     state.ticket += 1;
     let (ticket, epoch, known) = (state.ticket, tab.epoch, state.declared);
     Tab::work(
@@ -320,6 +324,8 @@ pub(crate) fn status_changed(tab: &mut Tab, cx: &mut Context<Tab>) {
             }
             let state = &mut tab.ui.lfs;
             let arrived = used && !state.used;
+            state.read_at = Some(head);
+            state.attributes_listed = attributes;
             state.declared = declared;
             state.used = used;
             state.configured = configured;
@@ -674,6 +680,22 @@ mod tests {
         assert!(state.strip_text().ends_with("Checking out or staging those files fails until it is installed."));
         state.dismissed = true;
         assert!(!state.strip_shown() && state.missing());
+    }
+
+    #[test]
+    fn the_attributes_are_read_again_until_a_reading_lands_and_after_a_listed_gitattributes_goes() {
+        let mut state = State::default();
+        let head = Some("a".repeat(40));
+        assert!(state.rereads(&head, false));
+        assert!(state.rereads(&head, false));
+        state.read_at = Some(head.clone());
+        assert!(!state.rereads(&head, false));
+        assert!(state.rereads(&head, true));
+        assert!(state.rereads(&Some("b".repeat(40)), false));
+        state.attributes_listed = true;
+        assert!(state.rereads(&head, false));
+        state.attributes_listed = false;
+        assert!(!state.rereads(&head, false));
     }
 
     #[test]
