@@ -1,10 +1,14 @@
 use super::*;
 use crate::{
     commands::{self, Availability, Target},
+    compare::{self, Rev},
     journal,
     notice,
+    picked::How,
+    rewrite,
     view::Tone,
 };
+use gpui::Focusable;
 
 type Said = (Tone, String, String, Vec<String>);
 
@@ -33,7 +37,11 @@ impl Replay<'_> {
         self.undo_a_discard(dir).await?;
         self.refuse_after_an_outside_change(dir).await?;
         self.refuse_to_undo_a_push(dir).await?;
-        self.hide_private_refs(dir).await
+        self.hide_private_refs(dir).await?;
+        self.reword_the_third_commit(dir).await?;
+        self.drop_a_commit(dir).await?;
+        self.squash_three_commits(dir).await?;
+        self.refuse_a_range_with_a_merge(dir).await
     }
 
     fn menu_rows_now(&mut self) -> Result<[(String, bool); 2]> {
@@ -388,6 +396,260 @@ impl Replay<'_> {
             tab.ui.history.iter().any(|row| row.oid == scouted && row.refs.split(", ").any(|label| label == "spur"))
         })
         .await?;
+        self.pass();
+        Ok(())
+    }
+
+    fn message_fields(&mut self) -> Result<Option<(String, String)>> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            let summary = tab.ui.prompt.field()?.read(cx).text().to_owned();
+            let description = tab.ui.prompt.second()?.read(cx).text().to_owned();
+            Some((summary, description))
+        })?)
+    }
+
+    fn write_message(&mut self, summary: &str, description: &str) -> Result<()> {
+        self.tab.update(self.cx, |tab, _, cx| {
+            let fields = (tab.ui.prompt.field().cloned(), tab.ui.prompt.second().cloned());
+            if let (Some(first), Some(second)) = fields {
+                first.update(cx, |field, cx| field.set_text(summary, cx));
+                second.update(cx, |field, cx| field.set_text(description, cx));
+            }
+        })?;
+        Ok(())
+    }
+
+    fn type_in_description(&mut self, text: &str) -> Result<()> {
+        self.tab.update(self.cx, |tab, window, cx| {
+            if let Some(second) = tab.ui.prompt.second().cloned() {
+                window.focus(&second.focus_handle(cx));
+                second.update(cx, |field, cx| field.replace_text_in_range(None, text, window, cx));
+            }
+        })?;
+        Ok(())
+    }
+
+    fn history_of(root: &Path) -> Result<Vec<String>> {
+        Ok(git(root, &["log", "--format=%H %T %an <%ae> %ad", "main"])?.lines().map(str::to_owned).collect())
+    }
+
+    async fn reword_the_third_commit(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1010");
+        let root = init(dir, "Reword-trail")?;
+        record(&root, "camp.txt", "Tents\n", "Pitch the camp")?;
+        record(&root, "map.txt", "Creek\n", "Map the creek")?;
+        record(&root, "ridge.txt", "Pass\n", "Climb the rdige")?;
+        record(&root, "lake.txt", "Cold\n", "Swim in the lake")?;
+        record(&root, "summit.txt", "Flag\n", "Reach the summit")?;
+        let before = Self::history_of(&root)?;
+        let third = oid(&root, "main~2")?;
+        let untouched = (oid(&root, "main~3")?, oid(&root, "main~4")?);
+        self.open(&root)?;
+        self.until("Reword-trail open with five commits", |tab| tab.ui.repo == "Reword-trail" && tab.ui.history.len() == 5).await?;
+        self.select_commit(&third).await?;
+        let button = self.tab.read_with(self.cx, |tab, cx| {
+            rewrite::offered(&tab.ui, "commit.reword", std::slice::from_ref(&third), cx)
+                .map(|entry| (entry.title, entry.disabled, entry.action.is_some()))
+        })?;
+        if button != Some(("Edit commit message…".to_owned(), None, true)) {
+            return Err(format!("The details panel's Edit button runs {button:?}").into());
+        }
+        self.choose(&Target::Commit(third.clone()), "commit.reword")?;
+        let (lines, danger) = self.asked_about("Edit commit message").await?;
+        if danger || lines != ["Rewording this commit message will cause 3 commits to be rebased."] {
+            return Err(format!("The reword prompt reads {lines:?}").into());
+        }
+        let fields = self.message_fields()?;
+        if fields != Some(("Climb the rdige".to_owned(), String::new())) {
+            return Err(format!("The reword prompt is prefilled with {fields:?}").into());
+        }
+        self.write_message("Climb the ridge", "Over the pass")?;
+        self.type_in_description("")?;
+        self.key("enter")?;
+        self.type_in_description("At first light")?;
+        let fields = self.message_fields()?;
+        if fields != Some(("Climb the ridge".to_owned(), "Over the pass\nAt first light".to_owned())) {
+            return Err(format!("After Return in the description the prompt holds {fields:?}").into());
+        }
+        self.key(CMD_RETURN)?;
+        let said = self.settled_notice("Commit message updated").await?;
+        let tip = oid(&root, "main")?;
+        let detail = format!("3 commits were rewritten. main is at {}.", notice::short(&tip));
+        if said != (Tone::Success, "Commit message updated".to_owned(), detail, vec!["Undo".to_owned()]) {
+            return Err(format!("Rewording said {said:?}").into());
+        }
+        git_is(&root, &["log", "-1", "--format=%B", "main~2"], "Climb the ridge\n\nOver the pass\nAt first light\n\n")?;
+        git_is(&root, &["log", "--format=%s", "main"], "Reach the summit\nSwim in the lake\nClimb the ridge\nMap the creek\nPitch the camp\n")?;
+        let after = Self::history_of(&root)?;
+        let content = |lines: &[String]| lines.iter().map(|line| line.split_once(' ').map_or("", |(_, rest)| rest).to_owned()).collect::<Vec<_>>();
+        if content(&after) != content(&before) {
+            return Err(format!("The trees, authors or dates changed: {before:?} became {after:?}").into());
+        }
+        if (oid(&root, "main~3")?, oid(&root, "main~4")?) != untouched {
+            return Err("The commits below the reworded one were rewritten".into());
+        }
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        if root.join(".git/rebase-merge").exists() {
+            return Err("The rebase was left in progress".into());
+        }
+        let rows = self.menu_rows_now()?;
+        if rows[0] != ("Undo Reword 'Climb the rdige'".to_owned(), true) {
+            return Err(format!("After the reword the Edit menu reads {rows:?}").into());
+        }
+        self.pass();
+        Ok(())
+    }
+
+    async fn drop_a_commit(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1011");
+        let root = init(dir, "Drop-trail")?;
+        record(&root, "camp.txt", "Tents\n", "Pitch the camp")?;
+        record(&root, "map.txt", "Creek\n", "Map the creek")?;
+        let map = oid(&root, "HEAD")?;
+        record(&root, "ridge.txt", "Pass\n", "Climb the ridge")?;
+        let ridge = oid(&root, "HEAD")?;
+        record(&root, "lake.txt", "Cold\n", "Swim in the lake")?;
+        let tip = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Drop-trail open with four commits", |tab| tab.ui.repo == "Drop-trail" && tab.ui.history.len() == 4).await?;
+        self.select_commit(&ridge).await?;
+        self.choose(&Target::Commit(ridge.clone()), "commit.drop")?;
+        let short = notice::short(&ridge).to_owned();
+        let (lines, danger) = self.asked_about(&format!("Drop commit {short}?")).await?;
+        let expected = [
+            "This commit and its changes leave main:".to_owned(),
+            format!("{short} Climb the ridge"),
+            "1 later commit will be rebased.".to_owned(),
+            "Undo, in the notice that follows, brings them back.".to_owned(),
+        ];
+        if !danger || lines != expected {
+            return Err(format!("The drop prompt reads {lines:?}").into());
+        }
+        self.key(CMD_RETURN)?;
+        let said = self.settled_notice("Dropped 1 commit from main").await?;
+        if said.0 != Tone::Success || said.3 != ["Undo"] {
+            return Err(format!("Dropping said {said:?}").into());
+        }
+        git_is(&root, &["log", "--format=%s", "main"], "Swim in the lake\nMap the creek\nPitch the camp\n")?;
+        git_is(&root, &["ls-tree", "--name-only", "main"], "camp.txt\nlake.txt\nmap.txt\n")?;
+        git_is(&root, &["rev-parse", "main^"], &format!("{map}\n"))?;
+        git_is(&root, &["show", "main:lake.txt"], "Cold\n")?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        if root.join("ridge.txt").exists() {
+            return Err("ridge.txt is still in the working tree".into());
+        }
+        let rows = self.menu_rows_now()?;
+        if rows[0] != ("Undo Drop 'Climb the ridge'".to_owned(), true) {
+            return Err(format!("After the drop the Edit menu reads {rows:?}").into());
+        }
+        self.focus_desk()?;
+        self.key("cmd-z")?;
+        self.settled_notice("Undid: Drop 'Climb the ridge'").await?;
+        git_is(&root, &["rev-parse", "main"], &format!("{tip}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn squash_three_commits(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1012");
+        let root = init(dir, "Squash-trail")?;
+        record(&root, "camp.txt", "Tents\n", "Pitch the camp")?;
+        let camp = oid(&root, "HEAD")?;
+        record(&root, "map.txt", "Creek\n", "Map the creek")?;
+        let map = oid(&root, "HEAD")?;
+        record(&root, "ridge.txt", "Pass\n", "Climb the ridge")?;
+        let ridge = oid(&root, "HEAD")?;
+        record(&root, "lake.txt", "Cold\n", "Swim in the lake")?;
+        let lake = oid(&root, "HEAD")?;
+        record(&root, "summit.txt", "Flag\n", "Reach the summit")?;
+        let summit = git(&root, &["rev-parse", "main^{tree}"])?;
+        self.open(&root)?;
+        self.until("Squash-trail open with five commits", |tab| tab.ui.repo == "Squash-trail" && tab.ui.history.len() == 5).await?;
+        self.action(Action::Select(Selection::Commit(lake.clone())))?;
+        self.until("Swim in the lake selected", |tab| tab.ui.selection == Some(Selection::Commit(lake.clone()))).await?;
+        for oid in [&ridge, &map] {
+            self.action(Action::Compare(compare::Action::Pick { rev: Rev::Commit(oid.clone()), how: How::Toggle }))?;
+        }
+        self.until("three commits picked", |tab| tab.ui.compare.count() == 3 && matches!(tab.ui.selection, Some(Selection::Compare { .. }))).await?;
+        let button = self.tab.read_with(self.cx, |tab, cx| {
+            rewrite::offered(&tab.ui, "commits.squash", compare::picked_commits(&tab.ui), cx)
+                .map(|entry| (entry.title, entry.disabled, entry.action.is_some()))
+        })?;
+        if button != Some(("Squash 3 commits…".to_owned(), None, true)) {
+            return Err(format!("The panel's Squash button is {button:?}").into());
+        }
+        self.choose(&Target::Commits(vec![lake.clone(), ridge.clone(), map.clone()]), "commits.squash")?;
+        let (lines, danger) = self.asked_about("Squash 3 commits").await?;
+        if danger || lines != ["Their changes become one commit on main, with the message below.", "1 later commit will be rebased."] {
+            return Err(format!("The squash prompt reads {lines:?}").into());
+        }
+        let fields = self.message_fields()?;
+        if fields != Some(("Map the creek".to_owned(), "Climb the ridge\n\nSwim in the lake".to_owned())) {
+            return Err(format!("The squash prompt is prefilled with {fields:?}").into());
+        }
+        self.write_message("Cross the valley", "Creek, ridge and lake")?;
+        self.key(CMD_RETURN)?;
+        let said = self.settled_notice("Squashed 3 commits into one").await?;
+        if said.0 != Tone::Success {
+            return Err(format!("Squashing said {said:?}").into());
+        }
+        git_is(&root, &["log", "--format=%s", "main"], "Reach the summit\nCross the valley\nPitch the camp\n")?;
+        git_is(&root, &["log", "-1", "--format=%B", "main^"], "Cross the valley\n\nCreek, ridge and lake\n\n")?;
+        git_is(&root, &["diff", "--name-only", "main~2", "main^"], "lake.txt\nmap.txt\nridge.txt\n")?;
+        git_is(&root, &["rev-parse", "main~2"], &format!("{camp}\n"))?;
+        git_is(&root, &["rev-parse", "main^{tree}"], &summit)?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        self.pass();
+        Ok(())
+    }
+
+    async fn refuse_a_range_with_a_merge(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1013");
+        let root = init(dir, "Merge-trail")?;
+        record(&root, "camp.txt", "Tents\n", "Pitch the camp")?;
+        git(&root, &["switch", "-qc", "side"])?;
+        record(&root, "side.txt", "Path\n", "Take the side path")?;
+        git(&root, &["switch", "-q", "main"])?;
+        record(&root, "map.txt", "Creek\n", "Map the creek")?;
+        let map = oid(&root, "HEAD")?;
+        git(&root, &["merge", "-q", "--no-ff", "-m", "Join the side path", "side"])?;
+        let merge = oid(&root, "HEAD")?;
+        record(&root, "summit.txt", "Flag\n", "Reach the summit")?;
+        let tip = oid(&root, "HEAD")?;
+        let refs = git(&root, &["for-each-ref", "--format=%(refname) %(objectname)"])?;
+        self.open(&root)?;
+        self.until("Merge-trail open with the merge", |tab| tab.ui.repo == "Merge-trail" && tab.ui.history.iter().any(|row| row.oid == merge)).await?;
+        self.select_commit(&map).await?;
+        self.choose(&Target::Commit(map.clone()), "commit.reword")?;
+        self.until("the limit stated", |tab| {
+            !tab.ui.busy() && tab.ui.notices.newest().is_some_and(|n| n.detail == rewrite::ACROSS_MERGE)
+        })
+        .await?;
+        let said = self.said()?;
+        let refusal = (Tone::Info, "The message cannot be edited here".to_owned(), rewrite::ACROSS_MERGE.to_owned(), Vec::new());
+        if said.as_ref() != Some(&refusal) || self.tab.read_with(self.cx, |tab, _| tab.ui.prompt.open())? {
+            return Err(format!("Rewording below the merge said {said:?}").into());
+        }
+        self.action(Action::Select(Selection::Commit(tip.clone())))?;
+        self.until("Reach the summit selected", |tab| tab.ui.selection == Some(Selection::Commit(tip.clone()))).await?;
+        self.action(Action::Compare(compare::Action::Pick { rev: Rev::Commit(merge.clone()), how: How::Toggle }))?;
+        self.until("the summit and the merge picked", |tab| tab.ui.compare.count() == 2).await?;
+        let picked = Target::Commits(vec![tip.clone(), merge.clone()]);
+        let rows: Vec<_> = self.menu_rows(&picked)?.into_iter().filter(|row| row.0.starts_with("commits.squash") || row.0 == "commits.drop").collect();
+        let reason = Some(rewrite::ACROSS_MERGE.to_owned());
+        let expected = [
+            ("commits.squash", "Squash 2 commits…".to_owned(), reason.clone()),
+            ("commits.drop", "Drop 2 commits…".to_owned(), reason.clone()),
+        ];
+        if rows != expected {
+            return Err(format!("With a merge picked the menu lists {rows:?}").into());
+        }
+        git_is(&root, &["for-each-ref", "--format=%(refname) %(objectname)"], &refs)?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all"], "")?;
+        if root.join(".git/rebase-merge").exists() {
+            return Err("A rebase was started".into());
+        }
         self.pass();
         Ok(())
     }

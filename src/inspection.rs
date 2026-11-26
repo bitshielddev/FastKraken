@@ -413,6 +413,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         return div();
     };
     let more_open = matches!(ui.menu, Some(Menu::CommitActions));
+    let reword = crate::rewrite::offered(ui, "commit.reword", std::slice::from_ref(oid), cx);
     let (added, deleted) = state
         .stats
         .values()
@@ -432,6 +433,18 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .items_start()
                 .gap_2()
                 .child(div().flex_1().min_w_0().child(ui.message.subject.clone()))
+                .when_some(reword, |d, entry| {
+                    let tip = entry.disabled.clone().unwrap_or_else(|| "Edit this commit's message".to_owned());
+                    d.child(
+                        kit::btn("commit-edit-message", "Edit")
+                            .small()
+                            .ghost()
+                            .icon("pencil")
+                            .enabled(entry.disabled.is_none())
+                            .tip(tip)
+                            .on(entry.action.unwrap_or(view::Action::Dismiss), cx),
+                    )
+                })
                 .child(
                     div()
                         .relative()

@@ -121,7 +121,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
     ]
 };
 
-fn on_branch(ui: &Ui) -> bool {
+pub(crate) fn on_branch(ui: &Ui) -> bool {
     !ui.detached && ui.head.is_some() && ui.head_ref.as_deref().is_some_and(|r| r.as_bytes().starts_with(b"refs/heads/"))
 }
 
@@ -185,7 +185,7 @@ fn count(repo: &Repository, filter: &str, tip: &str, target: &str) -> Result<usi
     String::from_utf8_lossy(&counted).trim().parse().map_err(|_| "Git did not report a commit count.".to_owned())
 }
 
-fn upstream_of(repo: &Repository, full: &OsStr) -> Result<Option<(String, String)>, String> {
+pub(crate) fn upstream_of(repo: &Repository, full: &OsStr) -> Result<Option<(String, String)>, String> {
     let listed = checked(
         repo.read_command()
             .args(["for-each-ref", "--format=%(refname)%00%(upstream)", "--"])
@@ -353,6 +353,10 @@ pub(crate) fn replay(
         command.arg(short);
     }
     let output = crate::repository::run(&mut command).map_err(|e| Failure::from(format!("Run bundled Git: {e}")))?;
+    ended(repo, &output, autostash)
+}
+
+pub(crate) fn ended(repo: &Repository, output: &std::process::Output, autostash: bool) -> Result<String, Failure> {
     let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     let gits_words = || {
         let text = String::from_utf8_lossy(&output.stderr).trim().to_owned();
@@ -376,7 +380,7 @@ pub(crate) fn replay(
     }
 }
 
-fn head_now(repo: &Repository) -> Result<String, Failure> {
+pub(crate) fn head_now(repo: &Repository) -> Result<String, Failure> {
     let head = checked(repo.read_command().args(["rev-parse", "--verify", "HEAD^{commit}"]))?;
     let head = String::from_utf8_lossy(&head).trim().to_owned();
     validate_oid(&head)?;

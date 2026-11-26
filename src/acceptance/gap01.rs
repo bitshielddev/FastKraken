@@ -562,7 +562,19 @@ impl Replay<'_> {
         }
         let rows = self.menu_rows(&Target::Commit(tip))?;
         let disabled: Vec<_> = rows.iter().filter(|row| row.2.is_some()).map(|row| row.0).collect();
-        if disabled != ["commit.branch", "commit.tag", "branch.switch", "commit.checkout", "commit.merge", "commit.revert", "commit.reset"]
+        if disabled
+            != [
+                "commit.branch",
+                "commit.tag",
+                "branch.switch",
+                "commit.checkout",
+                "commit.merge",
+                "commit.revert",
+                "commit.reset",
+                "commit.reword",
+                "commit.squash-into-parent",
+                "commit.drop",
+            ]
             || rows.iter().rev().take(3).map(|row| row.0).collect::<Vec<_>>()
                 != ["commit.save-patch", "commit.copy-message", "commit.copy-sha"]
             || rows.iter().any(|row| row.2.is_some() && row.2 != reason)
@@ -687,6 +699,9 @@ impl Replay<'_> {
                 "commit.merge",
                 "commit.revert",
                 "commit.reset",
+                "commit.reword",
+                "commit.squash-into-parent",
+                "commit.drop",
                 "commit.compare-working",
                 "commit.browse-files",
                 "commit.copy-sha",

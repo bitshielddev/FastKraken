@@ -88,7 +88,7 @@ fn wanted<'a>(ui: &Ui, oids: &'a [String]) -> Vec<&'a String> {
     oids.iter().filter(|oid| !on_head.contains(oid.as_str())).collect()
 }
 
-fn reached_from<'a>(history: &[view::HistoryRow], head: &str, oids: &'a [String]) -> HashSet<&'a str> {
+pub(crate) fn reached_from<'a>(history: &[view::HistoryRow], head: &str, oids: &'a [String]) -> HashSet<&'a str> {
     let picked: HashSet<&str> = oids.iter().map(String::as_str).collect();
     let mut found: HashSet<&str> = picked.iter().copied().filter(|oid| *oid == head).collect();
     let mut passed = 0;

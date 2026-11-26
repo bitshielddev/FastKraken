@@ -688,6 +688,9 @@ fn fork_switch<T: Desk>(since_fork: bool, cx: &mut Context<T>) -> Div {
         )
 }
 
+const REWRITE_BUTTONS: [(&str, &str, &str, &str); 2] =
+    [("commits.squash", "squash-picked", "Squash…", "merge"), ("commits.drop", "drop-picked", "Drop…", "trash")];
+
 pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     let ui = app.ui();
     let Some(heading) = heading(ui) else { return div() };
@@ -736,6 +739,16 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                             .tip(entry.disabled.clone().unwrap_or(entry.title));
                         d.child(button.on(entry.action.unwrap_or(view::Action::Dismiss), cx))
                     })
+                    .children(REWRITE_BUTTONS.into_iter().filter_map(|(command, id, label, icon)| {
+                        crate::rewrite::offered(ui, command, oids, cx).map(|entry| {
+                            kit::btn(id, label)
+                                .small()
+                                .icon(icon)
+                                .enabled(entry.disabled.is_none())
+                                .tip(entry.disabled.clone().unwrap_or(entry.title))
+                                .on(entry.action.unwrap_or(view::Action::Dismiss), cx)
+                        })
+                    }))
                     .child(
                         kit::btn("copy-picked-shas", format!("Copy {} SHAs", oids.len()))
                             .small()

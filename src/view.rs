@@ -597,6 +597,7 @@ pub enum Action {
     Journal(crate::journal::Action),
     Ignore(crate::ignore::Action),
     Rebase(crate::rebase::Action),
+    Rewrite(crate::rewrite::Action),
     Autostash(crate::autostash::Action),
     Explain(crate::explain::Action),
     Select(Selection),

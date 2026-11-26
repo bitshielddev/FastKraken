@@ -4,7 +4,7 @@ use crate::{
     view::{self, ActivateControl, CommitInput, Desk, Ui},
 };
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseButton, SharedString, Window,
+    App, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseButton, NoAction, SharedString, Window,
     actions, deferred, div, prelude::*, px, rgb,
 };
 
@@ -23,6 +23,7 @@ pub(crate) fn bindings(cx: &mut App) {
         KeyBinding::new("enter", Return, prompt),
         KeyBinding::new("enter", Return, Some("Prompt > DeskButton")),
         KeyBinding::new(&format!("{modifier}-enter"), Accept, prompt),
+        KeyBinding::new("enter", NoAction, Some("PromptLines > CommitField")),
     ]);
 }
 
@@ -33,6 +34,7 @@ pub(crate) struct Spec {
     pub confirm: SharedString,
     pub field: Option<Field>,
     pub second: Option<Field>,
+    pub second_lines: bool,
     pub note: Option<Note>,
     pub tick: Option<(SharedString, bool)>,
     pub fixed_tick: bool,
@@ -67,6 +69,7 @@ impl Spec {
             confirm: confirm.into(),
             field: None,
             second: None,
+            second_lines: false,
             note: None,
             tick: None,
             fixed_tick: false,
@@ -139,6 +142,7 @@ pub(crate) enum Kind {
     Drag(crate::drag::Ask),
     PushTo(crate::push_to::Ask),
     Patch(crate::patch::Ask),
+    Rewrite(crate::rewrite::Plan),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -166,6 +170,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Drag(ask) => crate::drag::describe(ask, ui),
         Kind::PushTo(ask) => crate::push_to::describe(ask, ui),
         Kind::Patch(ask) => crate::patch::describe(ask, ui),
+        Kind::Rewrite(plan) => crate::rewrite::describe(plan, ui),
     }
 }
 
@@ -194,6 +199,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Drag(ask) => crate::drag::confirm(tab, ask, answer, cx),
         Kind::PushTo(ask) => crate::push_to::confirm(tab, ask, answer, cx),
         Kind::Patch(ask) => crate::patch::confirm(tab, ask, answer, cx),
+        Kind::Rewrite(plan) => crate::rewrite::confirm(tab, plan, answer, cx),
     }
 }
 
@@ -323,10 +329,13 @@ pub(crate) fn ticks(spec_items: &[Item], state: &[bool]) -> Vec<bool> {
 pub(crate) fn ask(ui: &mut Ui, kind: Kind, cx: &mut Context<Tab>) {
     let spec = describe(&kind, ui);
     let state = &mut ui.prompt;
-    let mut made = |field: Field| {
+    let lines = spec.second_lines;
+    let mut made = |field: Field, multiline: bool| {
         let input = cx.new(|cx| {
             let mut input = if field.masked {
                 CommitInput::secret(cx, field.placeholder)
+            } else if multiline {
+                CommitInput::multiline(cx, field.placeholder)
             } else {
                 CommitInput::with_placeholder(cx, field.placeholder)
             };
@@ -336,8 +345,8 @@ pub(crate) fn ask(ui: &mut Ui, kind: Kind, cx: &mut Context<Tab>) {
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
         input
     };
-    state.field = spec.field.map(&mut made);
-    state.second = spec.second.map(&mut made);
+    state.field = spec.field.map(|field| made(field, false));
+    state.second = spec.second.map(|field| made(field, lines));
     state.tick = spec.tick.is_some_and(|(_, ticked)| ticked);
     state.items = spec.items.iter().map(|item| item.ticked).collect();
     state.item_handles = spec.items.iter().map(|_| cx.focus_handle()).collect();
@@ -560,7 +569,8 @@ pub(crate) fn render<T: Desk>(app: &T, capslock: bool, cx: &mut Context<T>) -> O
         body = body.child(kit::field(field.label, input.clone(), help(field, first_problem)));
     }
     if let (Some(field), Some(input)) = (&spec.second, &state.second) {
-        body = body.child(kit::field(field.label, input.clone(), help(field, second_problem)));
+        let input = div().when(spec.second_lines, |d| d.key_context("PromptLines")).child(input.clone());
+        body = body.child(kit::field(field.label, input, help(field, second_problem)));
     }
     if let Some(note) = &spec.note {
         let mut line = div()

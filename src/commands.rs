@@ -286,6 +286,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::operation::COMMANDS,
         crate::conflict::COMMANDS,
         crate::reverse::COMMANDS,
+        crate::rewrite::COMMANDS,
         crate::recover::COMMANDS,
         crate::inspection::COMMANDS,
         crate::file_history::COMMANDS,

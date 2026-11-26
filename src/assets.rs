@@ -46,6 +46,7 @@ icons!(
     "merge",
     "minus",
     "more",
+    "pencil",
     "ok",
     "pin",
     "plus",

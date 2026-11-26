@@ -24,6 +24,7 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             let how = if name == "cpick" { crate::picked::How::Toggle } else { crate::picked::How::Range };
             Action::Compare(crate::compare::Action::Pick { rev: crate::compare::Rev::Commit(row.oid.clone()), how })
         }),
+        "reword" => tab.ui.history.get(index).map(|row| Action::Rewrite(crate::rewrite::Action::Reword(row.oid.clone()))),
         "cfile" => tab
             .ui
             .compare

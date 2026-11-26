@@ -1271,6 +1271,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::Reverse(_)
         | A::Pick(_)
         | A::Rebase(_)
+        | A::Rewrite(_)
         | A::StageHunk(_)
         | A::UnstageHunk(_)
         | A::StageFile

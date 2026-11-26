@@ -73,6 +73,7 @@ mod remotes;
 mod repository;
 mod reveal;
 mod reverse;
+mod rewrite;
 mod scene;
 mod scrollbar;
 mod search;
@@ -1697,6 +1698,7 @@ impl Tab {
             Action::Journal(action) => journal::dispatch(self, action, window, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
+            Action::Rewrite(action) => rewrite::dispatch(self, action, window, cx),
             Action::Autostash(action) => autostash::dispatch(self, action, window, cx),
             Action::Explain(action) => explain::dispatch(self, action, window, cx),
             Action::Stash(action) => stash::dispatch(self, action, window, cx),
@@ -1942,6 +1944,12 @@ fn main() {
         && !all[0].as_encoded_bytes().starts_with(b"--git-credential")
     {
         std::process::exit(askpass::helper(&all[0]));
+    }
+    if let Some(prepared) = std::env::var_os(rewrite::TODO_FILE)
+        && let [target] = all.as_slice()
+        && let Some(code) = rewrite::edit_todo(&prepared, target)
+    {
+        std::process::exit(code);
     }
     let mut args = all.into_iter();
     let first = args.next();

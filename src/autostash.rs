@@ -41,6 +41,7 @@ pub(crate) enum Retry {
     Picks(Box<crate::pick::Series>),
     Revert(Box<crate::reverse::Ask>),
     Rebase(Box<crate::rebase::Ask>),
+    Rewrite(Box<crate::rewrite::Rewrite>),
     Merge { source: crate::merge::Source, mode: crate::merge::Mode, expected: String, seen: Seen },
     Pull { head: String, strategy: crate::sync::Strategy },
     Journal { redo: bool, id: u64 },
@@ -87,6 +88,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
                 Retry::Picks(series) => crate::pick::run_series(tab, *series, true, cx),
                 Retry::Revert(ask) => crate::reverse::revert(tab, *ask, true, cx),
                 Retry::Rebase(ask) => crate::rebase::run(tab, *ask, true, cx),
+                Retry::Rewrite(rewrite) => crate::rewrite::run(tab, *rewrite, true, cx),
                 Retry::Merge { source, mode, expected, seen } => crate::merge::start(tab, source, mode, expected, seen, true, cx),
                 Retry::Pull { head, strategy } => crate::sync::pull_stashing(tab, head, strategy, cx),
                 Retry::Journal { redo, id } => {
