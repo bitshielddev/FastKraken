@@ -350,6 +350,16 @@ impl Start {
         })
     }
 
+    pub(crate) fn again(self, editor: Option<&Editor>) -> Result<Self, String> {
+        match editor.filter(|editor| editor.loaded.ends == self.ends) {
+            Some(editor) => match editor.start_refusal() {
+                Some(reason) => Err(reason),
+                None => Self::of(editor),
+            },
+            None => Ok(self),
+        }
+    }
+
     pub(crate) fn apply(&self, repo: &Repository, stash: bool, kept: &Kept) -> Result<Outcome, Failure> {
         let ends = &self.ends;
         validate_oid(&ends.tip)?;
@@ -787,6 +797,16 @@ pub(crate) fn run(tab: &mut Tab, start: Start, stash: bool, cx: &mut Context<Tab
             }
         },
     );
+}
+
+pub(crate) fn retry(tab: &mut Tab, start: Start, cx: &mut Context<Tab>) {
+    match start.again(tab.ui.rebase_editor.editor()) {
+        Ok(start) => run(tab, start, true, cx),
+        Err(reason) => {
+            tab.ui.notices.show(Notice::new(Tone::Info, reason, ""));
+            cx.notify();
+        }
+    }
 }
 
 fn scroll_to(editor: &Editor) {
@@ -1428,6 +1448,60 @@ mod tests {
         assert!(outcome.detail.ends_with("Your local changes were stashed first and put back."), "{}", outcome.detail);
         assert_eq!(subjects(&f, "main"), ["Swim in the lake", "Map the creek", "Pitch the camp", "Start the trail"]);
         assert_eq!(fs::read_to_string(f.dir.join("lake.txt")).unwrap(), "warm\n");
+    }
+
+    #[test]
+    fn a_retry_after_local_changes_runs_the_choices_the_editor_shows_now() {
+        let (f, base) = trail();
+        let mut editor = editor(&f, Source::Commit(base));
+        editor.rows[1].choice = Choice::Drop;
+        fs::write(f.dir.join("lake.txt"), "warm\n").unwrap();
+        let first = Start::of(&editor).unwrap();
+        let err = first.apply(&f.repo, false, &Kept::default()).err().expect("the local change is in the way");
+        assert!(err.actions.iter().any(|action| action.0 == crate::autostash::RETRY), "{err:?}");
+        editor.rows[1].choice = Choice::Pick;
+        assert_eq!(first.clone().again(Some(&editor)).err().as_deref(), Some(UNCHANGED));
+        editor.rows[2].choice = Choice::Drop;
+        let elsewhere = self::editor(&f, Source::Commit(oid(&f, "main~1")));
+        assert_eq!(first.clone().again(Some(&elsewhere)).unwrap().todo, first.todo);
+        assert_eq!(first.clone().again(None).unwrap().todo, first.todo);
+        let again = first.again(Some(&editor)).unwrap();
+        assert_eq!(again.todo, todo(&editor.rows).unwrap());
+        again.apply(&f.repo, true, &Kept::default()).ok().expect("the retry runs");
+        assert_eq!(subjects(&f, "main"), ["Swim in the lake", "Climb the ridge", "Pitch the camp", "Start the trail"]);
+        assert_eq!(fs::read_to_string(f.dir.join("lake.txt")).unwrap(), "warm\n");
+    }
+
+    #[test]
+    fn a_branch_to_switch_to_that_moved_since_the_editor_opened_is_refused() {
+        let f = Fixture::new();
+        commit(&f, "base.txt", "start\n", "Start the trail");
+        f.git(&["switch", "-qc", "feature"]);
+        commit(&f, "camp.txt", "tents\n", "Pitch the camp");
+        commit(&f, "map.txt", "creek\n", "Map the creek");
+        f.git(&["switch", "-q", "main"]);
+        commit(&f, "bridge.txt", "stone\n", "Bridge the river");
+        let main = oid(&f, "main");
+        let ends = Ends {
+            branch: "feature".into(),
+            full: "refs/heads/feature".into(),
+            switch: true,
+            seen: Seen { head_ref: Some("refs/heads/main".into()), head: Some(main.clone()) },
+            tip: oid(&f, "feature"),
+            onto: Source::Branch("main".into()),
+            target: main.clone(),
+            label: "main".into(),
+        };
+        let mut editor = Editor::new(load(&f.repo, ends).unwrap().unwrap());
+        editor.rows[0].choice = Choice::Drop;
+        f.git(&["branch", "-qf", "feature", "feature~1"]);
+        let moved = oid(&f, "feature");
+        let err = started(&f, &editor).err().expect("the moved branch is refused");
+        assert!(err.text.contains("changed since you chose it"), "{}", err.text);
+        assert_eq!(String::from_utf8(f.git(&["symbolic-ref", "HEAD"])).unwrap(), "refs/heads/main\n");
+        assert_eq!(oid(&f, "feature"), moved);
+        assert_eq!(oid(&f, "main"), main);
+        assert!(!f.repo.git_dir().join("rebase-merge").exists());
     }
 
     #[test]
