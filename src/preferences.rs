@@ -347,7 +347,7 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .text_size(px(12.5))
             .text_color(rgb(if chosen { palette().text } else { palette().text_2 }))
             .child(kit::fit(section.title(ui)).size(12.5));
-        kit::pressable(item.focusable().focus(|s| s.border_color(rgb(palette().accent))), view::Action::Preferences(Action::Show(section)), cx)
+        kit::pressable(item.focusable().focus(if chosen { kit::ring } else { kit::ring_clear }), view::Action::Preferences(Action::Show(section)), cx)
     };
     for section in sections(false) {
         nav = nav.child(row(section, cx));
@@ -459,7 +459,7 @@ pub(crate) fn tick<T: Desk>(
         .border_color(rgb(palette().line))
         .cursor_pointer()
         .focusable()
-        .focus(|s| s.bg(rgb(palette().hover)))
+        .focus(kit::ring_clear)
         .child(div().pt(px(2.)).child(kit::checkbox(on)))
         .child(
             div()
@@ -674,7 +674,8 @@ fn repository<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
             .text_size(px(12.5))
             .text_color(rgb(palette().text_2))
             .focusable()
-            .focus(|s| s.text_color(rgb(palette().text)))
+            .min_h(px(TARGET))
+            .focus(kit::ring_clear)
             .child(radio(ui.merge.mode == mode))
             .child(mode.title());
         merges = merges.child(kit::pressable(row, view::Action::Merge(crate::merge::Action::SetDefault(mode)), cx));

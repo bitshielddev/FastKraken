@@ -1,5 +1,5 @@
 use gpui::{Pixels, Rgba, rgba};
-use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 pub struct Palette {
     pub canvas: u32,
@@ -154,27 +154,167 @@ pub static LIGHT: Palette = Palette {
     scrim: 0x1b1a2452,
 };
 
+pub static DARK_CONTRAST: Palette = Palette {
+    canvas: 0x0b0a11,
+    well: 0x0b0a11,
+    panel: 0x121119,
+    raised: 0x1a1923,
+    hover: 0x23212d,
+    float: 0x181721,
+    selected: 0x2a2048,
+    hunk: 0x13121b,
+    tip: 0x24222f,
+    line: 0x67666f,
+    line_strong: 0x85848e,
+    text: 0xfdfdfd,
+    text_2: 0xd1d0d6,
+    text_3: 0xafadb7,
+    text_off: 0x9f9ea7,
+    text_selection: 0x4a3b7a,
+    find_match: 0x3d350b,
+    find_current: 0xf7da20,
+    find_current_ink: 0x1e1802,
+    accent: 0xf7da20,
+    accent_hover: 0xfce967,
+    accent_ink: 0x1e1802,
+    accent_fill: 0xf7da20,
+    accent_fill_hover: 0xfce967,
+    added: 0x6cc47a,
+    added_bg: 0x0e2315,
+    added_hi: 0x1d4527,
+    deleted: 0xf2958e,
+    deleted_bg: 0x2a1416,
+    deleted_hi: 0x5a2427,
+    modified: 0xf29b5e,
+    remote: 0x75b3ee,
+    tag: 0xc3a2f2,
+    conflict: 0xf190c2,
+    syntax_keyword: 0xc6a4f5,
+    syntax_string: 0xe3cc7c,
+    syntax_comment: 0xaeadb9,
+    syntax_number: 0xf2a66d,
+    syntax_type: 0x66d2c3,
+    syntax_function: 0x82b4f4,
+    syntax_constant: 0xf4b98c,
+    syntax_punctuation: 0xaeacbc,
+    syntax_tag: 0xee93b8,
+    syntax_attribute: 0x9bd3ea,
+    lanes: [0xf7da20, 0x72b1ee, 0xa898f0, 0xe88fb0, 0x5fd3b8, 0xf29b5e],
+    avatars: [0x7fb3e6, 0xd9a55a, 0xa898f0, 0x8fd0a0, 0xe88fb0, 0x6fc9c9],
+    avatar_ink: 0x111019,
+    scrim: 0x06090ba3,
+};
+pub static LIGHT_CONTRAST: Palette = Palette {
+    canvas: 0xffffff,
+    well: 0xe6e4ee,
+    panel: 0xf4f3f8,
+    raised: 0xffffff,
+    hover: 0xe8e6f0,
+    float: 0xffffff,
+    selected: 0xdad2f5,
+    hunk: 0xf0eef6,
+    tip: 0xffffff,
+    line: 0x818085,
+    line_strong: 0x66646c,
+    text: 0x0e0d15,
+    text_2: 0x393747,
+    text_3: 0x514f5f,
+    text_off: 0x5d5b65,
+    text_selection: 0xcfc4f3,
+    find_match: 0xfaeea0,
+    find_current: 0xf7da20,
+    find_current_ink: 0x1e1802,
+    accent: 0x644e00,
+    accent_hover: 0x564300,
+    accent_ink: 0x1e1802,
+    accent_fill: 0xf7da20,
+    accent_fill_hover: 0xedcc12,
+    added: 0x175d2a,
+    added_bg: 0xdcf1e0,
+    added_hi: 0xc8e9cf,
+    deleted: 0x9a2127,
+    deleted_bg: 0xfce1e0,
+    deleted_hi: 0xf7d0ce,
+    modified: 0x813e09,
+    remote: 0x18518f,
+    tag: 0x6138a4,
+    conflict: 0x961c5f,
+    syntax_keyword: 0x6633a7,
+    syntax_string: 0x644d00,
+    syntax_comment: 0x514f5f,
+    syntax_number: 0x803f0b,
+    syntax_type: 0x095b53,
+    syntax_function: 0x194f9a,
+    syntax_constant: 0x813e17,
+    syntax_punctuation: 0x504e61,
+    syntax_tag: 0x902756,
+    syntax_attribute: 0x165771,
+    lanes: [0x715a00, 0x275f9d, 0x634dad, 0x983d66, 0x0e6959, 0x934914],
+    avatars: [0x8fbde9, 0xe0b46e, 0xb4a6f2, 0x9cd6ab, 0xeda0bd, 0x7fd0d0],
+    avatar_ink: 0x111019,
+    scrim: 0x1b1a2452,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shade {
     Dark,
     Light,
+    DarkContrast,
+    LightContrast,
+}
+
+impl Shade {
+    pub const ALL: [Shade; 4] = [Shade::Dark, Shade::Light, Shade::DarkContrast, Shade::LightContrast];
+
+    pub fn with_contrast(self, increased: bool) -> Shade {
+        match (self.is_light(), increased) {
+            (false, false) => Shade::Dark,
+            (true, false) => Shade::Light,
+            (false, true) => Shade::DarkContrast,
+            (true, true) => Shade::LightContrast,
+        }
+    }
+
+    pub fn is_light(self) -> bool {
+        matches!(self, Shade::Light | Shade::LightContrast)
+    }
+
+    pub fn increased(self) -> bool {
+        matches!(self, Shade::DarkContrast | Shade::LightContrast)
+    }
+
+    pub fn palette(self) -> &'static Palette {
+        match self {
+            Shade::Dark => &DARK,
+            Shade::Light => &LIGHT,
+            Shade::DarkContrast => &DARK_CONTRAST,
+            Shade::LightContrast => &LIGHT_CONTRAST,
+        }
+    }
 }
 
 static ACTIVE: AtomicU8 = AtomicU8::new(Shade::Dark as u8);
 
 pub fn shade() -> Shade {
-    if ACTIVE.load(Ordering::Relaxed) == Shade::Light as u8 { Shade::Light } else { Shade::Dark }
+    Shade::ALL.get(ACTIVE.load(Ordering::Relaxed) as usize).copied().unwrap_or(Shade::Dark)
 }
 
 pub fn palette() -> &'static Palette {
-    match shade() {
-        Shade::Light => &LIGHT,
-        Shade::Dark => &DARK,
-    }
+    shade().palette()
 }
 
 pub fn use_shade(shade: Shade) -> bool {
     ACTIVE.swap(shade as u8, Ordering::Relaxed) != shade as u8
+}
+
+static STILL: AtomicBool = AtomicBool::new(false);
+
+pub fn still() -> bool {
+    STILL.load(Ordering::Relaxed)
+}
+
+pub fn use_still(reduced: bool) -> bool {
+    STILL.swap(reduced, Ordering::Relaxed) != reduced
 }
 
 pub fn soft(color: u32, alpha: u8) -> Rgba {
@@ -244,7 +384,8 @@ pub const FILE_ROW: f32 = 26.;
 pub const TREE_ROW: f32 = 24.;
 pub const DIFF_LINE: f32 = 20.;
 pub const CONTROL: f32 = 28.;
-pub const CONTROL_SMALL: f32 = 22.;
+pub const CONTROL_SMALL: f32 = 24.;
+pub const TARGET: f32 = 24.;
 
 pub const RADIUS: f32 = 6.;
 pub const RADIUS_CHIP: f32 = 4.;
@@ -335,7 +476,7 @@ mod tests {
         assert_eq!(blend(0x000000, 0xffffff, 255), 0xffffff);
         assert_eq!(blend(0x204060, 0x204060, 0x80), 0x204060);
         assert_eq!(blend(0x000000, 0xff0000, 0x80), 0x800000);
-        for palette in [&DARK, &LIGHT] {
+        for palette in Shade::ALL.map(Shade::palette) {
             for lane in palette.lanes {
                 for (ground, alpha) in [(palette.canvas, STREAK), (palette.selected, STREAK_SELECTED)] {
                     let streak = blend(ground, lane, alpha);
@@ -388,8 +529,8 @@ mod tests {
     }
 
     #[test]
-    fn body_text_reads_at_four_and_a_half_to_one_in_both_palettes() {
-        for palette in [&DARK, &LIGHT] {
+    fn body_text_reads_at_four_and_a_half_to_one_in_every_palette() {
+        for palette in Shade::ALL.map(Shade::palette) {
             let marks = [
                 ("added_hi", palette.added_hi),
                 ("deleted_hi", palette.deleted_hi),
@@ -419,8 +560,8 @@ mod tests {
     }
 
     #[test]
-    fn added_deleted_and_conflict_stay_apart_in_both_palettes() {
-        for palette in [&DARK, &LIGHT] {
+    fn added_deleted_and_conflict_stay_apart_in_every_palette() {
+        for palette in Shade::ALL.map(Shade::palette) {
             let marks = [palette.added, palette.deleted, palette.conflict, palette.modified];
             for (i, a) in marks.iter().enumerate() {
                 for b in &marks[i + 1..] {
@@ -430,6 +571,58 @@ mod tests {
             assert!(apart(palette.added_bg, palette.deleted_bg) >= 15.);
             assert!(apart(palette.added_hi, palette.deleted_hi) >= 15.);
         }
+    }
+
+    #[test]
+    fn the_increased_contrast_palettes_put_no_text_below_four_and_a_half_to_one() {
+        for (palette, base) in [(&DARK_CONTRAST, &DARK), (&LIGHT_CONTRAST, &LIGHT)] {
+            for (ink, colour) in inks(palette).into_iter().chain([("text_off", palette.text_off)]) {
+                for (ground, behind) in grounds(palette) {
+                    let ratio = contrast(colour, behind);
+                    assert!(ratio >= 4.5, "{ink} on {ground} is {ratio:.2} to 1");
+                }
+            }
+            for (ground, behind) in grounds(palette) {
+                assert!(contrast(palette.text, behind) >= 7., "text on {ground}");
+                assert!(contrast(palette.text, behind) >= contrast(base.text, behind) - 0.01, "text on {ground}");
+            }
+            for (ink, base_ink) in [(palette.text_2, base.text_2), (palette.text_3, base.text_3)] {
+                assert!(contrast(ink, palette.canvas) >= contrast(base_ink, base.canvas), "{ink:06x} is no stronger than {base_ink:06x}");
+            }
+            assert!(contrast(palette.text_off, palette.canvas) < contrast(palette.text_3, palette.canvas));
+            assert!(contrast(palette.text_3, palette.canvas) < contrast(palette.text_2, palette.canvas));
+        }
+    }
+
+    #[test]
+    fn the_increased_contrast_palettes_draw_stronger_borders() {
+        for (palette, base) in [(&DARK_CONTRAST, &DARK), (&LIGHT_CONTRAST, &LIGHT)] {
+            for (ground, behind) in [("canvas", palette.canvas), ("well", palette.well), ("panel", palette.panel), ("raised", palette.raised), ("float", palette.float)] {
+                assert!(contrast(palette.line, behind) >= 3., "line on {ground} is {:.2} to 1", contrast(palette.line, behind));
+                assert!(contrast(palette.line_strong, behind) >= 4.5, "line_strong on {ground}");
+            }
+            assert!(contrast(palette.line, palette.canvas) > contrast(base.line, base.canvas) * 2.);
+            assert!(contrast(palette.line_strong, palette.canvas) > contrast(base.line_strong, base.canvas) * 2.);
+            assert!(contrast(palette.accent, palette.canvas) >= 4.5);
+            for lane in palette.lanes {
+                assert!(contrast(lane, palette.canvas) >= 3., "lane {lane:06x}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_shade_finds_its_own_palette_and_its_contrast_partner() {
+        let tables: Vec<*const Palette> = Shade::ALL.iter().map(|shade| shade.palette() as *const Palette).collect();
+        assert_eq!(tables, [&DARK as *const Palette, &LIGHT, &DARK_CONTRAST, &LIGHT_CONTRAST]);
+        for (index, shade) in Shade::ALL.into_iter().enumerate() {
+            assert_eq!(shade as usize, index);
+            assert_eq!(shade.with_contrast(false).is_light(), shade.is_light());
+            assert_eq!(shade.with_contrast(true).is_light(), shade.is_light());
+            assert!(shade.with_contrast(true).increased());
+            assert!(!shade.with_contrast(false).increased());
+        }
+        assert_eq!(Shade::Light.with_contrast(true), Shade::LightContrast);
+        assert_eq!(Shade::DarkContrast.with_contrast(false), Shade::Dark);
     }
 
     #[test]

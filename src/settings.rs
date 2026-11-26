@@ -83,6 +83,8 @@ pub(crate) struct Settings {
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) appearance: crate::appearance::Choice,
     #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) contrast: crate::appearance::Contrast,
+    #[serde(deserialize_with = "storage::lenient")]
     pub(crate) zoom: Option<u16>,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) dates: crate::appearance::Dates,
@@ -154,6 +156,7 @@ impl Default for Settings {
             git_program: crate::engine::GitProgram::Bundled,
             ssh_command: String::new(),
             appearance: crate::appearance::Choice::default(),
+            contrast: crate::appearance::Contrast::default(),
             zoom: None,
             dates: crate::appearance::Dates::default(),
             pictures: crate::photos::Pictures::default(),
@@ -739,6 +742,7 @@ mod tests {
             git_program: crate::engine::GitProgram::Chosen(b"/opt/git/bin/git".to_vec()),
             ssh_command: "ssh -F /tmp/ssh/config".to_owned(),
             appearance: crate::appearance::Choice::System,
+            contrast: crate::appearance::Contrast::Increased,
             zoom: Some(130),
             dates: crate::appearance::Dates::Absolute,
             pictures: crate::photos::Pictures::Gravatar,

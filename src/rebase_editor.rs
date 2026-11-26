@@ -969,7 +969,7 @@ fn choice_control<T: Desk>(index: usize, row: &Row, last: bool, cx: &mut Context
         };
         let segment = div()
             .id(ElementId::Name(format!("rebase-{}-{index}", choice.label().to_lowercase()).into()))
-            .h(px(22.))
+            .h(px(TARGET))
             .px(px(8.))
             .flex()
             .items_center()
@@ -991,7 +991,7 @@ fn choice_control<T: Desk>(index: usize, row: &Row, last: bool, cx: &mut Context
                     .cursor_pointer()
                     .when(!chosen, |d| d.hover(|s| s.text_color(rgb(palette().text_2))))
                     .focusable()
-                    .focus(|s| s.border_color(rgb(palette().accent)))
+                    .focus(if chosen { kit::ring } else { kit::ring_clear })
                     .key_context("DeskButton")
                     .tab_stop(true)
                     .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
@@ -1116,8 +1116,18 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         })
         .when_some(editor.loaded.forecast_pair(), |d, (tip, target)| {
             let Some(line) = crate::forecast::line(ui, tip, target, crate::forecast::Wording::Rebase) else { return d };
-            let ink = if crate::forecast::conflicting(ui, tip, target) { palette().conflict } else { palette().text_3 };
-            d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(ink)).child(line))
+            let conflicting = crate::forecast::conflicting(ui, tip, target);
+            let ink = if conflicting { palette().conflict } else { palette().text_3 };
+            d.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_size(px(TEXT_SMALL))
+                    .text_color(rgb(ink))
+                    .when(conflicting, |d| d.child(kit::icon("alert").size(px(12.)).text_color(rgb(ink))))
+                    .child(line),
+            )
         })
         .when_some(editor.loaded.upstream.as_ref(), |d, upstream| {
             d.child(

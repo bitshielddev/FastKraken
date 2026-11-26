@@ -3,14 +3,19 @@ use crate::{
     view::{Action, ActivateControl, Desk},
 };
 use gpui::{
-    Animation, AnimationExt, AnyElement, AnyView, App, Bounds, Canvas, Context, Deferred, Display,
-    Div, Element, ElementId, FocusHandle, FontWeight, GlobalElementId, Hsla, InspectorElementId,
-    IntoElement, LayoutId, MouseButton, MouseDownEvent, Pixels, Position, Render, ShapedLine,
-    SharedString, Stateful, Style, Svg, TextRun, Transformation, Window, canvas, deferred, div,
-    percentage, point, prelude::*, rgb, rgba, svg,
+    Animation, AnimationExt, AnyElement, AnyView, App, Bounds, BoxShadow, Canvas, Context, Deferred,
+    Display, Div, Element, ElementId, FocusHandle, FontWeight, GlobalElementId, Hsla,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, Pixels, Position, Render,
+    ShapedLine, SharedString, Stateful, Style, StyleRefinement, Svg, TextRun, Transformation, Window,
+    canvas, deferred, div, percentage, point, prelude::*, rgb, rgba, svg,
 };
 use crate::theme::px;
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 pub use crate::scrollbar::scrollbar;
 
@@ -27,12 +32,50 @@ pub fn icon(name: &str) -> Svg {
         .text_color(rgb(palette().text_2))
 }
 
-pub fn spinner(id: impl Into<ElementId>) -> impl IntoElement {
-    icon("spinner").text_color(rgb(palette().accent)).with_animation(
+static KEYBOARD: AtomicBool = AtomicBool::new(false);
+
+pub fn keyboard_focus() -> bool {
+    KEYBOARD.load(Ordering::Relaxed)
+}
+
+pub fn use_keyboard_focus(keyboard: bool) -> bool {
+    KEYBOARD.swap(keyboard, Ordering::Relaxed) != keyboard
+}
+
+pub fn halo(width: f32) -> Vec<BoxShadow> {
+    let around = |color: u32, spread: f32| BoxShadow {
+        color: rgb(color).into(),
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(spread),
+    };
+    vec![around(palette().accent, 1. + width), around(palette().canvas, 1.)]
+}
+
+pub fn ring_width() -> f32 {
+    if shade().increased() { 3. } else { 2. }
+}
+
+pub fn ring(style: StyleRefinement) -> StyleRefinement {
+    let style = style.border_color(rgb(palette().accent));
+    if keyboard_focus() { style.shadow(halo(ring_width())) } else { style }
+}
+
+pub fn ring_clear(style: StyleRefinement) -> StyleRefinement {
+    let style = ring(style);
+    if keyboard_focus() { style.bg(rgb(palette().hover)) } else { style }
+}
+
+pub fn spinner(id: impl Into<ElementId>) -> AnyElement {
+    let mark = icon("spinner").text_color(rgb(palette().accent));
+    if still() {
+        return any(mark);
+    }
+    any(mark.with_animation(
         id,
         Animation::new(Duration::from_millis(900)).repeat(),
         |icon, delta| icon.with_transformation(Transformation::rotate(percentage(delta))),
-    )
+    ))
 }
 
 
@@ -472,13 +515,21 @@ impl Btn {
         base
     }
 
+    fn opaque(&self) -> bool {
+        match self.tone {
+            Tone::Primary | Tone::Normal | Tone::Destructive => true,
+            Tone::Ghost => self.selected,
+            Tone::Danger => false,
+        }
+    }
+
     pub fn on<T: Desk>(self, action: Action, cx: &Context<T>) -> Stateful<Div> {
-        let enabled = self.enabled;
+        let (enabled, opaque) = (self.enabled, self.opaque());
         let base = self.base();
         if !enabled {
             return base;
         }
-        pressable(base.focusable().focus(|s| s.border_color(rgb(palette().accent))), action, cx)
+        pressable(base.focusable().focus(if opaque { ring } else { ring_clear }), action, cx)
     }
 
     pub fn tracked<T: Desk>(
@@ -487,13 +538,13 @@ impl Btn {
         action: Action,
         cx: &Context<T>,
     ) -> Stateful<Div> {
-        let enabled = self.enabled;
+        let (enabled, opaque) = (self.enabled, self.opaque());
         let base = self.base();
         if !enabled {
             return base;
         }
         let activate = action.clone();
-        let base = base.track_focus(handle).focus(|s| s.border_color(rgb(palette().accent)));
+        let base = base.track_focus(handle).focus(if opaque { ring } else { ring_clear });
         base.key_context("DeskButton")
             .on_click(cx.listener(move |app, event: &gpui::ClickEvent, w, cx| {
                 if !event.is_keyboard() {
@@ -531,7 +582,7 @@ pub fn icon_btn<T: Desk>(
     let activate = action.clone();
     div()
         .id(id)
-        .size(px(22.))
+        .size(px(TARGET))
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -542,7 +593,7 @@ pub fn icon_btn<T: Desk>(
         .cursor_pointer()
         .hover(|s| s.bg(rgb(palette().hover)))
         .focusable()
-        .focus(|s| s.border_color(rgb(palette().accent)))
+        .focus(ring_clear)
         .key_context("DeskButton")
         .tab_stop(true)
         .child(icon(name))
@@ -1050,7 +1101,7 @@ pub fn segment<T: Desk>(
 ) -> Stateful<Div> {
     let segment = div()
         .id(id)
-        .h(px(24.))
+        .h(px(TARGET))
         .px(px(11.))
         .flex()
         .items_center()
@@ -1071,7 +1122,7 @@ pub fn segment<T: Desk>(
             )
         })
         .child(label);
-    pressable(segment.focusable().focus(|s| s.border_color(rgb(palette().accent))), action, cx)
+    pressable(segment.focusable().focus(if chosen { ring } else { ring_clear }), action, cx)
 }
 
 pub fn stepper<T: Desk>(
@@ -1085,7 +1136,7 @@ pub fn stepper<T: Desk>(
         Some(action) => any(icon_btn((id, index), name, label, action, cx)),
         None => any(
             div()
-                .size(px(22.))
+                .size(px(TARGET))
                 .flex()
                 .flex_shrink_0()
                 .items_center()
@@ -1130,8 +1181,12 @@ pub fn link<T: Desk>(
         .text_size(px(TEXT_SMALL))
         .text_color(rgb(palette().accent))
         .hover(|s| s.text_color(rgb(palette().accent_hover)))
+        .min_h(px(TARGET))
+        .flex()
+        .items_center()
+        .rounded(px(RADIUS_CHIP))
         .focusable()
-        .focus(|s| s.underline())
+        .focus(|s| ring_clear(s.underline()))
         .child(label.into());
     pressable(link, action, cx)
 }
@@ -1350,6 +1405,32 @@ pub fn any(element: impl IntoElement) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clickable_controls_are_at_least_twenty_four_points_at_actual_size() {
+        assert!(TARGET >= 24.);
+        assert!(CONTROL >= TARGET && CONTROL_SMALL >= TARGET);
+        assert!(ROW >= TARGET && FILE_ROW >= TARGET && TREE_ROW >= TARGET);
+    }
+
+    #[test]
+    fn the_focus_ring_is_an_accent_band_outside_a_gap_and_clear_controls_get_a_ground() {
+        for width in [2., 3.] {
+            let rings = halo(width);
+            assert_eq!(rings.len(), 2);
+            assert_eq!(rings[0].color, Hsla::from(rgb(palette().accent)));
+            assert_eq!(rings[1].color, Hsla::from(rgb(palette().canvas)));
+            assert_eq!(rings[0].spread_radius, px(1. + width));
+            assert_eq!(rings[1].spread_radius, px(1.));
+            assert!(rings.iter().all(|ring| ring.blur_radius == px(0.) && ring.offset == point(px(0.), px(0.))));
+        }
+        assert!(btn("save", "Save").primary().opaque());
+        assert!(btn("open", "Open").opaque());
+        assert!(btn("remove", "Remove").destructive().opaque());
+        assert!(!btn("more", "More").ghost().opaque());
+        assert!(btn("more", "More").ghost().selected(true).opaque());
+        assert!(!btn("discard", "Discard").danger().opaque());
+    }
 
     #[test]
     fn an_icon_only_button_keeps_its_name_in_the_tooltip() {

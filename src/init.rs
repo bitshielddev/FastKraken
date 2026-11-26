@@ -634,7 +634,8 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
         .cursor_pointer()
         .text_color(rgb(palette().text_2))
         .focusable()
-        .focus(|s| s.text_color(rgb(palette().text)))
+        .min_h(px(TARGET))
+        .focus(kit::ring_clear)
         .child(kit::checkbox(state.readme))
         .child(format!("Add a {README} and make it the first commit"));
     let body = body
@@ -651,7 +652,8 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                 .cursor_pointer()
                 .text_color(rgb(palette().text_2))
                 .focusable()
-                .focus(|s| s.text_color(rgb(palette().text)))
+                .min_h(px(TARGET))
+                .focus(kit::ring_clear)
                 .child(kit::checkbox(state.lfs))
                 .child("Set up Git LFS for large files");
             d.child(kit::pressable(tick, view::Action::Init(Action::ToggleLfs), cx))

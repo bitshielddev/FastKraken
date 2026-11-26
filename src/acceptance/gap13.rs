@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
-    appearance::{self, Choice},
+    accessibility::Display,
+    appearance::{self, Choice, Contrast},
     commands::{self, Availability, Target},
     photos,
     preferences::{self, Section},
@@ -16,6 +17,8 @@ fn in_use() -> (Shade, bool) {
     let matches = match shade {
         Shade::Light => std::ptr::eq(palette, &theme::LIGHT),
         Shade::Dark => std::ptr::eq(palette, &theme::DARK),
+        Shade::LightContrast => std::ptr::eq(palette, &theme::LIGHT_CONTRAST),
+        Shade::DarkContrast => std::ptr::eq(palette, &theme::DARK_CONTRAST),
     };
     (shade, matches)
 }
@@ -65,6 +68,12 @@ impl Replay<'_> {
 
     fn system_turns(&mut self, appearance: WindowAppearance) -> Result<()> {
         self.cx.update(|cx| appearance::system_changed(appearance, cx))?;
+        self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
+        Ok(())
+    }
+
+    fn display_turns(&mut self, display: Display) -> Result<()> {
+        self.cx.update(|cx| appearance::display_changed(display, cx))?;
         self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
         Ok(())
     }
@@ -196,11 +205,36 @@ impl Replay<'_> {
         self.expect_shade(Shade::Dark, "Dark chosen and the system turned light again")?;
         self.action(Action::Appearance(appearance::Action::Choose(Choice::System)))?;
         self.expect_shade(Shade::Light, "System chosen again while the system is light")?;
+        let contrast_on = Display { contrast: true, reduce_motion: false };
+        self.display_turns(contrast_on)?;
+        self.expect_shade(Shade::LightContrast, "The system turned on Increase contrast")?;
+        let help = self.cx.update(|cx| appearance::contrast_help(settings::settings(cx).contrast, appearance::system_display(cx)))?;
+        if !help.contains("which is on now.") {
+            return Err(format!("The Contrast help reads {help:?}").into());
+        }
+        self.action(Action::Appearance(appearance::Action::Contrast(Contrast::Standard)))?;
+        self.expect_shade(Shade::Light, "Standard contrast chosen while the system increases it")?;
+        self.display_turns(Display::default())?;
+        self.action(Action::Appearance(appearance::Action::Contrast(Contrast::Increased)))?;
+        self.expect_shade(Shade::LightContrast, "Increased contrast chosen while the system does not")?;
+        self.action(Action::Appearance(appearance::Action::Contrast(Contrast::System)))?;
+        self.expect_shade(Shade::Light, "System contrast chosen while Increase contrast is off")?;
+        self.display_turns(Display { contrast: false, reduce_motion: true })?;
+        if !theme::still() || theme::shade() != Shade::Light {
+            return Err(format!("With Reduce motion on, still is {} and the shade {:?}", theme::still(), theme::shade()).into());
+        }
+        self.display_turns(Display::default())?;
+        if theme::still() {
+            return Err("Reduce motion was turned off but the app still holds still".into());
+        }
         self.key("escape")?;
         self.until("Preferences closed", |tab| !tab.ui.preferences.open()).await?;
         self.cx.update(|cx| settings::flush(cx))?;
         if saved_appearance(&state)? != "system" {
             return Err(format!("settings.json holds the appearance {}", saved_appearance(&state)?).into());
+        }
+        if saved(&state, "settings.json", &["contrast"])? != "system" {
+            return Err(format!("settings.json holds the contrast {}", saved(&state, "settings.json", &["contrast"])?).into());
         }
         git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
         git_is(&root, &["status", "--porcelain=v1"], "")?;

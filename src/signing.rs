@@ -468,7 +468,8 @@ fn pill<T: Desk>(id: impl Into<gpui::ElementId>, signature: &Signature, cx: &Con
         .border_color(kit::clear())
         .cursor_pointer()
         .focusable()
-        .focus(|s| s.border_color(rgb(palette().accent)))
+        .min_h(px(TARGET))
+        .focus(kit::ring_clear)
         .child(
             div()
                 .h(px(18.))

@@ -940,7 +940,7 @@ impl Render for CommitInput {
             .border_color(rgb(palette().line_strong))
             .rounded(px(RADIUS))
             .text_size(px(12.5))
-            .focus(|s| s.border_color(rgb(palette().accent)))
+            .focus(crate::kit::ring)
             .cursor(CursorStyle::IBeam)
             .overflow_hidden()
             .when(multiline, |d| {

@@ -1,5 +1,6 @@
 use crate::{
     Tab, kit,
+    accessibility::{self, Display},
     commands::{Availability, Command, Group, Target},
     preferences::setting,
     settings::{self, Settings},
@@ -26,6 +27,27 @@ impl Choice {
             Choice::System => "System",
             Choice::Light => "Light",
             Choice::Dark => "Dark",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Contrast {
+    #[default]
+    System,
+    Standard,
+    Increased,
+}
+
+impl Contrast {
+    pub(crate) const ALL: [Contrast; 3] = [Contrast::System, Contrast::Standard, Contrast::Increased];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Contrast::System => "System",
+            Contrast::Standard => "Standard",
+            Contrast::Increased => "Increased",
         }
     }
 }
@@ -119,6 +141,7 @@ pub(crate) const TOOLBAR_HELP: &str = "With icons only, hold the pointer on a to
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
     Choose(Choice),
+    Contrast(Contrast),
     Dates(Dates),
     Pictures(crate::photos::Pictures),
     Tint(Tint),
@@ -140,6 +163,21 @@ fn chosen_already<const N: usize>(_: &view::Ui, target: &Target, cx: &App) -> Av
 
 fn choose<const N: usize>(_: &view::Ui, _: &Target) -> Option<view::Action> {
     Some(view::Action::Appearance(Action::Choose(Choice::ALL[N])))
+}
+
+fn contrast_chosen_already<const N: usize>(_: &view::Ui, target: &Target, cx: &App) -> Availability {
+    if *target != Target::Repo {
+        return Availability::Hidden;
+    }
+    if settings::peek(cx, |s| s.contrast) == Contrast::ALL[N] {
+        Availability::Disabled("FastKraken already uses this contrast.".into())
+    } else {
+        Availability::Enabled
+    }
+}
+
+fn choose_contrast<const N: usize>(_: &view::Ui, _: &Target) -> Option<view::Action> {
+    Some(view::Action::Appearance(Action::Contrast(Contrast::ALL[N])))
 }
 
 pub(crate) const COMMANDS: &[Command] = &[
@@ -167,9 +205,37 @@ pub(crate) const COMMANDS: &[Command] = &[
         choose::<2>,
     )
     .words(&["switch theme", "theme", "appearance", "dark mode", "colours", "colors"]),
+    Command::new(
+        "app.contrast-system",
+        Group::View,
+        |_, _| "Follow the system contrast".into(),
+        contrast_chosen_already::<0>,
+        choose_contrast::<0>,
+    )
+    .words(&["contrast", "high contrast", "increase contrast", "accessibility", "sync with system"]),
+    Command::new(
+        "app.contrast-standard",
+        Group::View,
+        |_, _| "Use standard contrast".into(),
+        contrast_chosen_already::<1>,
+        choose_contrast::<1>,
+    )
+    .words(&["contrast", "high contrast", "accessibility", "normal contrast"]),
+    Command::new(
+        "app.contrast-increased",
+        Group::View,
+        |_, _| "Use increased contrast".into(),
+        contrast_chosen_already::<2>,
+        choose_contrast::<2>,
+    )
+    .words(&["contrast", "high contrast", "increase contrast", "accessibility", "borders"]),
 ];
 
-struct System(Shade);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct System {
+    shade: Shade,
+    display: Display,
+}
 
 impl Global for System {}
 
@@ -188,26 +254,58 @@ pub(crate) fn resolve(choice: Choice, system: Shade) -> Shade {
     }
 }
 
+pub(crate) fn increased(contrast: Contrast, system: Display) -> bool {
+    match contrast {
+        Contrast::System => system.contrast,
+        Contrast::Standard => false,
+        Contrast::Increased => true,
+    }
+}
+
 pub(crate) fn system(cx: &App) -> Shade {
-    cx.try_global::<System>().map_or(Shade::Dark, |system| system.0)
+    cx.try_global::<System>().map_or(Shade::Dark, |system| system.shade)
+}
+
+pub(crate) fn system_display(cx: &App) -> Display {
+    cx.try_global::<System>().map_or(Display::default(), |system| system.display)
 }
 
 pub(crate) fn start(cx: &mut App) {
     if !cx.has_global::<System>() {
         let shade = shade_of(cx.window_appearance());
-        cx.set_global(System(shade));
+        let display = accessibility::observed().unwrap_or_default();
+        cx.set_global(System { shade, display });
     }
     apply(cx);
 }
 
 pub(crate) fn system_changed(appearance: WindowAppearance, cx: &mut App) {
-    cx.set_global(System(shade_of(appearance)));
+    let display = accessibility::observed().unwrap_or_else(|| system_display(cx));
+    cx.set_global(System { shade: shade_of(appearance), display });
     apply(cx);
 }
 
+pub(crate) fn display_changed(display: Display, cx: &mut App) {
+    let shade = system(cx);
+    if cx.try_global::<System>().copied() != Some(System { shade, display }) {
+        cx.set_global(System { shade, display });
+        apply(cx);
+    }
+}
+
+pub(crate) fn window_activated(cx: &mut App) {
+    if let Some(display) = accessibility::observed() {
+        display_changed(display, cx);
+    }
+}
+
 fn apply(cx: &mut App) {
-    let shade = resolve(settings::settings(cx).appearance, system(cx));
-    if theme::use_shade(shade) {
+    let (choice, contrast) = settings::peek(cx, |s| (s.appearance, s.contrast));
+    let display = system_display(cx);
+    let shade = resolve(choice, system(cx)).with_contrast(increased(contrast, display));
+    let shade_changed = theme::use_shade(shade);
+    let motion_changed = theme::use_still(display.reduce_motion);
+    if shade_changed || motion_changed {
         cx.refresh_windows();
     }
 }
@@ -216,6 +314,10 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
     match action {
         Action::Choose(choice) => {
             Settings::update(cx, |s| s.appearance = choice);
+            apply(cx);
+        }
+        Action::Contrast(contrast) => {
+            Settings::update(cx, |s| s.contrast = contrast);
             apply(cx);
         }
         Action::Dates(dates) => {
@@ -243,14 +345,24 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
 }
 
 pub(crate) fn help(choice: Choice, system: Shade) -> String {
-    let now = match system {
-        Shade::Light => "light",
-        Shade::Dark => "dark",
-    };
+    let now = if system.is_light() { "light" } else { "dark" };
     match choice {
         Choice::System => format!("Follows the Light or Dark setting in macOS System Settings > Appearance, which is {now} now."),
         Choice::Light | Choice::Dark => {
             "System follows the Light or Dark setting in macOS System Settings > Appearance, and changes with it.".into()
+        }
+    }
+}
+
+pub(crate) fn contrast_help(contrast: Contrast, system: Display) -> String {
+    let now = if system.contrast { "on" } else { "off" };
+    let what = "Increased draws stronger borders and keeps all text at 4.5 to 1 or more against its background.";
+    match contrast {
+        Contrast::System => {
+            format!("Follows Increase contrast in macOS System Settings > Accessibility > Display, which is {now} now. {what}")
+        }
+        Contrast::Standard | Contrast::Increased => {
+            format!("System follows Increase contrast in macOS System Settings > Accessibility > Display. {what}")
         }
     }
 }
@@ -274,6 +386,7 @@ pub(crate) fn preferences<T: Desk>(cx: &mut Context<T>) -> Div {
         .flex()
         .flex_col()
         .child(setting("Appearance", Some(help), choices))
+        .child(contrast_row(now.contrast, system_display(cx), cx))
         .child(crate::zoom::preferences(cx))
         .child(options("preferences-dates", "Dates in the graph", DATES_HELP, &Dates::ALL, now.dates, Dates::title, Action::Dates, cx))
         .child(options(
@@ -297,6 +410,21 @@ pub(crate) fn preferences<T: Desk>(cx: &mut Context<T>) -> Div {
             view::Action::Appearance(Action::LabelHighlight(!now.label_highlight)),
             cx,
         ))
+}
+
+fn contrast_row<T: Desk>(chosen: Contrast, system: Display, cx: &mut Context<T>) -> Div {
+    let mut choices = kit::segmented();
+    for (index, contrast) in Contrast::ALL.into_iter().enumerate() {
+        choices = choices.child(kit::segment(
+            ("preferences-contrast", index),
+            contrast.title(),
+            None,
+            chosen == contrast,
+            view::Action::Appearance(Action::Contrast(contrast)),
+            cx,
+        ));
+    }
+    setting("Contrast", Some(contrast_help(chosen, system).into()), choices)
 }
 
 fn options<T: Desk, C: Copy + PartialEq>(
@@ -365,6 +493,43 @@ mod tests {
         assert!(fresh.label_highlight);
         let read: Settings = serde_json::from_str(r#"{"label_highlight": false}"#).unwrap();
         assert!(!read.label_highlight);
+    }
+
+    #[test]
+    fn increased_contrast_follows_the_system_unless_a_contrast_is_chosen() {
+        let on = Display { contrast: true, reduce_motion: false };
+        let off = Display::default();
+        assert!(increased(Contrast::System, on));
+        assert!(!increased(Contrast::System, off));
+        for system in [on, off] {
+            assert!(increased(Contrast::Increased, system));
+            assert!(!increased(Contrast::Standard, system));
+        }
+        assert_eq!(resolve(Choice::System, Shade::Light).with_contrast(increased(Contrast::System, on)), Shade::LightContrast);
+        assert_eq!(resolve(Choice::Dark, Shade::Light).with_contrast(increased(Contrast::System, on)), Shade::DarkContrast);
+        assert_eq!(resolve(Choice::Light, Shade::Dark).with_contrast(increased(Contrast::Standard, on)), Shade::Light);
+    }
+
+    #[test]
+    fn the_contrast_choice_is_saved_by_name_and_follows_the_system_at_first() {
+        assert_eq!(Settings::default().contrast, Contrast::System);
+        assert_eq!(serde_json::to_value(Contrast::Increased).unwrap(), "increased");
+        assert_eq!(serde_json::to_value(Contrast::Standard).unwrap(), "standard");
+        let read: Settings = serde_json::from_str(r#"{"contrast": "extreme"}"#).unwrap();
+        assert_eq!(read.contrast, Contrast::System);
+        let read: Settings = serde_json::from_str(r#"{"contrast": "increased"}"#).unwrap();
+        assert_eq!(read.contrast, Contrast::Increased);
+        assert_eq!(Contrast::ALL.map(Contrast::title), ["System", "Standard", "Increased"]);
+        let on = Display { contrast: true, reduce_motion: false };
+        assert!(contrast_help(Contrast::System, on).contains("which is on now."));
+        assert!(contrast_help(Contrast::System, Display::default()).contains("which is off now."));
+        assert!(contrast_help(Contrast::Increased, on).starts_with("System follows Increase contrast"));
+        assert!(contrast_help(Contrast::Standard, on).contains("4.5 to 1"));
+        for id in ["app.contrast-system", "app.contrast-standard", "app.contrast-increased"] {
+            let command = commands::find(id).expect("a contrast command");
+            assert!(command.words.contains(&"high contrast"), "{id}");
+            assert_eq!(command.group, Group::View);
+        }
     }
 
     #[test]

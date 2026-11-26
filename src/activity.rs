@@ -561,7 +561,8 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(palette().hover)))
                 .focusable()
-                .focus(|s| s.bg(rgb(palette().hover)))
+                .min_h(px(TARGET))
+                .focus(kit::ring_clear)
                 .child(kit::checkbox(reads))
                 .child(div().text_size(px(TEXT_SMALL)).text_color(rgb(palette().text_2)).child("Show reads")),
             view::Action::Activity(Action::ToggleReads),

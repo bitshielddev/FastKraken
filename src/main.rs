@@ -1,4 +1,5 @@
 mod acceptance;
+mod accessibility;
 mod activity;
 mod appearance;
 mod address;

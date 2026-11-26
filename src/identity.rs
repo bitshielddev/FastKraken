@@ -540,7 +540,8 @@ fn choice<T: Desk>(scope: Scope, chosen: bool, cx: &Context<T>) -> gpui::Statefu
         .text_size(px(TEXT_SMALL))
         .text_color(rgb(if chosen { palette().text } else { palette().text_2 }))
         .focusable()
-        .focus(|s| s.text_color(rgb(palette().text)))
+        .min_h(px(TARGET))
+        .focus(kit::ring_clear)
         .child(crate::preferences::radio(chosen))
         .child(scope.title());
     kit::pressable(row, view::Action::Identity(Action::SetScope(scope)), cx)
@@ -615,7 +616,8 @@ pub(crate) fn committing_as<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Option<imp
         .border_1()
         .border_color(kit::clear())
         .focusable()
-        .focus(|s| s.border_color(rgb(palette().accent)))
+        .min_h(px(TARGET))
+        .focus(kit::ring_clear)
         .tooltip(kit::tip(format!("{text}. Choose to change the name and email your commits carry.")))
         .child(kit::fit(text).size(11.5).color(palette().text_3));
     Some(kit::pressable(line, view::Action::Identity(Action::Edit), cx))

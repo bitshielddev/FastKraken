@@ -1474,7 +1474,7 @@ fn sidebar_filter<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement {
                     .child(
                         div()
                             .id("sidebar-filter-clear")
-                            .size(px(18.))
+                            .size(px(TARGET))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -2291,7 +2291,7 @@ fn graph_heading<T: Desk>(ui: &Ui, cx: &Context<T>) -> gpui::AnyElement {
             d.child(
                 div()
                     .id("jump-to-pinned")
-                    .size(px(18.))
+                    .size(px(TARGET))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -2857,7 +2857,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     let label = crate::commit_options::commit_label(ui, cx);
     let amend_row = div()
         .id("amend-last-commit")
-        .h(px(22.))
+        .h(px(TARGET))
         .flex()
         .items_center()
         .gap_2()
@@ -2870,7 +2870,7 @@ fn changes<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .child("Amend last commit")
         .tooltip(kit::tip("Replace the last commit with this message and any staged changes."))
         .when(ui.can_edit_index() && ui.head.is_some(), |d| {
-            let d = d.cursor_pointer().focusable().focus(|s| s.border_color(rgb(palette().accent)));
+            let d = d.cursor_pointer().focusable().focus(kit::ring_clear);
             kit::pressable(d, Action::ToggleAmend, cx)
         })
         .when(!ui.can_edit_index() || ui.head.is_none(), |d| d.opacity(0.42));

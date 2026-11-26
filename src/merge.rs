@@ -1008,13 +1008,13 @@ fn source_cell<T: Desk>(app: &T, row: usize, side: Side, cx: &Context<T>) -> Div
         .child(line_number(face, shown_row.number(side)))
         .child(
             div()
-                .w(px(23.))
+                .w(px(TARGET + 1.))
                 .flex_shrink_0()
                 .when(!pair.shared, |d| {
                     d.child(
                         div()
                             .id((button_id, row))
-                            .size(px(18.))
+                            .size(px(TARGET))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -1024,7 +1024,7 @@ fn source_cell<T: Desk>(app: &T, row: usize, side: Side, cx: &Context<T>) -> Div
                             .tooltip(kit::tip(if range.is_some() { tip } else { "Use this side's deletion" }))
                             .child(kit::checkbox(selected))
                             .when(enabled, |d| {
-                                let d = d.cursor_pointer().focusable().focus(|s| s.border_color(rgb(palette().accent)));
+                                let d = d.cursor_pointer().focusable().focus(kit::ring_clear);
                                 kit::pressable(d, action, cx)
                             }),
                     )

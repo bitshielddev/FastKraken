@@ -1088,7 +1088,7 @@ fn line<T: Desk>(id: (&'static str, usize), title: String, detail: String, on: O
                 .child(kit::fit(detail).size(TEXT_SMALL).color(palette().text_3)),
         );
     match action {
-        Some(action) => kit::pressable(row.cursor_pointer().focusable().focus(|s| s.bg(rgb(palette().hover))), action, cx),
+        Some(action) => kit::pressable(row.cursor_pointer().focusable().focus(kit::ring_clear), action, cx),
         None => row,
     }
 }
@@ -1107,7 +1107,8 @@ fn scope_row<T: Desk>(scope: Scope, chosen: bool, cx: &Context<T>) -> gpui::Stat
         .text_size(px(12.5))
         .text_color(rgb(if chosen { palette().text } else { palette().text_2 }))
         .focusable()
-        .focus(|s| s.text_color(rgb(palette().text)))
+        .min_h(px(TARGET))
+        .focus(kit::ring_clear)
         .child(radio(chosen))
         .child(scope.title());
     kit::pressable(row, view::Action::Keys(Action::SetScope(scope)), cx)

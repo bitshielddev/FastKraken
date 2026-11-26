@@ -901,7 +901,7 @@ fn github<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::Div
                     .px(px(10.))
                     .gap_2()
                     .focusable()
-                    .focus(|s| s.bg(rgb(palette().hover)))
+                    .focus(kit::ring_clear)
                     .when(i > 0, |d| d.border_t_1().border_color(rgb(palette().line)))
                     .child(kit::icon(if repository.private { "lock" } else { "globe" }).size(px(12.)).text_color(rgb(palette().text_3)))
                     .child(kit::fit(full_name.clone()).size(12.5).grow())
@@ -940,7 +940,8 @@ fn choice<T: Desk>(state: &State, choice: Choice, title: &'static str, help: &'s
         .py(px(3.))
         .cursor_pointer()
         .focusable()
-        .focus(|s| s.bg(rgb(palette().hover)))
+        .min_h(px(TARGET))
+        .focus(kit::ring_clear)
         .child(div().pt(px(2.)).child(kit::checkbox(state.chosen(choice))))
         .child(
             div()
@@ -967,7 +968,8 @@ fn advanced<T: Desk>(app: &T, request: &Request, cx: &mut Context<T>) -> gpui::D
         .text_size(px(TEXT_SMALL))
         .text_color(rgb(palette().text_2))
         .focusable()
-        .focus(|s| s.text_color(rgb(palette().text)))
+        .min_h(px(TARGET))
+        .focus(kit::ring_clear)
         .child(kit::icon(if open { "chevron-down" } else { "chevron-right" }).size(px(12.)).text_color(rgb(palette().text_3)))
         .child("Advanced")
         .when(!open && request.options.any(), |d| d.child(kit::muted("· options chosen")));

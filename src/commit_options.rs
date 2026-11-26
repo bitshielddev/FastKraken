@@ -454,7 +454,7 @@ fn tick<T: Desk>(
 ) -> Stateful<Div> {
     let row = div()
         .id(id)
-        .h(px(22.))
+        .h(px(TARGET))
         .flex()
         .items_center()
         .gap_2()
@@ -468,7 +468,7 @@ fn tick<T: Desk>(
         .tooltip(kit::tip(tip));
     match action {
         Some(action) => {
-            let row = row.cursor_pointer().focusable().focus(|s| s.border_color(rgb(palette().accent)));
+            let row = row.cursor_pointer().focusable().focus(kit::ring_clear);
             kit::pressable(row, action, cx)
         }
         None => row.opacity(0.42),
@@ -484,7 +484,7 @@ pub(crate) fn disclosure<T: Desk>(app: &T, cx: &mut Context<T>) -> Stateful<Div>
     };
     let toggle = div()
         .id("commit-options")
-        .h(px(22.))
+        .h(px(TARGET))
         .px_1()
         .flex()
         .flex_shrink_0()
@@ -498,7 +498,7 @@ pub(crate) fn disclosure<T: Desk>(app: &T, cx: &mut Context<T>) -> Stateful<Div>
         .text_color(rgb(palette().text_2))
         .hover(|s| s.text_color(rgb(palette().text)))
         .focusable()
-        .focus(|s| s.border_color(rgb(palette().accent)))
+        .focus(kit::ring_clear)
         .child(label)
         .child(kit::icon(if open { "chevron-down" } else { "chevron-right" }).size(px(11.)).text_color(rgb(palette().text_3)))
         .tooltip(kit::tip(if open { "Hide the commit options" } else { "Skip hooks, sign, or push after committing" }));

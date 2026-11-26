@@ -622,7 +622,7 @@ pub(crate) fn choice<T: Desk>(
         .border_color(rgb(palette().line))
         .cursor_pointer()
         .focusable()
-        .focus(|s| s.bg(rgb(palette().hover)))
+        .focus(kit::ring_clear)
         .child(crate::preferences::radio(on))
         .child(div().w(px(130.)).flex_shrink_0().text_size(px(13.)).text_color(rgb(palette().text)).child(title))
         .child(div().flex_1().min_w_0().when_some(place, |d, place| d.child(kit::fit(place).size(TEXT_SMALL).color(palette().text_3))));

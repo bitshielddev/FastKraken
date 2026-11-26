@@ -183,9 +183,9 @@ pub(crate) fn branch_form<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .when(chosen, |d| {
                     d.child(kit::icon("check").size(px(12.)).text_color(rgb(palette().accent)))
                 })
-                .on_click(cx.listener(move |app, _, w, cx| {
-                    app.dispatch(view::Action::Publish(Action::SelectRemote(i)), w, cx)
-                })),
+                .focusable()
+                .focus(kit::ring)
+                .map(|row| kit::pressable(row, view::Action::Publish(Action::SelectRemote(i)), cx)),
         );
     }
     form = form.child(remotes);
@@ -236,13 +236,10 @@ fn tabs<T: Desk>(page: Page, ready: bool, cx: &Context<T>) -> Div {
             } else {
                 FontWeight::NORMAL
             })
-            .when(ready && !on, |d| {
-                d.cursor_pointer()
-                    .on_click(cx.listener(move |app, _, w, cx| {
-                        app.dispatch(view::Action::Publish(action.clone()), w, cx)
-                    }))
-            })
             .child(label)
+            .when(ready && !on, |d| {
+                kit::pressable(d.cursor_pointer().rounded(px(RADIUS_CHIP)).focusable().focus(kit::ring_clear), view::Action::Publish(action.clone()), cx)
+            })
     };
     div()
         .px(px(18.))
@@ -971,7 +968,8 @@ fn github_page<T: Desk>(app: &T, ready: bool, over: &mut kit::Over, cx: &Context
                 .text_size(px(12.5))
                 .text_color(rgb(palette().text_2))
                 .focusable()
-                .focus(|s| s.text_color(rgb(palette().text)))
+                .min_h(px(TARGET))
+                .focus(kit::ring_clear)
                 .child(kit::checkbox(state.push_after))
                 .child(format!("Push {} now and track it", ui.branch)),
             view::Action::Publish(Action::TogglePush),

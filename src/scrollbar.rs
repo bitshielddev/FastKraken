@@ -113,15 +113,19 @@ pub fn paged(extent: Extent, press: Press) -> f32 {
     }
 }
 
-pub fn opacity(always: bool, held: bool, idle: Option<Duration>) -> f32 {
+pub fn opacity(always: bool, held: bool, idle: Option<Duration>, fade: Duration) -> f32 {
     if always || held {
         return 1.;
     }
     match idle {
         Some(idle) if idle <= LINGER => 1.,
-        Some(idle) if idle < LINGER + FADE => 1. - (idle - LINGER).as_secs_f32() / FADE.as_secs_f32(),
+        Some(idle) if idle < LINGER + fade => 1. - (idle - LINGER).as_secs_f32() / fade.as_secs_f32(),
         _ => 0.,
     }
+}
+
+pub fn fade() -> Duration {
+    if crate::theme::still() { Duration::ZERO } else { FADE }
 }
 
 pub fn strip(area: Bounds<Pixels>, axis: Axis) -> Bounds<Pixels> {
@@ -311,7 +315,7 @@ impl Element for Scrollbar {
             let shown = always
                 || state.grab.is_some()
                 || strip.contains(&window.mouse_position())
-                || opacity(false, false, state.moved.map(|moved| moved.elapsed())) > 0.;
+                || opacity(false, false, state.moved.map(|moved| moved.elapsed()), fade()) > 0.;
             let behavior = if shown {
                 HitboxBehavior::BlockMouseExceptScroll
             } else {
@@ -348,7 +352,7 @@ impl Element for Scrollbar {
         let (held, alpha, moved) = {
             let state = frame.memory.borrow();
             let held = state.grab.is_some() || hitbox.is_hovered(window);
-            (held, opacity(frame.always, held, state.moved.map(|moved| moved.elapsed())), state.moved)
+            (held, opacity(frame.always, held, state.moved.map(|moved| moved.elapsed()), fade()), state.moved)
         };
         if alpha > 0. {
             if let Some(thumb) = thumb(extent, track) {
@@ -595,15 +599,23 @@ mod tests {
 
     #[test]
     fn the_bar_shows_always_or_while_scrolling_and_hovered() {
-        assert_eq!(opacity(true, false, None), 1.);
-        assert_eq!(opacity(false, true, None), 1.);
-        assert_eq!(opacity(false, false, None), 0.);
-        assert_eq!(opacity(false, false, Some(Duration::from_millis(100))), 1.);
-        assert_eq!(opacity(false, false, Some(LINGER)), 1.);
-        let fading = opacity(false, false, Some(LINGER + FADE / 2));
+        assert_eq!(opacity(true, false, None, FADE), 1.);
+        assert_eq!(opacity(false, true, None, FADE), 1.);
+        assert_eq!(opacity(false, false, None, FADE), 0.);
+        assert_eq!(opacity(false, false, Some(Duration::from_millis(100)), FADE), 1.);
+        assert_eq!(opacity(false, false, Some(LINGER), FADE), 1.);
+        let fading = opacity(false, false, Some(LINGER + FADE / 2), FADE);
         assert!(fading > 0.4 && fading < 0.6);
-        assert_eq!(opacity(false, false, Some(LINGER + FADE)), 0.);
-        assert_eq!(opacity(false, false, Some(Duration::from_secs(5))), 0.);
-        assert_eq!(opacity(false, true, Some(Duration::from_secs(5))), 1.);
+        assert_eq!(opacity(false, false, Some(LINGER + FADE), FADE), 0.);
+        assert_eq!(opacity(false, false, Some(Duration::from_secs(5)), FADE), 0.);
+        assert_eq!(opacity(false, true, Some(Duration::from_secs(5)), FADE), 1.);
+    }
+
+    #[test]
+    fn with_reduced_motion_the_bar_goes_at_once_instead_of_fading() {
+        assert_eq!(opacity(false, false, Some(LINGER), Duration::ZERO), 1.);
+        assert_eq!(opacity(false, false, Some(LINGER + Duration::from_millis(1)), Duration::ZERO), 0.);
+        assert_eq!(opacity(false, true, Some(LINGER * 3), Duration::ZERO), 1.);
+        assert_eq!(opacity(true, false, Some(LINGER * 3), Duration::ZERO), 1.);
     }
 }

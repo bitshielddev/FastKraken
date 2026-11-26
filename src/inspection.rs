@@ -502,7 +502,7 @@ pub fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 .child(
                     div()
                         .id("copy-sha")
-                        .h(px(20.))
+                        .h(px(TARGET))
                         .px(px(6.))
                         .flex()
                         .flex_shrink_0()

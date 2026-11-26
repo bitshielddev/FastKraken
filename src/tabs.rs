@@ -356,6 +356,12 @@ impl Workspace {
         let mut desk = Self { tabs: Vec::new(), watching: Vec::new(), front: 0, saved: None };
         cx.observe_window_appearance(window, |_, window, cx| crate::appearance::system_changed(window.appearance(), cx))
             .detach();
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                crate::appearance::window_activated(cx);
+            }
+        })
+        .detach();
         if bench.is_none() {
             crate::updates::arm(cx);
         }
@@ -548,6 +554,16 @@ impl Render for Workspace {
         div()
             .size_full()
             .bg(rgb(palette().canvas))
+            .capture_key_down(|_, window, _| {
+                if crate::kit::use_keyboard_focus(true) {
+                    window.refresh();
+                }
+            })
+            .capture_any_mouse_down(|_, window, _| {
+                if crate::kit::use_keyboard_focus(false) {
+                    window.refresh();
+                }
+            })
             .child(self.front().clone())
             .children(crate::view::commit_input::field_menu(window, cx))
     }
@@ -660,7 +676,7 @@ fn button<T: Desk>(index: usize, shown: &Shown, front: bool, cx: &mut Context<T>
         .when(front, |d| d.bg(rgb(palette().canvas)).border_color(rgb(palette().accent)).text_color(rgb(palette().text)))
         .when(!front, |d| d.border_color(kit::clear()).text_color(rgb(palette().text_2)).hover(|s| s.bg(rgb(palette().hover))))
         .focusable()
-        .focus(|s| s.border_color(rgb(palette().accent)))
+        .focus(if front { kit::ring } else { kit::ring_clear })
         .tooltip(kit::tip(tip))
         .on_mouse_down(MouseButton::Middle, cx.listener(move |app, _, window, cx| {
             app.dispatch(view::Action::Tabs(Action::Close(Some(index))), window, cx);

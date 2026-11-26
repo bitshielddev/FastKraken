@@ -1825,7 +1825,8 @@ fn tick<T: Desk>(
             tick.cursor_pointer()
                 .text_color(rgb(palette().text_2))
                 .focusable()
-                .focus(|s| s.text_color(rgb(palette().text))),
+                .min_h(px(TARGET))
+                .focus(kit::ring_clear),
             view::Action::Stash(action),
             cx,
         )

@@ -183,6 +183,18 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
                 _ => Move::Step(1),
             }))
         }
+        "tabfocus" => {
+            crate::kit::use_keyboard_focus(true);
+            let times = index.max(1);
+            window.on_next_frame(move |window, cx| {
+                window.draw(cx).clear();
+                for _ in 0..times {
+                    window.focus_next();
+                }
+                window.refresh();
+            });
+            None
+        }
         "newbranch" => Some(Action::Refs(refs::Action::New(refs::Kind::Branch))),
         "newworktree" => Some(Action::Worktree(crate::worktree::Action::New(match argument {
             "" => crate::worktree::Start::Head,
@@ -277,6 +289,15 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
                 _ => Choice::Dark,
             };
             Some(Action::Appearance(Appearance::Choose(choice)))
+        }
+        "contrast" => {
+            use crate::appearance::{Action as Appearance, Contrast};
+            let contrast = match argument {
+                "increased" => Contrast::Increased,
+                "system" => Contrast::System,
+                _ => Contrast::Standard,
+            };
+            Some(Action::Appearance(Appearance::Contrast(contrast)))
         }
         "zoom" => Some(Action::Zoom(crate::zoom::Action::Set(argument.parse().unwrap_or(crate::zoom::ACTUAL)))),
         "shortcuts" => {

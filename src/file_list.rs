@@ -841,7 +841,7 @@ pub(crate) fn tools<T: Desk>(ui: &Ui, panel: Panel, cx: &Context<T>) -> Div {
         .child(
             div()
                 .id(("files-options", slot))
-                .size(px(22.))
+                .size(px(TARGET))
                 .flex()
                 .flex_shrink_0()
                 .items_center()
@@ -913,7 +913,7 @@ pub(crate) fn filter_field<T: Desk>(ui: &Ui, panel: Panel, cx: &Context<T>) -> O
                         .child(
                             div()
                                 .id(("files-filter-clear", panel.slot()))
-                                .size(px(18.))
+                                .size(px(TARGET))
                                 .flex()
                                 .items_center()
                                 .justify_center()

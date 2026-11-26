@@ -1410,7 +1410,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                             .id(("side-add", i))
                                             .invisible()
                                             .group_hover("side-header", |s| s.visible())
-                                            .size(px(18.))
+                                            .size(px(TARGET))
                                             .flex()
                                             .items_center()
                                             .justify_center()
@@ -1444,7 +1444,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                         .id(("side-more", i))
                                         .invisible()
                                         .group_hover("side-header", |s| s.visible())
-                                        .size(px(18.))
+                                        .size(px(TARGET))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1566,7 +1566,7 @@ pub(crate) fn sidebar<T: Desk>(app: &T, cx: &mut Context<T>) -> impl IntoElement
                                             .id(("remote-actions", i))
                                             .invisible()
                                             .group_hover("side-folder", |s| s.visible())
-                                            .size(px(18.))
+                                            .size(px(TARGET))
                                             .flex()
                                             .items_center()
                                             .justify_center()
@@ -2113,7 +2113,8 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                         .text_size(px(12.5))
                         .text_color(rgb(palette().text_2))
                         .focusable()
-                        .focus(|s| s.text_color(rgb(palette().text)))
+                        .min_h(px(TARGET))
+                        .focus(kit::ring_clear)
                         .child(kit::checkbox(draft.sign))
                         .child("Sign this tag")
                         .tooltip(kit::tip(sign_tip)),
@@ -2132,7 +2133,8 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                         .text_size(px(12.5))
                         .text_color(rgb(palette().text_2))
                         .focusable()
-                        .focus(|s| s.text_color(rgb(palette().text)))
+                        .min_h(px(TARGET))
+                        .focus(kit::ring_clear)
                         .child(kit::checkbox(ticked))
                         .child(format!("Push to {remote}")),
                     view::Action::Refs(Action::TogglePush),
@@ -2152,7 +2154,8 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
                     .text_size(px(12.5))
                     .text_color(rgb(palette().text_2))
                     .focusable()
-                    .focus(|s| s.text_color(rgb(palette().text)))
+                    .min_h(px(TARGET))
+                    .focus(kit::ring_clear)
                     .child(kit::checkbox(draft.checkout))
                     .child("Check out after creating"),
                 view::Action::Refs(Action::ToggleCheckout),

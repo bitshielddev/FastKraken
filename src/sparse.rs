@@ -758,7 +758,7 @@ fn tree_row<T: Desk>(index: usize, row: &Row, enabled: bool, cx: &mut Context<T>
         Row::Folder { path, name, depth, unfolded, tick, inside } => {
             let chevron = div()
                 .id(("sparse-chevron", index))
-                .size(px(16.))
+                .size(px(TARGET))
                 .flex()
                 .flex_shrink_0()
                 .items_center()
@@ -774,7 +774,7 @@ fn tree_row<T: Desk>(index: usize, row: &Row, enabled: bool, cx: &mut Context<T>
                 .flex()
                 .items_center()
                 .gap_2()
-                .when(enabled && !within, |d| d.cursor_pointer().focusable().focus(|s| s.bg(rgb(palette().hover))))
+                .when(enabled && !within, |d| d.min_h(px(TARGET)).cursor_pointer().focusable().focus(kit::ring_clear))
                 .child(div().when(within, |d| d.opacity(0.5)).child(kit::checkbox(*tick != Tick::Off)))
                 .child(kit::icon("folder").size(px(13.)).text_color(rgb(palette().text_3)))
                 .child(kit::fit(name.clone()).size(12.5).color(if *tick == Tick::Off { palette().text_2 } else { palette().text }).grow())
