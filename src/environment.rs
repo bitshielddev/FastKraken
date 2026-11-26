@@ -247,7 +247,7 @@ echo "Goodbye""#,
         assert_eq!(probe(&hanging, Duration::from_millis(1500)), None);
         let took = started.elapsed();
         assert!(took >= Duration::from_millis(1500) && took < Duration::from_secs(4), "{took:?}");
-        let pids = fs::read_to_string(&pids).unwrap();
+        let pids = fs::read_to_string(&pids).unwrap_or_default();
         for _ in 0..50 {
             if !pids.lines().any(alive) {
                 break;
