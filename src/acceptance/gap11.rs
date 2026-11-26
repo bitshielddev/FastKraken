@@ -292,6 +292,18 @@ impl Replay<'_> {
         if marked != (Some(IN_USE.to_owned()), None) {
             return Err(format!("The branch marks read {marked:?}").into());
         }
+        let main = Target::Branch("main".into());
+        let merged = self.menu_rows(&crate::drag::pair(main.clone(), branch.clone()))?;
+        let rebased = self.menu_rows(&crate::drag::pair(branch.clone(), main))?;
+        let refused = |rows: &[(&str, String, Option<String>)], id: &str, title: &str| {
+            rows.iter().any(|row| row.0 == id && row.1 == title && row.2.as_deref() == Some(IN_USE))
+        };
+        if !refused(&merged, "drop.merge", "Switch to ridge and merge main")
+            || !refused(&rebased, "drop.rebase", "Switch to ridge and rebase it onto main…")
+            || !refused(&rebased, "drop.interactive-rebase", "Switch to ridge and interactively rebase it onto main…")
+        {
+            return Err(format!("Dropping main on ridge offers {merged:?}, and ridge on main offers {rebased:?}").into());
+        }
 
         self.ref_action(refs::Action::Switch("ridge".into()))?;
         self.until("the switch refused with the worktree's name", |tab| {

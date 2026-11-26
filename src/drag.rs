@@ -308,6 +308,12 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
             (ui.detached || ui.head.is_none()).then(|| "Check out a branch first".to_owned())
         }))
     }
+    fn switching(ui: &Ui, branch: &OsStr, available: Availability) -> Availability {
+        match crate::worktree::in_use(ui, branch) {
+            Some(reason) if matches!(available, Availability::Enabled) => Availability::Disabled(reason),
+            _ => available,
+        }
+    }
     fn reset_when(ui: &Ui, target: &Target) -> Availability {
         match resetting(ui, target) {
             Some((branch, _)) if checked_out(ui, branch) => writing(ui),
@@ -362,7 +368,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
                 None => String::new(),
             },
             |ui, target, _| match merging(ui, target) {
-                Some(_) => writing(ui),
+                Some((into, _)) => switching(ui, into, writing(ui)),
                 None => Availability::Hidden,
             },
             |ui, target| {
@@ -387,7 +393,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
                 None => String::new(),
             },
             |ui, target, _| match rebasing(ui, target) {
-                Some(_) => attached(ui),
+                Some((branch, _)) => switching(ui, branch, attached(ui)),
                 None => Availability::Hidden,
             },
             |ui, target| {
@@ -413,7 +419,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
                 None => String::new(),
             },
             |ui, target, _| match rebasing(ui, target) {
-                Some(_) => attached(ui),
+                Some((branch, _)) => switching(ui, branch, attached(ui)),
                 None => Availability::Hidden,
             },
             |ui, target| {
