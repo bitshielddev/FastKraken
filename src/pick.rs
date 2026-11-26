@@ -84,7 +84,35 @@ fn commits(count: usize) -> String {
 }
 
 fn wanted<'a>(ui: &Ui, oids: &'a [String]) -> Vec<&'a String> {
-    oids.iter().filter(|oid| contains(ui, oid) != Some(true)).collect()
+    let on_head = ui.head.as_deref().map(|head| reached_from(&ui.history, head, oids)).unwrap_or_default();
+    oids.iter().filter(|oid| !on_head.contains(oid.as_str())).collect()
+}
+
+fn reached_from<'a>(history: &[view::HistoryRow], head: &str, oids: &'a [String]) -> HashSet<&'a str> {
+    let picked: HashSet<&str> = oids.iter().map(String::as_str).collect();
+    let mut found: HashSet<&str> = picked.iter().copied().filter(|oid| *oid == head).collect();
+    let mut passed = 0;
+    let mut frontier: Option<HashSet<&str>> = None;
+    for row in history {
+        let oid = row.oid.as_str();
+        let pick = picked.get(oid);
+        if frontier.is_none() && oid == head {
+            frontier = Some(HashSet::from([head]));
+        }
+        if let Some(frontier) = frontier.as_mut()
+            && frontier.remove(oid)
+        {
+            if let Some(pick) = pick {
+                found.insert(pick);
+            }
+            frontier.extend(row.parents.iter().map(String::as_str));
+        }
+        passed += usize::from(pick.is_some());
+        if passed == picked.len() || frontier.as_ref().is_some_and(HashSet::is_empty) {
+            break;
+        }
+    }
+    found
 }
 
 fn holds_merge(ui: &Ui, oids: &[String]) -> bool {
@@ -1323,6 +1351,37 @@ mod tests {
         assert_eq!(reaches(&history, &head, &"0".repeat(40)), None);
         history.truncate(1);
         assert_eq!(reaches(&history, &head, &base), None);
+    }
+
+    #[test]
+    fn the_series_menu_finds_the_picked_commits_the_branch_has_in_one_pass() {
+        let f = Fixture::new();
+        let base = commit(&f, "trail.txt", "Trail\n", "Base");
+        f.git(&["switch", "-qc", "side"]);
+        let ferry = commit(&f, "ferry.txt", "Hourly crossings\n", "Add the ferry");
+        let lake = commit(&f, "lake.txt", "Cold water\n", "Map the lake");
+        f.git(&["switch", "-q", "main"]);
+        let bridge = commit(&f, "bridge.txt", "Stone bridge\n", "Build the bridge");
+        f.git(&["merge", "-q", "--no-ff", "--no-edit", &ferry]);
+        let head = oid(&f, "HEAD");
+        let tower = commit(&f, "tower.txt", "Watch tower\n", "Raise the tower");
+        f.git(&["switch", "-q", "--detach", &head]);
+        let history = f.repo.history(0, 100).unwrap();
+        let everything = [tower.clone(), head.clone(), lake.clone(), bridge.clone(), ferry.clone(), base.clone(), "0".repeat(40)];
+        let mut found: Vec<&str> = reached_from(&history, &head, &everything).into_iter().collect();
+        found.sort_unstable();
+        let mut expected: Vec<&str> = everything
+            .iter()
+            .map(String::as_str)
+            .filter(|oid| reaches(&history, &head, oid) == Some(true))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(found, expected);
+        let mut wanted = vec![head.as_str(), bridge.as_str(), ferry.as_str(), base.as_str()];
+        wanted.sort_unstable();
+        assert_eq!(found, wanted);
+        assert!(reached_from(&history, &bridge, &[head.clone(), ferry.clone(), lake.clone()]).is_empty());
+        assert_eq!(reached_from(&history, &"0".repeat(40), &["0".repeat(40), base.clone()]), HashSet::from(["0".repeat(40).as_str()]));
     }
 
     #[test]
