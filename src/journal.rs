@@ -529,7 +529,7 @@ fn plain_component(name: &str) -> bool {
         && !name.starts_with('.')
         && !name.ends_with(".lock")
         && !name.contains("..")
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || !b.is_ascii() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 fn root(repo: &Repository) -> String {
@@ -918,7 +918,11 @@ pub(crate) fn restore(tab: &mut Tab, cx: &mut Context<Tab>) {
                 }
                 _ => {}
             }
-            if std::mem::take(&mut tab.status_dirty) {
+            let refs_changed = std::mem::take(&mut tab.refs_dirty);
+            let status_changed = std::mem::take(&mut tab.status_dirty);
+            if refs_changed {
+                tab.refresh(true, cx);
+            } else if status_changed {
                 tab.load_status(cx);
             }
             crate::operation::refresh(tab, cx);
@@ -1996,6 +2000,21 @@ pub(crate) mod tests {
         f.git(&["worktree", "remove", "--force", path.to_str().unwrap()]);
         assert_eq!(sweep(&f.repo, &BTreeSet::from([3])).unwrap(), ["worktrees/ridge-tree"]);
         assert_eq!(private_refs(&f), [format!("refs/fastkraken/undo/main/3/0 {tip}")]);
+    }
+
+    #[test]
+    fn a_removed_worktree_with_an_accented_name_loses_its_undo_refs_too() {
+        let f = base();
+        let (path, linked) = linked_worktree(&f, "café-tree", "café");
+        assert_eq!(space(&linked), "worktrees/café-tree");
+        let tip = oid(&f, "HEAD");
+        keep(&linked, 2, &[tip.clone()]).unwrap();
+        assert_eq!(held(&linked).unwrap(), [(2, "refs/fastkraken/undo/worktrees/café-tree/2/0".to_owned())]);
+        assert!(sweep(&f.repo, &BTreeSet::new()).unwrap().is_empty());
+        assert_eq!(private_refs(&f).len(), 1);
+        f.git(&["worktree", "remove", "--force", path.to_str().unwrap()]);
+        assert_eq!(sweep(&f.repo, &BTreeSet::new()).unwrap(), ["worktrees/café-tree"]);
+        assert!(private_refs(&f).is_empty());
     }
 
     #[test]
