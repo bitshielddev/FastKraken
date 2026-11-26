@@ -1229,6 +1229,8 @@ pub(crate) fn disturbs(action: &view::Action) -> bool {
         | A::Tabs(_)
         | A::Cli(_)
         | A::Updates(_)
+        | A::Diagnostics(_)
+        | A::Guide(_)
         | A::CommitOptions(_)
         | A::Help(_)
         | A::Palette(_)
@@ -1242,6 +1244,7 @@ pub(crate) fn disturbs(action: &view::Action) -> bool {
         | A::Journal(_)
         | A::Worktree(_) => true,
         A::Lfs(action) => action.during_operation(),
+        A::Maintenance(action) => action.during_operation(),
         A::Sparse(action) => action.during_operation(),
         A::Submodule(action) => matches!(
             action,

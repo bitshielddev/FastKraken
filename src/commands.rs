@@ -293,6 +293,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::reverse::COMMANDS,
         crate::rewrite::COMMANDS,
         crate::recover::COMMANDS,
+        crate::maintenance::COMMANDS,
         crate::inspection::COMMANDS,
         crate::file_history::COMMANDS,
         crate::blame::COMMANDS,
@@ -310,6 +311,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::file_view::COMMANDS,
         crate::palette::COMMANDS,
         crate::help::COMMANDS,
+        crate::diagnostics::COMMANDS,
         crate::updates::COMMANDS,
         crate::preferences::COMMANDS,
         crate::appearance::COMMANDS,
@@ -1169,7 +1171,7 @@ mod tests {
             ]
         );
         assert_eq!(ids(Bar::Branch), ["repo.new-branch", "repo.switch-branch", "branch.rename"]);
-        assert_eq!(ids(Bar::Help), ["app.palette", "app.shortcuts"]);
+        assert_eq!(ids(Bar::Help), ["app.palette", "app.shortcuts", "app.logs"]);
     }
 
     #[test]

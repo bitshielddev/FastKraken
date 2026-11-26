@@ -17,7 +17,7 @@ CORE_SCENARIOS = {
     *(f"OBS{n:02}" for n in range(1, 24)),
     *(f"EXT{n:02}" for n in (1, 2, 5, 6, 7, 8, 10, 11, 12, 14, 15)),
 }
-ADDITIONAL_SUITE_SIZES = (15, 21, 21, 13, 14, 15, 17, 14, 15, 17, 12, 12, 6)
+ADDITIONAL_SUITE_SIZES = (15, 21, 21, 13, 14, 15, 17, 14, 15, 17, 12, 12, [1, 2, 3, 4, 5, 6, 8])
 
 
 def waves():

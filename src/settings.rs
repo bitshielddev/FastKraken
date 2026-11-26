@@ -187,6 +187,12 @@ pub(crate) struct Memory {
     pub(crate) clone_parent: Option<Vec<u8>>,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) updates_checked: Option<i64>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) last_version: Option<String>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) hints_seen: Option<Vec<String>>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) report_seen: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -438,6 +444,7 @@ pub(crate) fn load(dir: Option<PathBuf>, cx: &mut App) {
     crate::appearance::start(cx);
     crate::zoom::start(cx);
     crate::photos::start(cx);
+    crate::guide::start(cx);
 }
 
 fn read(dir: &Path) -> (Settings, Memory, Option<String>) {
@@ -673,6 +680,9 @@ mod tests {
             recents: Vec::new(),
             clone_parent: Some(b"/tmp/clones".to_vec()),
             updates_checked: Some(1_795_000_200),
+            last_version: Some("0.8.0".into()),
+            hints_seen: Some(vec!["menus".into()]),
+            report_seen: Some("crash-20261126-101500.txt".into()),
         };
         memory.add_recent(Path::new("/tmp/Oak"), 1_795_000_000);
         memory.add_recent(Path::new("/tmp/Cedar"), 1_795_000_100);
@@ -888,6 +898,9 @@ mod tests {
                 "recents": [{"path": [47, 114], "name": "r", "opened": 5}, 7, {"path": "nope"}],
                 "clone_parent": "nope",
                 "updates_checked": "yesterday",
+                "last_version": 8,
+                "hints_seen": "all",
+                "report_seen": ["x"],
                 "tabs": ["one", "two"]}"#,
         )
         .unwrap();
@@ -906,6 +919,7 @@ mod tests {
         assert_eq!(memory.recents, [Recent { path: b"/r".to_vec(), name: "r".into(), opened: 5 }]);
         assert_eq!(memory.clone_parent(), None);
         assert_eq!(memory.updates_checked, None);
+        assert_eq!((memory.last_version, memory.hints_seen, memory.report_seen), (None, None, None));
         assert!(!settings.check_updates);
         assert_eq!(memory.window.as_ref().unwrap().mode, FrameMode::Windowed);
         assert_eq!(memory.repositories[0].closed, [Section::Tags]);

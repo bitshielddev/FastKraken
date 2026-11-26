@@ -83,6 +83,11 @@ impl Entry {
         }
     }
 
+    pub(crate) fn line(&self) -> String {
+        let place = if self.dir.as_os_str().is_empty() { String::new() } else { format!(" · in {}", self.dir.display()) };
+        format!("{}  {} · {} · {}{place}", clock(self.at), self.summary(), self.result(), took(self.duration))
+    }
+
     fn failed(&self) -> bool {
         !self.succeeded() && (!self.read_only || self.exit != Some(1) || !self.stderr.trim().is_empty())
     }
@@ -170,6 +175,23 @@ pub(crate) fn newest() -> u64 {
 
 pub(crate) fn entries() -> Vec<Arc<Entry>> {
     log().entries.iter().cloned().collect()
+}
+
+pub(crate) fn recent(count: usize) -> Vec<Arc<Entry>> {
+    let mut tries = 0;
+    let log = loop {
+        match LOG.try_lock() {
+            Ok(log) => break log,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) if tries < 40 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return Vec::new(),
+        }
+    };
+    let skip = log.entries.len().saturating_sub(count);
+    log.entries.iter().skip(skip).cloned().collect()
 }
 
 pub(crate) fn find(id: u64) -> Option<Arc<Entry>> {

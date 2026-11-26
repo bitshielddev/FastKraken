@@ -24,6 +24,7 @@ mod conflict;
 mod connect;
 mod credentials;
 mod dates;
+mod diagnostics;
 mod diff_doc;
 mod difftool;
 mod diff_options;
@@ -43,6 +44,7 @@ mod forks;
 mod github;
 mod graph_view;
 mod guard;
+mod guide;
 mod handoff;
 mod help;
 mod highlight;
@@ -60,6 +62,7 @@ mod kit;
 mod lfs;
 mod line_patch;
 mod lines;
+mod maintenance;
 mod merge;
 mod navigate;
 mod notice;
@@ -315,6 +318,9 @@ impl Tab {
                     .into_owned();
                 if let Some(notice) = settings::take_startup_notice(cx) {
                     tab.ui.say(Tone::Info, notice);
+                }
+                if tab.front {
+                    guide::deliver(tab, cx);
                 }
                 tab.ui
                     .refs
@@ -1623,6 +1629,8 @@ impl Tab {
                 | Action::Tabs(_)
                 | Action::Cli(_)
                 | Action::Updates(_)
+                | Action::Diagnostics(_)
+                | Action::Guide(_)
         );
         if self.ui.prompt.open() {
             let choosing = matches!(action, Action::Worktree(worktree::Action::ChooseFolder));
@@ -1874,6 +1882,9 @@ impl Tab {
             Action::Tabs(action) => tabs::dispatch(self, action, window, cx),
             Action::Cli(action) => cli::dispatch(self, action, window, cx),
             Action::Updates(action) => updates::dispatch(self, action, window, cx),
+            Action::Diagnostics(action) => diagnostics::dispatch(self, action, window, cx),
+            Action::Maintenance(action) => maintenance::dispatch(self, action, window, cx),
+            Action::Guide(action) => guide::dispatch(self, action, window, cx),
             Action::Palette(action) => palette::dispatch(self, action, window, cx),
             Action::ToggleSidebar => {
                 let hidden = !self.ui.sidebar_hidden;
@@ -2112,6 +2123,10 @@ fn main() {
         let _ = handed.try_send(urls);
     });
     let listen = state_dir.clone().filter(|_| single);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    diagnostics::install(state_dir.as_ref().and_then(|_| {
+        diagnostics::folder_for(storage::override_directory().as_deref(), home.as_deref())
+    }));
     application.run(move |cx: &mut App| {
         view::bindings(cx);
         settings::load(state_dir, cx);

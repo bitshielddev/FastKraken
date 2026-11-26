@@ -65,7 +65,7 @@ const GAP_WAVES: &[(u8, &[&str])] =
         (10, &["GAP1001", "GAP1002", "GAP1003", "GAP1004", "GAP1005", "GAP1006", "GAP1007", "GAP1008", "GAP1009", "GAP1010", "GAP1011", "GAP1012", "GAP1013", "GAP1014", "GAP1015", "GAP1016", "GAP1017"]),
         (11, &["GAP1101", "GAP1102", "GAP1103", "GAP1104", "GAP1105", "GAP1106", "GAP1107", "GAP1108", "GAP1109", "GAP1110", "GAP1111", "GAP1112"]),
         (12, &["GAP1201", "GAP1202", "GAP1203", "GAP1204", "GAP1205", "GAP1206", "GAP1207", "GAP1208", "GAP1209", "GAP1210", "GAP1211", "GAP1212"]),
-        (13, &["GAP1301", "GAP1302", "GAP1303", "GAP1304", "GAP1305", "GAP1306"]),
+        (13, &["GAP1301", "GAP1302", "GAP1303", "GAP1304", "GAP1305", "GAP1306", "GAP1308"]),
     ];
 
 #[derive(Clone, Copy)]
@@ -889,6 +889,7 @@ pub fn run(wave: Wave) {
         fail("The acceptance replay keeps FastKraken's state inside its sandbox.");
     };
     fs::create_dir_all(sandbox.join("Applications/Terminal.app")).unwrap_or_else(|e| fail(e));
+    crate::diagnostics::install(crate::diagnostics::folder_for(Some(&state), None));
     Application::new().with_assets(crate::assets::Assets).run(move |cx: &mut App| {
         view::bindings(cx);
         settings::load(Some(state), cx);

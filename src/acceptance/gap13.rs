@@ -391,7 +391,8 @@ impl Replay<'_> {
         git_is(&root, &["status", "--porcelain=v1"], "")?;
         self.pass();
         self.absolute_dates(dir, state).await?;
-        self.photos_wait_for_their_choice(dir, state).await
+        self.photos_wait_for_their_choice(dir, state).await?;
+        self.crash_report(dir, state).await
     }
 
     fn row_dates(&mut self) -> Result<Vec<(String, String, String)>> {
@@ -639,6 +640,128 @@ impl Replay<'_> {
     }
 }
 
+impl Replay<'_> {
+    fn notice_id_titled(&mut self, title: &str) -> Result<Option<u64>> {
+        Ok(self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.notices.items().iter().find(|notice| notice.title == title).map(|notice| notice.id)
+        })?)
+    }
+
+    async fn crash_report(&mut self, dir: &Path, state: &Path) -> Result<()> {
+        self.start("GAP1308");
+        let logs = state.join("Logs");
+        if crate::diagnostics::folder().as_deref() != Some(logs.as_path()) {
+            return Err(format!("The replay keeps its logs in {:?}, not {}", crate::diagnostics::folder(), logs.display()).into());
+        }
+        if !crate::diagnostics::reports(&logs).is_empty() {
+            return Err("A report was written before anything went wrong".into());
+        }
+        let root = init(dir, BEACON)?;
+        record(&root, "trail.txt", TRAIL, "Light the beacon")?;
+        let head = oid(&root, "HEAD")?;
+        self.open(&root)?;
+        self.until("Beacon open", |tab| tab.ui.repo == BEACON && tab.ui.history.len() == 1).await?;
+        self.action(Action::Run("repo.check"))?;
+        self.until("the repository checked", |tab| {
+            tab.ui.notices.items().iter().any(|notice| notice.title == crate::maintenance::SOUND)
+        })
+        .await?;
+        let repo = self.tab.read_with(self.cx, |tab, _| tab.repo.clone())?.ok_or("Beacon has no repository")?;
+        let mirror = format!("https://{BEACON_USER}:{BEACON_PASSWORD}@example.invalid/beacon.git");
+        crate::repository::checked(repo.command().args(["config", "--local", "beacon.mirror", &mirror]))?;
+        let thread: std::thread::JoinHandle<()> = std::thread::Builder::new()
+            .name(BEACON_THREAD.into())
+            .spawn(move || panic!("Lost the beacon while reading {mirror} with password={BEACON_PASSWORD} and {BEACON_TOKEN}"))?;
+        if thread.join().is_ok() {
+            return Err("The thread that went wrong finished as if nothing had happened".into());
+        }
+        let written = crate::diagnostics::reports(&logs);
+        let [report] = written.as_slice() else {
+            return Err(format!("The logs folder holds the reports {written:?}").into());
+        };
+        let text = fs::read_to_string(report)?;
+        for expected in [
+            "FastKraken problem report".to_owned(),
+            format!("FastKraken {}", env!("CARGO_PKG_VERSION")),
+            format!("Thread: {BEACON_THREAD}"),
+            "Lost the beacon while reading https://•••@example.invalid/beacon.git with password=•••".to_owned(),
+            "config --local beacon.mirror https://•••@example.invalid/beacon.git · exit 0".to_owned(),
+            "Backtrace".to_owned(),
+        ] {
+            if !text.contains(&expected) {
+                return Err(format!("The report does not say {expected:?}:\n{text}").into());
+            }
+        }
+        for secret in [BEACON_PASSWORD, BEACON_TOKEN, BEACON_USER] {
+            if text.contains(secret) {
+                return Err(format!("The report holds the credential {secret:?}").into());
+            }
+        }
+        use std::os::unix::fs::PermissionsExt;
+        if fs::metadata(report)?.permissions().mode() & 0o777 != 0o600 {
+            return Err("The report can be read by other users".into());
+        }
+
+        self.relaunch().await?;
+        self.until("Beacon reopened with the problem offered", |tab| {
+            tab.ui.repo == BEACON && tab.ui.notices.items().iter().any(|notice| notice.title == crate::diagnostics::RECORDED)
+        })
+        .await?;
+        let offered = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.notices.items().iter().find(|notice| notice.title == crate::diagnostics::RECORDED).cloned()
+        })?;
+        let offered = offered.ok_or("The problem notice went")?;
+        let reveals = matches!(
+            offered.actions.as_slice(),
+            [(label, Action::Handoff(crate::handoff::Action::RevealSaved(path)))] if label.as_ref() == crate::diagnostics::REVEAL_REPORT && path == report
+        );
+        if !reveals || !offered.detail.contains("nothing was sent") {
+            return Err(format!("The problem notice reads {:?} and offers {:?}", offered.detail, offered.actions).into());
+        }
+        let revealed = |path: &Path| vec!["reveal".to_owned(), path.to_string_lossy().into_owned()];
+        self.action(Action::Notice(crate::notice::Action::Take(offered.id, 0)))?;
+        if crate::tools::launched().last() != Some(&revealed(report)) {
+            return Err(format!("Reveal report showed {:?}", crate::tools::launched().last()).into());
+        }
+        if self.notice_id_titled(crate::diagnostics::RECORDED)?.is_some() {
+            return Err("The problem notice stayed after Reveal report".into());
+        }
+        let seen = self.cx.update(|cx| settings::memory(cx).and_then(|memory| memory.report_seen.clone()))?;
+        if seen.as_deref() != report.file_name().and_then(|name| name.to_str()) {
+            return Err(format!("FastKraken remembers the report {seen:?} as seen").into());
+        }
+
+        self.relaunch().await?;
+        self.until("Beacon reopened a second time", |tab| tab.ui.repo == BEACON && tab.ui.history.len() == 1).await?;
+        self.settle_frames().await?;
+        if self.notice_id_titled(crate::diagnostics::RECORDED)?.is_some() {
+            return Err("The same problem was offered again on the next launch".into());
+        }
+
+        self.action(Action::Run("app.logs"))?;
+        let activity = logs.join(crate::diagnostics::ACTIVITY_LOG);
+        if crate::tools::launched().last() != Some(&revealed(&activity)) {
+            return Err(format!("Reveal Logs showed {:?}", crate::tools::launched().last()).into());
+        }
+        let logged = fs::read_to_string(&activity)?;
+        if !logged.contains("beacon.mirror https://•••@example.invalid") || logged.contains(BEACON_PASSWORD) {
+            return Err(format!("The activity log reads:\n{logged}").into());
+        }
+        if crate::diagnostics::reports(&logs).len() != 1 {
+            return Err("Revealing the logs wrote another report".into());
+        }
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        git_is(&root, &["status", "--porcelain=v1"], "")?;
+        self.pass();
+        Ok(())
+    }
+}
+
+const BEACON: &str = "Beacon";
+const BEACON_USER: &str = "cedar-keeper";
+const BEACON_PASSWORD: &str = "hunter2-beacon";
+const BEACON_TOKEN: &str = "ghp_beacon0123456789secret";
+const BEACON_THREAD: &str = "beacon-worker";
 const PORTRAITS: &str = "Portraits";
 const PORTRAITS_PAGE: &str = "https://github.com/cedar/portraits";
 const PORTRAITS_REPO: &str = "cedar/portraits";

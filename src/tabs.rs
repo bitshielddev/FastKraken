@@ -431,6 +431,9 @@ impl Workspace {
                     tab.ui.say(Tone::Info, notice);
                 }
             }
+            if !opened {
+                crate::guide::deliver(tab, cx);
+            }
             view::focus(&tab.ui, window);
             cx.notify();
         });

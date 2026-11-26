@@ -691,6 +691,7 @@ pub fn refresh(tab: &mut Tab, cx: &mut Context<Tab>) {
                     crate::forecast::refs_loaded(tab, cx);
                     crate::pulls::refs_loaded(tab, cx);
                     crate::photos::repository_shown(tab, cx);
+                    crate::guide::offer(tab, cx);
                 }
                 Err(error) => tab.error(error, cx),
             }

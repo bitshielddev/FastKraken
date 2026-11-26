@@ -683,6 +683,9 @@ pub enum Action {
     Engine(crate::engine::Action),
     Cli(crate::cli::Action),
     Updates(crate::updates::Action),
+    Diagnostics(crate::diagnostics::Action),
+    Maintenance(crate::maintenance::Action),
+    Guide(crate::guide::Action),
     CommitOptions(crate::commit_options::Action),
 }
 
@@ -762,6 +765,7 @@ pub struct Ui {
     pub menu_cursor: crate::commands::Cursor,
     pub prompt: crate::prompt::State,
     pub help: crate::help::State,
+    pub(crate) guide: crate::guide::State,
     pub palette: crate::palette::State,
     pub sidebar_hidden: bool,
     pub panel_hidden: bool,
@@ -886,6 +890,7 @@ impl Ui {
             menu_cursor: Default::default(),
             prompt: crate::prompt::State::new(cx),
             help: crate::help::State::new(cx),
+            guide: Default::default(),
             palette: crate::palette::State::new(cx),
             sidebar_hidden: settings.sidebar_hidden,
             panel_hidden: settings.panel_hidden,
@@ -1410,12 +1415,14 @@ pub(crate) fn menu_bar(ui: &Ui, recents: &[(String, PathBuf)], field: bool, cx: 
     let mut file = bar_items(ui, Bar::File);
     let at = bar_index(Bar::File, "repo.open").map_or(file.len(), |at| (at + 1).min(file.len()));
     file.insert(at, crate::start::bar_menu(recents));
+    let mut repository = bar_items(ui, Bar::Repository);
+    repository.extend([MenuItem::separator(), crate::maintenance::bar_menu(ui)]);
     vec![
         Menu { name: "FastKraken".into(), items: app },
         Menu { name: "File".into(), items: file },
         Menu { name: "Edit".into(), items: edit },
         Menu { name: "View".into(), items: view },
-        Menu { name: "Repository".into(), items: bar_items(ui, Bar::Repository) },
+        Menu { name: "Repository".into(), items: repository },
         Menu { name: "Branch".into(), items: bar_items(ui, Bar::Branch) },
         Menu { name: "Window".into(), items: window_items(ui, cx) },
         Menu { name: "Help".into(), items: bar_items(ui, Bar::Help) },
