@@ -206,7 +206,11 @@ fn note(ui: &Ui, ours: &str, theirs: &str, wording: Wording) -> Option<Entry> {
         Forecast::Conflicts(names) => (Some(listed(names, TIPPED)), true),
         _ => (None, false),
     };
-    Some(Entry::note("forecast", title, Note { tip, warn }))
+    let mut row = Entry::note("forecast", title, Note { tip, warn });
+    if *forecast == Forecast::Checking {
+        row.icon = Some("spinner");
+    }
+    Some(row)
 }
 
 pub(crate) fn annotate(ui: &Ui, target: &Target, entries: &mut Vec<Entry>) {

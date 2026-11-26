@@ -121,6 +121,12 @@ pub(crate) struct Loaded {
     pub(crate) in_place: bool,
 }
 
+impl Loaded {
+    fn forecast_pair(&self) -> Option<(&str, &str)> {
+        (!self.in_place).then_some((self.ends.tip.as_str(), self.ends.target.as_str()))
+    }
+}
+
 pub(crate) struct Editor {
     loaded: Loaded,
     rows: Vec<Row>,
@@ -742,10 +748,12 @@ fn open(tab: &mut Tab, branch: Option<OsString>, onto: Source, window: &mut Wind
                     tab.ui.activity.close();
                     tab.ui.diff_open = false;
                     tab.ui.menu = None;
-                    let (tip, target) = (loaded.ends.tip.clone(), loaded.ends.target.clone());
+                    let pair = loaded.forecast_pair().map(|(tip, target)| (tip.to_owned(), target.to_owned()));
                     tab.ui.rebase_editor.open = Some(Editor::new(loaded));
                     tab.ui.focus_on_open = true;
-                    crate::forecast::request(tab, tip, target, cx);
+                    if let Some((tip, target)) = pair {
+                        crate::forecast::request(tab, tip, target, cx);
+                    }
                 }
                 Ok(Err(limit)) => {
                     tab.ui.notices.show(Notice::new(Tone::Info, "This cannot be rebased interactively", limit));
@@ -1105,8 +1113,9 @@ pub(crate) fn render<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         .when(ends.switch, |d| {
             d.child(kit::muted(format!("{} is not checked out. FastKraken switches to it when the rebase starts.", ends.branch)))
         })
-        .when_some(crate::forecast::line(ui, &ends.tip, &ends.target, crate::forecast::Wording::Rebase), |d, line| {
-            let ink = if crate::forecast::conflicting(ui, &ends.tip, &ends.target) { CONFLICT } else { TEXT_3 };
+        .when_some(editor.loaded.forecast_pair(), |d, (tip, target)| {
+            let Some(line) = crate::forecast::line(ui, tip, target, crate::forecast::Wording::Rebase) else { return d };
+            let ink = if crate::forecast::conflicting(ui, tip, target) { CONFLICT } else { TEXT_3 };
             d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(ink)).child(line))
         })
         .when_some(editor.loaded.upstream.as_ref(), |d, upstream| {
@@ -1255,6 +1264,7 @@ mod tests {
         assert!(editor.rows.iter().all(|row| row.choice == Choice::Pick && !row.commit.author.is_empty() && row.commit.time > 0));
         assert_eq!(editor.heading(), format!("Rebasing 4 commits onto {}", notice::short(&base)));
         assert!(editor.loaded.in_place && editor.loaded.upstream.is_none());
+        assert_eq!(editor.loaded.forecast_pair(), None);
         assert_eq!(editor.summary(), "");
         assert_eq!(editor.start_refusal().as_deref(), Some(UNCHANGED));
     }
@@ -1336,6 +1346,7 @@ mod tests {
         let mut editor = editor(&f, Source::Branch("side".into()));
         assert_eq!(editor.heading(), "Rebasing 2 commits onto side");
         assert!(!editor.loaded.in_place);
+        assert_eq!(editor.loaded.forecast_pair(), Some((oid(&f, "main").as_str(), oid(&f, "side").as_str())));
         assert_eq!(editor.start_refusal(), None);
         editor.rows[0].choice = Choice::Squash;
         started(&f, &editor).ok().expect("the rebase runs");
