@@ -70,6 +70,8 @@ pub(crate) struct Settings {
     pub(crate) file_list_mode: crate::file_list::Mode,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) file_list_sort: crate::file_list::Sort,
+    #[serde(deserialize_with = "storage::lenient_list")]
+    pub(crate) profiles: Vec<crate::profiles::Profile>,
 }
 
 impl Settings {
@@ -122,6 +124,7 @@ impl Default for Settings {
             commit_bodies: false,
             file_list_mode: crate::file_list::Mode::default(),
             file_list_sort: crate::file_list::Sort::default(),
+            profiles: Vec::new(),
         }
     }
 }
@@ -657,6 +660,13 @@ mod tests {
             commit_bodies: true,
             file_list_mode: crate::file_list::Mode::Tree,
             file_list_sort: crate::file_list::Sort::Status,
+            profiles: vec![crate::profiles::Profile {
+                name: "Work".to_owned(),
+                user_name: "Cedar".to_owned(),
+                email: "cedar@work.invalid".to_owned(),
+                signing_key: "/tmp/keys/work.pub".to_owned(),
+                ssh_key: "/tmp/keys/work".to_owned(),
+            }],
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();

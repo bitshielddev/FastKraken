@@ -5,8 +5,8 @@ use crate::{
     github::{PullState, Tokens},
     notice, pulls, sync,
 };
-use crate::{commit_options, prompt, reveal, signing::{self, Grade, Signature}};
-use std::{ffi::OsStr, process::Stdio};
+use crate::{commit_options, preferences, prompt, reveal, signing::{self, Grade, Signature}};
+use std::{ffi::OsStr, os::unix::fs::PermissionsExt, process::Stdio};
 
 const PULL_TRAIL: &str = "Pull-trail";
 const PUSH_TRAIL: &str = "Push-trail";
@@ -31,6 +31,43 @@ const KEYGEN: &str = "/usr/bin/ssh-keygen";
 const SIGNER: &str = "cedar@example.invalid";
 const LANTERN_PASSPHRASE: &str = "ridge lantern";
 const UNLOCK_LANTERN: &str = "Unlock SSH key lantern";
+const CAIRN_PASSPHRASE: &str = "cairn above the tree line";
+const AGENT: &str = "/usr/bin/ssh-agent";
+
+struct Agent(std::process::Child);
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn agent_at(socket: &Path) -> Result<Agent> {
+    let child = std::process::Command::new(AGENT)
+        .arg("-D")
+        .arg("-a")
+        .arg(socket)
+        .env_remove("SSH_AUTH_SOCK")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let agent = Agent(child);
+    let started = Instant::now();
+    while !socket.exists() {
+        if started.elapsed() > Duration::from_secs(5) {
+            return Err("The sandbox's ssh-agent did not start".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(agent)
+}
+
+fn agent_listed(socket: &Path) -> Result<String> {
+    let output = std::process::Command::new("/usr/bin/ssh-add").arg("-L").env("SSH_AUTH_SOCK", socket).stdin(Stdio::null()).output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
 
 struct Signpost {
     root: PathBuf,
@@ -152,7 +189,8 @@ impl Replay<'_> {
         self.clone_from_the_github_list(dir, &hosting).await?;
         let signpost = self.a_signed_commit_shows_as_verified(dir).await?;
         self.a_commit_signed_by_an_unknown_key(&signpost).await?;
-        self.sign_one_commit_from_the_commit_box(&signpost).await
+        self.sign_one_commit_from_the_commit_box(&signpost).await?;
+        self.generate_an_ssh_key(&signpost).await
     }
 
     async fn until_tab_total(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
@@ -1193,6 +1231,210 @@ impl Replay<'_> {
         }
         fs::remove_file(&signpost.link)?;
         git_is(root, &["status", "--porcelain"], "")?;
+        self.pass();
+        Ok(())
+    }
+
+    fn typed_in_prompt(&mut self, first: Option<&str>, second: Option<&str>) -> Result<bool> {
+        let (first, second) = (first.map(str::to_owned), second.map(str::to_owned));
+        Ok(self.tab.update(self.cx, |tab, window, cx| {
+            let mut typed = true;
+            for (field, text) in [(tab.ui.prompt.field().cloned(), first), (tab.ui.prompt.second().cloned(), second)] {
+                let Some(text) = text else { continue };
+                let Some(field) = field else { return false };
+                field.update(cx, |field, cx| field.replace_text_in_range(None, &text, window, cx));
+                typed &= field.read(cx).text() == text;
+            }
+            typed
+        })?)
+    }
+
+    async fn generate_an_ssh_key(&mut self, signpost: &Signpost) -> Result<()> {
+        use crate::keys::{self, Action as K};
+        self.start("GAP1210");
+        let root = &signpost.root;
+        let sandbox = super::sandbox().ok_or("The replay has no sandbox")?;
+        let folder = self.tab.read_with(self.cx, |tab, _| tab.ui.keys.places.folder.clone())?;
+        if folder != sandbox.join("home/.ssh") || self.tab.read_with(self.cx, |tab, _| tab.ui.keys.places.keychain)? {
+            return Err(format!("The SSH keys are looked for in {}, outside the sandbox, or with the Keychain", folder.display()).into());
+        }
+        let bin = sandbox.join("bin");
+        let wrapper = bin.join("ssh-keygen");
+        let arguments = sandbox.join("ssh-keygen-arguments.log");
+        fs::create_dir_all(&bin)?;
+        super::gap04::script(&wrapper, &format!("printf '%s\\n' \"$*\" >> '{}'\nexec {KEYGEN} \"$@\"\n", arguments.display()))?;
+        let socket = sandbox.join("agent.sock");
+        let agent = agent_at(&socket)?;
+        self.tab.update(self.cx, |tab, _, _| tab.ui.keys.places.agent = Some(socket.clone()))?;
+
+        self.action(Action::Preferences(preferences::Action::Open(Some(preferences::Section::Ssh))))?;
+        self.until("the SSH keys read", |tab| {
+            tab.ui.keys.settled() && matches!(&tab.ui.keys.ssh, Some(Ok(keys)) if keys.is_empty()) && matches!(&tab.ui.keys.agent, Some(Ok(keys)) if keys.is_empty())
+        })
+        .await?;
+        let email = self.tab.read_with(self.cx, |tab, _| tab.ui.identity.effective().and_then(|values| values.email.clone()))?.ok_or("Signpost has no email")?;
+        let asked = crate::askpass::shown_so_far();
+        self.action(Action::Keys(K::Generate))?;
+        let spec = self.tab.read_with(self.cx, |tab, _| prompt::shown(&tab.ui).map(|spec| {
+            (spec.title.clone(), spec.lines.clone(), spec.field.as_ref().map(|f| (f.label, f.masked)), spec.second.as_ref().map(|f| (f.label, f.masked)))
+        }))?;
+        let label = format!("Its label is {email}.");
+        match &spec {
+            Some((title, lines, Some(("Name", false)), Some(("Passphrase", true)))) if title == "Generate an SSH key" && lines.contains(&label) => {}
+            other => return Err(format!("Generate key… asks {other:?}").into()),
+        }
+        let refused = self.tab.read_with(self.cx, |tab, _| {
+            prompt::shown(&tab.ui).and_then(|spec| spec.field.map(|field| ((field.validate)("has space", &tab.ui), (field.validate)("trail", &tab.ui))))
+        })?;
+        if !matches!(&refused, Some((Some(_), None))) {
+            return Err(format!("The name field checks give {refused:?}").into());
+        }
+        if !self.typed_in_prompt(Some("trail"), Some(CAIRN_PASSPHRASE))? {
+            return Err("The generate prompt did not take the name and passphrase".into());
+        }
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let again = self.tab.read_with(self.cx, |tab, _| prompt::shown(&tab.ui).map(|spec| (spec.title.clone(), spec.field.map(|field| field.masked))))?;
+        if again != Some(("Type the passphrase again".to_owned(), Some(true))) {
+            return Err(format!("After the passphrase the prompt is {again:?}").into());
+        }
+        if !self.typed_in_prompt(Some(CAIRN_PASSPHRASE), None)? {
+            return Err("The repeat prompt did not take the passphrase".into());
+        }
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let (detail, offers) = self.noticed("SSH key generated").await?;
+        let private = folder.join("id_ed25519_trail");
+        let public = folder.join("id_ed25519_trail.pub");
+        if detail != format!("id_ed25519_trail is in {}, with a passphrase. Copy its public key to your host.", folder.display()) || offers != ["Copy public key"] {
+            return Err(format!("The key notice says {detail:?} and offers {offers:?}").into());
+        }
+        if !private.is_file() || !public.is_file() || fs::metadata(&private)?.permissions().mode() & 0o777 != 0o600 {
+            return Err("The key files are missing or the private key is readable by others".into());
+        }
+        if crate::askpass::shown_so_far() != asked {
+            return Err("ssh-keygen's passphrase questions were shown instead of answered by the app".into());
+        }
+        let logged = fs::read_to_string(&arguments).map_err(|error| format!("ssh-keygen left no arguments at {}: {error}", arguments.display()))?;
+        let wanted = format!("-q -t ed25519 -C {email} -f {}", private.display());
+        if !logged.lines().any(|line| line == wanted) || logged.contains(CAIRN_PASSPHRASE) {
+            return Err(format!("ssh-keygen ran with the arguments {logged:?}").into());
+        }
+        if let Some(entry) = crate::activity::entries().iter().find(|entry| entry.command_line().contains(CAIRN_PASSPHRASE)) {
+            return Err(format!("A command had the passphrase in its arguments: {}", entry.command_line()).into());
+        }
+        let printed = keygen(&["-l", "-f"], &public, None)?;
+        let fingerprint = printed.split_whitespace().nth(1).ok_or("ssh-keygen -lf printed no fingerprint")?.to_owned();
+        self.until("the new key listed", |tab| tab.ui.keys.settled() && !tab.ui.keys.keys().is_empty()).await?;
+        let listed = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.keys.keys().iter().map(|key| (key.name(), key.printed.kind.clone(), key.printed.fingerprint.clone(), key.printed.comment.clone())).collect::<Vec<_>>()
+        })?;
+        if listed != [("id_ed25519_trail".to_owned(), "ED25519".to_owned(), fingerprint.clone(), email.clone())] {
+            return Err(format!("The SSH page lists {listed:?}").into());
+        }
+        if keygen(&["-y", "-P", "", "-f"], &private, None).is_ok() {
+            return Err("The new key opens without its passphrase".into());
+        }
+        let opener = sandbox.join("open-cairn.sh");
+        super::gap04::script(&opener, &format!("echo '{CAIRN_PASSPHRASE}'\n"))?;
+        let opened = keygen(&["-y", "-f"], &private, Some(&opener));
+        fs::remove_file(&opener)?;
+        let text = fs::read_to_string(&public)?;
+        let body: Vec<&str> = text.split_whitespace().take(2).collect();
+        if opened?.split_whitespace().take(2).collect::<Vec<_>>() != body {
+            return Err("The passphrase does not open the new key".into());
+        }
+
+        let saved = self.cx.update(|cx| cx.read_from_clipboard())?;
+        let copy = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.notices.items().iter().find(|n| n.title == "SSH key generated").and_then(|n| n.actions.first().map(|(_, action)| action.clone()))
+        })?;
+        self.action(copy.ok_or("The key notice has no copy offer")?)?;
+        let copied = self.cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))?;
+        self.cx.update(|cx| cx.write_to_clipboard(saved.unwrap_or_else(|| gpui::ClipboardItem::new_string(String::new()))))?;
+        if copied.as_deref() != Some(text.trim()) {
+            return Err(format!("Copy public key copied {copied:?}").into());
+        }
+
+        self.action(Action::Keys(K::AddToAgent(private.clone())))?;
+        self.during("the new key's passphrase asked for by ssh-add", |tab| {
+            matches!(tab.ui.prompt.asked(), Some(prompt::Kind::Askpass(_)))
+                && prompt::shown(&tab.ui).is_some_and(|spec| spec.title == "Unlock SSH key id_ed25519_trail")
+        })
+        .await?;
+        if !self.typed_in_prompt(Some(CAIRN_PASSPHRASE), None)? {
+            return Err("The unlock prompt did not take the passphrase".into());
+        }
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        let (added, _) = self.noticed("Key added to the agent").await?;
+        if added != "id_ed25519_trail is unlocked for ssh until the agent stops." {
+            return Err(format!("The agent notice says {added:?}").into());
+        }
+        if !agent_listed(&socket)?.lines().any(|line| line.split_whitespace().take(2).collect::<Vec<_>>() == body) {
+            return Err("The sandbox agent does not hold the new key".into());
+        }
+        self.until("the agent's keys read again", |tab| tab.ui.keys.settled() && tab.ui.keys.agent_keys().len() == 1).await?;
+        let titled = self.tab.read_with(self.cx, |tab, _| tab.ui.keys.agent_keys().first().map(|key| key.title()))?;
+        if titled.as_deref() != Some(email.as_str()) {
+            return Err(format!("The agent row reads {titled:?}").into());
+        }
+        let added_with = crate::activity::entries().iter().rev().find(|entry| entry.command_line().contains("ssh-add") && entry.command_line().contains("id_ed25519_trail")).map(|entry| entry.command_line());
+        match added_with {
+            Some(line) if !line.contains("apple-use-keychain") && !line.contains(CAIRN_PASSPHRASE) => {}
+            other => return Err(format!("ssh-add ran as {other:?}").into()),
+        }
+
+        let before = snapshot(root)?;
+        self.action(Action::Keys(K::UseForRepository(Some(private.clone()))))?;
+        let wanted = keys::ssh_command_for(&private);
+        let expected = wanted.clone();
+        self.until("the key chosen for Signpost", move |tab| tab.ui.keys.settled() && matches!(&tab.ui.keys.command, Some(Ok(Some(command))) if *command == expected)).await?;
+        git_is(root, &["config", "get", "--local", "core.sshCommand"], &format!("{wanted}\n"))?;
+        if !wanted.ends_with(" -o IdentitiesOnly=yes") || !wanted.starts_with("ssh -i ") {
+            return Err(format!("The SSH command is {wanted:?}").into());
+        }
+        git(root, &["config", "--local", "core.sshCommand", "ssh -i /elsewhere"])?;
+        self.action(Action::Keys(K::UseForRepository(None)))?;
+        self.until("the changed SSH command refused", |tab| tab.ui.keys.settled() && tab.ui.keys.error.as_deref().is_some_and(|error| error.contains("meanwhile"))).await?;
+        git_is(root, &["config", "get", "--local", "core.sshCommand"], "ssh -i /elsewhere\n")?;
+        self.until("the SSH command read again", |tab| matches!(&tab.ui.keys.command, Some(Ok(Some(command))) if command == "ssh -i /elsewhere")).await?;
+        self.action(Action::Keys(K::UseForRepository(None)))?;
+        self.until("the SSH command removed", |tab| tab.ui.keys.settled() && matches!(&tab.ui.keys.command, Some(Ok(None)))).await?;
+        if git(root, &["config", "--local", "--get-all", "core.sshCommand"]).is_ok() {
+            return Err("Stop using it left core.sshCommand".into());
+        }
+
+        let opened = crate::handoff::opened().len();
+        self.action(Action::Handoff(crate::handoff::Action::OpenUrl(keys::Host::GitHub.page().to_owned())))?;
+        if crate::handoff::opened().get(opened).map(String::as_str) != Some("https://github.com/settings/ssh/new") {
+            return Err(format!("Adding a key on GitHub opened {:?}", crate::handoff::opened().get(opened)).into());
+        }
+
+        self.action(Action::Preferences(preferences::Action::Show(preferences::Section::Signing)))?;
+        self.until("the signing settings read", |tab| tab.ui.keys.settled() && matches!(&tab.ui.keys.signing, Some(Ok(_)))).await?;
+        let scope = self.tab.read_with(self.cx, |tab, _| tab.ui.keys.scope)?;
+        if scope != crate::identity::Scope::Local {
+            return Err(format!("Signpost's own signing settings show for {scope:?}").into());
+        }
+        let chosen = public.to_string_lossy().into_owned();
+        self.action(Action::Keys(K::UseSigningKey(chosen.clone())))?;
+        let expected = chosen.clone();
+        self.until("the new key chosen for signing", move |tab| {
+            tab.ui.keys.settled() && signing::config(&tab.ui).key.as_deref() == Some(expected.as_str())
+        })
+        .await?;
+        git_is(root, &["config", "get", "--local", "user.signingkey"], &format!("{chosen}\n"))?;
+
+        self.action(Action::Keys(K::Generate))?;
+        let taken = self.tab.read_with(self.cx, |tab, _| prompt::shown(&tab.ui).and_then(|spec| spec.field.and_then(|field| (field.validate)("trail", &tab.ui))))?;
+        if taken != Some(format!("id_ed25519_trail already exists in {}.", folder.display())) {
+            return Err(format!("A second key named trail is checked as {taken:?}").into());
+        }
+        self.action(Action::Prompt(prompt::Action::Cancel))?;
+        drop(agent);
+        fs::remove_file(&wrapper)?;
+        self.action(Action::Preferences(preferences::Action::Close))?;
+        if snapshot(root)? != before {
+            return Err("Choosing an SSH key changed Signpost's refs or files".into());
+        }
         self.pass();
         Ok(())
     }

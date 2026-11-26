@@ -27,7 +27,7 @@ pub(crate) enum Scope {
 }
 
 impl Scope {
-    fn flag(self) -> &'static str {
+    pub(crate) fn flag(self) -> &'static str {
         match self {
             Scope::Global => "--global",
             Scope::Local => "--local",
@@ -339,6 +339,16 @@ pub(crate) fn landed(tab: &mut Tab, identity: Result<Identity, String>, cx: &mut
     } else if !state.filled {
         state.fill(cx);
     }
+    if tab.ui.identity.form_shown() && !crate::profiles::listed(cx).is_empty() {
+        crate::profiles::read_locals(tab, cx);
+    }
+}
+
+pub(crate) fn close_form(tab: &mut Tab) {
+    let state = &mut tab.ui.identity;
+    state.editing = false;
+    state.error = None;
+    state.filled = false;
 }
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
@@ -361,6 +371,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             state.editing = true;
             state.fill(cx);
             window.focus(&tab.ui.identity.name.focus_handle(cx));
+            crate::profiles::read_locals(tab, cx);
         }
         Action::Cancel => {
             let state = &mut tab.ui.identity;
@@ -568,6 +579,7 @@ pub(crate) fn form<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Option<Div> {
                     .child(choice(Scope::Global, state.scope == Scope::Global, cx))
                     .child(choice(Scope::Local, state.scope == Scope::Local, cx)),
             )
+            .children(crate::profiles::chooser(ui, cx))
             .when_some(note, |d, (note, color)| d.child(div().text_size(px(TEXT_SMALL)).text_color(rgb(color)).child(note)))
             .child(
                 div()

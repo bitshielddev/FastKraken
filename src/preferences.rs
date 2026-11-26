@@ -28,6 +28,8 @@ pub(crate) enum Section {
     General,
     Accounts,
     Git,
+    Signing,
+    Ssh,
     Commit,
     Diff,
     Tools,
@@ -41,6 +43,8 @@ impl Section {
             Section::General => "General".into(),
             Section::Accounts => "Accounts".into(),
             Section::Git => "Git".into(),
+            Section::Signing => "Signing".into(),
+            Section::Ssh => "SSH".into(),
             Section::Commit => "Commit".into(),
             Section::Diff => "Diff".into(),
             Section::Tools => "External tools".into(),
@@ -55,6 +59,8 @@ pub(crate) fn sections(repository: bool) -> Vec<Section> {
         Section::General,
         Section::Accounts,
         Section::Git,
+        Section::Signing,
+        Section::Ssh,
         Section::Commit,
         Section::Diff,
         Section::Tools,
@@ -226,8 +232,11 @@ fn show(tab: &mut Tab, section: Section, cx: &mut Context<Tab>) {
             crate::lfs::read_patterns(tab, cx);
             crate::sparse::read_tree(tab, cx);
         }
+        Section::Signing => crate::keys::read(tab, true, cx),
+        Section::Ssh => crate::keys::read(tab, false, cx),
         Section::Git => {
             crate::identity::read_global(tab, cx);
+            crate::profiles::read_locals(tab, cx);
             if tab.ui.preferences.git.is_none() {
                 Tab::work(cx, crate::repository::bundled_version, |tab, version, cx| {
                     tab.ui.preferences.git = Some(version);
@@ -361,6 +370,8 @@ pub(crate) fn page<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                 Section::General => general(ui, cx),
                 Section::Accounts => accounts(app, cx),
                 Section::Git => git(ui, cx),
+                Section::Signing => crate::keys::signing_page(ui, cx),
+                Section::Ssh => crate::keys::ssh_page(ui, cx),
                 Section::Commit => crate::commit_options::preferences(cx),
                 Section::Diff => crate::diff_text::preferences(ui, cx),
                 Section::Tools => crate::tools::preferences(ui, cx),
@@ -609,6 +620,7 @@ fn git<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
         .flex()
         .flex_col()
         .child(crate::identity::preferences(ui, cx))
+        .child(crate::profiles::preferences(ui, cx))
         .child(group("GIT ON THIS MAC"))
         .child(tick(
             "preferences-login-path",
@@ -738,6 +750,7 @@ pub(crate) fn field_focused(ui: &Ui, window: &Window, cx: &App) -> bool {
             && (ui.identity.global_name.focus_handle(cx).is_focused(window)
                 || ui.identity.global_email.focus_handle(cx).is_focused(window)))
         || crate::tools::field_focused(ui, window, cx)
+        || crate::profiles::field_focused(ui, window, cx)
         || crate::diff_text::field_focused(ui, window, cx)
 }
 
@@ -751,10 +764,20 @@ mod tests {
     fn the_repositorys_section_is_listed_last_and_only_with_one_open() {
         assert_eq!(
             sections(false),
-            [Section::General, Section::Accounts, Section::Git, Section::Commit, Section::Diff, Section::Tools, Section::Shortcuts]
+            [
+                Section::General,
+                Section::Accounts,
+                Section::Git,
+                Section::Signing,
+                Section::Ssh,
+                Section::Commit,
+                Section::Diff,
+                Section::Tools,
+                Section::Shortcuts
+            ]
         );
         assert_eq!(sections(true).last(), Some(&Section::Repository));
-        assert_eq!(sections(true).len(), 8);
+        assert_eq!(sections(true).len(), 10);
     }
 
     #[test]
@@ -764,7 +787,8 @@ mod tests {
         assert_eq!(moved(&listed, Section::Accounts, N::Step(-1)), Some(Section::General));
         assert_eq!(moved(&listed, Section::General, N::Step(-1)), None);
         assert_eq!(moved(&listed, Section::Repository, N::Step(1)), None);
-        assert_eq!(moved(&listed, Section::Git, N::Step(1)), Some(Section::Commit));
+        assert_eq!(moved(&listed, Section::Git, N::Step(1)), Some(Section::Signing));
+        assert_eq!(moved(&listed, Section::Ssh, N::Step(1)), Some(Section::Commit));
         assert_eq!(moved(&listed, Section::Commit, N::Step(1)), Some(Section::Diff));
         assert_eq!(moved(&listed, Section::Diff, N::Step(1)), Some(Section::Tools));
         assert_eq!(moved(&listed, Section::Git, N::Home), Some(Section::General));

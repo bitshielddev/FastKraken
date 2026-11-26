@@ -822,6 +822,8 @@ impl Replay<'_> {
                     Section::General,
                     Section::Accounts,
                     Section::Git,
+                    Section::Signing,
+                    Section::Ssh,
                     Section::Commit,
                     Section::Diff,
                     Section::Tools,

@@ -112,6 +112,8 @@ fn exchange(socket: &Path, request: &Request) -> Option<String> {
 pub(crate) enum Question {
     SignIn { protocol: String, host: String, username: Option<String> },
     Passphrase { key: String },
+    NewPassphrase { key: Option<String> },
+    RepeatPassphrase,
     HostKey { host: String, kind: Option<String>, fingerprint: Option<String> },
     Confirm { text: String },
     Other { text: String },
@@ -127,6 +129,14 @@ impl Question {
                     return Self::SignIn { protocol, host, username: if password { user } else { None } };
                 }
             }
+        }
+        if let Some(rest) = trimmed.strip_prefix("Enter passphrase").filter(|rest| rest.contains("(empty for no passphrase)")) {
+            let named = rest.trim_start().strip_prefix("for ").and_then(|named| named.split(" (empty for no passphrase)").next());
+            let key = named.map(|named| named.trim().trim_matches(['\'', '"']).to_owned()).filter(|key| !key.is_empty());
+            return Self::NewPassphrase { key };
+        }
+        if trimmed.trim_end_matches(':').trim() == "Enter same passphrase again" {
+            return Self::RepeatPassphrase;
         }
         if let Some(key) = between(trimmed, "Enter passphrase for key '", "'") {
             return Self::Passphrase { key };
@@ -325,6 +335,7 @@ struct Talk {
     tries: HashMap<(String, Option<u32>), u32>,
     declined: bool,
     shown: u32,
+    chosen: Option<String>,
 }
 
 struct Pending {
@@ -389,8 +400,15 @@ impl Session {
         Some(found)
     }
 
+    pub(crate) fn choose_passphrase(&self, passphrase: String) {
+        self.talk().chosen = Some(passphrase);
+    }
+
     fn known(&self, question: &Question) -> Option<String> {
         let talk = self.talk();
+        if matches!(question, Question::NewPassphrase { .. } | Question::RepeatPassphrase) {
+            return talk.chosen.clone();
+        }
         let entered = talk.entered.as_ref()?;
         match question {
             Question::SignIn { protocol, host, username } if *protocol == entered.protocol && *host == entered.host => match username {
@@ -649,6 +667,32 @@ pub(crate) fn describe(ask: &Ask) -> Spec {
             });
             spec
         }
+        Question::NewPassphrase { key } => {
+            let mut spec = Spec::new("Choose a passphrase for the new SSH key", "Continue");
+            if let Some(key) = key {
+                spec = spec.line(format!("ssh-keygen is making {key}."));
+            }
+            spec = spec.line("Leave it empty for a key without a passphrase.");
+            spec.field = Some(Field {
+                label: "Passphrase",
+                placeholder: "Passphrase",
+                initial: String::new(),
+                masked: true,
+                validate: Box::new(|_, _| None),
+            });
+            spec
+        }
+        Question::RepeatPassphrase => {
+            let mut spec = Spec::new("Type the passphrase again", "Continue");
+            spec.field = Some(Field {
+                label: "Passphrase",
+                placeholder: "Passphrase",
+                initial: String::new(),
+                masked: true,
+                validate: Box::new(|_, _| None),
+            });
+            spec
+        }
         Question::HostKey { host, kind, fingerprint } => {
             let mut spec = Spec::new(format!("Connect to {host} for the first time?"), "Trust and connect")
                 .line(format!("ssh has not connected to {host} before, so it cannot tell whether this is the server you mean."));
@@ -693,7 +737,7 @@ pub(crate) fn confirm(tab: &mut Tab, ask: Ask, answer: Answer, window: &mut Wind
         Question::HostKey { .. } | Question::Confirm { .. } => {
             session.respond(id, "yes".to_owned());
         }
-        Question::Passphrase { .. } | Question::Other { .. } => {
+        Question::Passphrase { .. } | Question::NewPassphrase { .. } | Question::RepeatPassphrase | Question::Other { .. } => {
             session.respond(id, answer.text);
         }
     }
@@ -762,6 +806,52 @@ pub(crate) mod tests {
             Question::Other { text: "cedar@trail.example's password: [2J".into() }
         );
         assert_eq!(Question::parse(&"x".repeat(5000)), Question::Other { text: "x".repeat(LONGEST) });
+    }
+
+    #[test]
+    fn a_new_keys_passphrase_questions_are_told_apart_from_unlocking_one() {
+        assert_eq!(
+            Question::parse("Enter passphrase for \"/Users/cedar/.ssh/id_ed25519_trail\" (empty for no passphrase): "),
+            Question::NewPassphrase { key: Some("/Users/cedar/.ssh/id_ed25519_trail".into()) }
+        );
+        assert_eq!(Question::parse("Enter passphrase (empty for no passphrase): "), Question::NewPassphrase { key: None });
+        assert_eq!(Question::parse("Enter same passphrase again: "), Question::RepeatPassphrase);
+        assert_eq!(
+            Question::parse("Enter passphrase for \"/k/id_trail\": "),
+            Question::Passphrase { key: "/k/id_trail".into() }
+        );
+    }
+
+    #[test]
+    fn a_chosen_passphrase_answers_only_the_new_keys_questions_and_shows_nothing() {
+        let (_dir, broker) = broker();
+        let session = broker.session();
+        session.choose_passphrase("summit lantern".into());
+        let ask_here = |question: &'static str| {
+            let (socket, token) = (broker.path().to_owned(), session.token().to_owned());
+            thread::spawn(move || ask(&socket, &token, question))
+        };
+        let first = ask_here("Enter passphrase for \"/k/id_ed25519_trail\" (empty for no passphrase): ");
+        assert_eq!(first.join().unwrap().as_deref(), Some("summit lantern"));
+        let again = ask_here("Enter same passphrase again: ");
+        assert_eq!(again.join().unwrap().as_deref(), Some("summit lantern"));
+        assert_eq!(session.shown(), 0);
+        let unlock = ask_here("Enter passphrase for \"/k/id_trail\": ");
+        let (id, question, _) = shown(&session);
+        assert_eq!(question, Question::Passphrase { key: "/k/id_trail".into() });
+        assert!(session.decline(id));
+        assert_eq!(unlock.join().unwrap(), None);
+
+        let plain = broker.session();
+        let (socket, token) = (broker.path().to_owned(), plain.token().to_owned());
+        let asking = thread::spawn(move || ask(&socket, &token, "Enter same passphrase again: "));
+        let (id, question, _) = shown(&plain);
+        assert_eq!(question, Question::RepeatPassphrase);
+        let spec = describe(&Ask { session: plain.clone(), id, question, tries: 0, connect: false });
+        assert_eq!(spec.title, "Type the passphrase again");
+        assert!(spec.field.as_ref().is_some_and(|field| field.masked));
+        assert!(plain.respond(id, "typed".into()));
+        assert_eq!(asking.join().unwrap().as_deref(), Some("typed"));
     }
 
     #[test]

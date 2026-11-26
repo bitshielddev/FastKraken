@@ -149,6 +149,7 @@ pub(crate) enum Kind {
     Worktree(crate::worktree::Ask),
     Submodule(crate::submodule::Ask),
     Lfs(crate::lfs::Ask),
+    Keys(crate::keys::Ask),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -181,6 +182,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Worktree(ask) => crate::worktree::describe(ask, ui),
         Kind::Submodule(ask) => crate::submodule::describe_ask(ask, ui),
         Kind::Lfs(ask) => crate::lfs::describe(ask, ui),
+        Kind::Keys(ask) => crate::keys::describe(ask, ui),
     }
 }
 
@@ -214,6 +216,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Worktree(ask) => crate::worktree::confirm(tab, ask, answer, cx),
         Kind::Submodule(ask) => crate::submodule::confirm(tab, ask, answer, cx),
         Kind::Lfs(ask) => crate::lfs::confirm(tab, ask, answer, cx),
+        Kind::Keys(ask) => crate::keys::confirm(tab, ask, answer, cx),
     }
 }
 

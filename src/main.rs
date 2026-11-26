@@ -49,6 +49,7 @@ mod init;
 mod instance;
 mod inspection;
 mod jobs;
+mod keys;
 mod journal;
 mod kit;
 mod lfs;
@@ -66,6 +67,7 @@ mod pick;
 mod picked;
 mod pin;
 mod preferences;
+mod profiles;
 mod rebase;
 mod rebase_editor;
 mod recover;
@@ -1750,6 +1752,8 @@ impl Tab {
             Action::Pulls(action) => pulls::dispatch(self, action, window, cx),
             Action::Forks(action) => forks::dispatch(self, action, window, cx),
             Action::Signing(action) => signing::dispatch(self, action, window, cx),
+            Action::Keys(action) => keys::dispatch(self, action, window, cx),
+            Action::Profiles(action) => profiles::dispatch(self, action, window, cx),
             Action::ViewChanges => {
                 if let Some(first) = self.ui.files.first() {
                     self.follow = Follow::Nothing;
