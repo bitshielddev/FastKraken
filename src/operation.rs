@@ -1213,6 +1213,7 @@ pub(crate) fn allows(kind: Option<Kind>, action: &view::Action) -> std::result::
         | A::Identity(_)
         | A::AutoFetch(_)
         | A::Tools(_)
+        | A::DiffTool(_)
         | A::Tabs(_)
         | A::Cli(_)
         | A::CommitOptions(_)

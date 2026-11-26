@@ -222,6 +222,27 @@ fn shown_cannot_be_marked(repo: &Repository, shown: &Shown) -> Result<bool> {
     Ok(shown.submodule() || on_disk(repo, &shown.path)?.is_none())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Tooled {
+    Resolved,
+    Unchanged,
+    Stopped(String),
+}
+
+pub(crate) fn merge_in_tool(repo: &Repository, shown: &Shown, settings: &[String]) -> Result<Tooled> {
+    expect(repo, shown)?;
+    let mut command = crate::difftool::command_with(repo, settings);
+    command.args(["mergetool", "--no-prompt", "--"]).arg(&shown.path);
+    let output = crate::repository::run(&mut command).map_err(|e| format!("Run bundled Git: {e}"))?;
+    if is_none(&entries(repo, "--unmerged", &shown.path)?) {
+        return Ok(Tooled::Resolved);
+    }
+    Ok(match crate::difftool::told(&output) {
+        Some(said) => Tooled::Stopped(said),
+        None => Tooled::Unchanged,
+    })
+}
+
 pub(crate) fn unresolve(repo: &Repository, id: &Id, path: &Path) -> Result<()> {
     validate_path(path)?;
     repo.expect_operation(id)?;

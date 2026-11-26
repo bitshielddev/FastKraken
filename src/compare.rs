@@ -51,7 +51,7 @@ fn empty_tree(oid: &str) -> bool {
     oid == EMPTY_TREE || oid == EMPTY_TREE_LONG
 }
 
-fn empty_tree_like(oid: &str) -> String {
+pub(crate) fn empty_tree_like(oid: &str) -> String {
     if oid.len() == EMPTY_TREE_LONG.len() { EMPTY_TREE_LONG } else { EMPTY_TREE }.to_owned()
 }
 
@@ -266,7 +266,7 @@ fn describe(selection: &Selection, names: Option<&Names>, commits: usize, with_f
 }
 
 impl Repository {
-    fn compared_ends(&self, from: &Rev, to: &Rev, since_fork: bool) -> Result<(String, Option<String>), String> {
+    pub(crate) fn compared_ends(&self, from: &Rev, to: &Rev, since_fork: bool) -> Result<(String, Option<String>), String> {
         let Rev::Commit(from) = from else {
             return Err("A comparison starts from a commit.".into());
         };

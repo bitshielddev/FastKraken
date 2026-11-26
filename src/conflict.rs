@@ -11,7 +11,8 @@ use crate::{
     theme::*,
     view::{self, Desk, Tone, Ui},
 };
-use backend::{Shown, named};
+use backend::named;
+pub(crate) use backend::{Shown, Tooled, merge_in_tool};
 use gpui::{Context, Div, FontWeight, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb};
 use std::path::{Path, PathBuf};
 

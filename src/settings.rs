@@ -48,6 +48,10 @@ pub(crate) struct Settings {
     pub(crate) editor_command: String,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) terminal: Option<String>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) diff_tool: Option<String>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) merge_tool: Option<String>,
     pub(crate) push_after_commit: bool,
     pub(crate) fill_from_template: bool,
     pub(crate) colour_code: bool,
@@ -109,6 +113,8 @@ impl Default for Settings {
             editor: None,
             editor_command: String::new(),
             terminal: None,
+            diff_tool: None,
+            merge_tool: None,
             push_after_commit: false,
             fill_from_template: true,
             colour_code: true,
@@ -637,6 +643,8 @@ mod tests {
             editor: Some("custom".to_owned()),
             editor_command: "nvim +{line} {file}".to_owned(),
             terminal: Some("iterm".to_owned()),
+            diff_tool: Some("kaleidoscope".to_owned()),
+            merge_tool: Some("git".to_owned()),
             push_after_commit: true,
             fill_from_template: false,
             colour_code: false,

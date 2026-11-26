@@ -301,6 +301,7 @@ impl Replay<'_> {
             ("file.edit", "Open in external editor…"),
             ("file.open", "Open with default app"),
             ("file.reveal", "Reveal in Finder"),
+            ("file.diff-tool", "Open in merge tool"),
             ("file.copy-path", "Copy path"),
             ("file.copy-full-path", "Copy full path"),
         ]
@@ -382,10 +383,11 @@ impl Replay<'_> {
             ("file.edit", "Open in external editor…"),
             ("file.open", "Open with default app"),
             ("file.reveal", "Reveal in Finder"),
+            ("file.diff-tool", "Open in merge tool"),
             ("file.copy-path", "Copy path"),
             ("file.copy-full-path", "Copy full path"),
         ]
-        .map(|(id, title)| (id.to_owned(), title.to_owned(), true));
+        .map(|(id, title)| (id.to_owned(), title.to_owned(), id != "file.diff-tool"));
         if rows != expected {
             return Err(format!("A changed-and-deleted conflict's menu is {rows:?}").into());
         }

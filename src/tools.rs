@@ -119,6 +119,7 @@ impl Found {
 pub(crate) struct Detected {
     pub(crate) editors: Vec<Found>,
     pub(crate) terminals: Vec<Found>,
+    pub(crate) comparers: Vec<Found>,
 }
 
 impl Detected {
@@ -161,6 +162,11 @@ pub(crate) fn detect(dirs: &[PathBuf], apps: &[PathBuf]) -> Detected {
     Detected {
         editors: EDITORS.iter().filter_map(|tool| find(tool, dirs, apps)).collect(),
         terminals: TERMINALS.iter().filter_map(|tool| find(tool, dirs, apps)).collect(),
+        comparers: crate::difftool::TOOLS
+            .iter()
+            .filter_map(|tool| find(&tool.known, dirs, apps))
+            .filter(|found| matches!(found.how, How::Program(_)))
+            .collect(),
     }
 }
 
@@ -305,7 +311,10 @@ pub(crate) enum Action {
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
     match action {
-        Action::Look => start(true, cx),
+        Action::Look => {
+            start(true, cx);
+            crate::difftool::read(tab, cx);
+        }
         Action::Editor(id) => {
             tab.ui.tools.editor = Some(id.clone());
             let custom = id == CUSTOM;
@@ -539,7 +548,7 @@ fn spawn(launch: &Launch, dirs: &[PathBuf]) -> Result<(), String> {
 }
 
 
-fn current() -> Arc<Detected> {
+pub(crate) fn current() -> Arc<Detected> {
     fresh().unwrap_or_else(look)
 }
 
@@ -576,13 +585,13 @@ fn start_launch(name: String, launch: Launch, cx: &mut Context<Tab>) {
     });
 }
 
-fn tools_section() -> view::Action {
+pub(crate) fn tools_section() -> view::Action {
     view::Action::Preferences(crate::preferences::Action::Open(Some(crate::preferences::Section::Tools)))
 }
 
 const NONE_FOUND: &str = "FastKraken found none it knows on this Mac.";
 
-fn choose(what: &str, detail: &str, tab: &mut Tab, window: &mut Window, cx: &mut Context<Tab>) {
+pub(crate) fn choose(what: &str, detail: &str, tab: &mut Tab, window: &mut Window, cx: &mut Context<Tab>) {
     crate::preferences::dispatch(tab, crate::preferences::Action::Open(Some(crate::preferences::Section::Tools)), window, cx);
     tab.ui.notices.show(Notice::new(Tone::Info, format!("Choose {what} first"), detail.to_owned()));
     cx.notify();
@@ -594,28 +603,37 @@ fn failed(tab: &mut Tab, name: &str, error: String, cx: &mut Context<Tab>) {
 }
 
 
+pub(crate) fn choice<T: Desk>(
+    id: (&'static str, usize),
+    title: String,
+    place: Option<String>,
+    on: bool,
+    action: view::Action,
+    cx: &Context<T>,
+) -> gpui::Stateful<Div> {
+    let item = div()
+        .id(id)
+        .py(px(8.))
+        .flex()
+        .items_center()
+        .gap_3()
+        .border_b_1()
+        .border_color(rgb(LINE))
+        .cursor_pointer()
+        .focusable()
+        .focus(|s| s.bg(rgb(HOVER)))
+        .child(crate::preferences::radio(on))
+        .child(div().w(px(130.)).flex_shrink_0().text_size(px(13.)).text_color(rgb(TEXT)).child(title))
+        .child(div().flex_1().min_w_0().when_some(place, |d, place| d.child(kit::fit(place).size(TEXT_SMALL).color(TEXT_3))));
+    kit::pressable(item, action, cx)
+}
+
 pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
-    use crate::preferences::{group, radio, setting};
+    use crate::preferences::{group, setting};
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let found = detected();
     let chosen = ui.tools.editor();
-    let row = |id: (&'static str, usize), title: String, place: Option<String>, on: bool, action: view::Action, cx: &Context<T>| {
-        let item = div()
-            .id(id)
-            .py(px(8.))
-            .flex()
-            .items_center()
-            .gap_3()
-            .border_b_1()
-            .border_color(rgb(LINE))
-            .cursor_pointer()
-            .focusable()
-            .focus(|s| s.bg(rgb(HOVER)))
-            .child(radio(on))
-            .child(div().w(px(130.)).flex_shrink_0().text_size(px(13.)).text_color(rgb(TEXT)).child(title))
-            .child(div().flex_1().min_w_0().when_some(place, |d, place| d.child(kit::fit(place).size(TEXT_SMALL).color(TEXT_3))));
-        kit::pressable(item, action, cx)
-    };
+    let row = choice::<T>;
     let mut editors = div().flex().flex_col();
     let mut terminals = div().flex().flex_col();
     match &found {
@@ -705,6 +723,7 @@ pub(crate) fn preferences<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
         .child(editors)
         .child(group("TERMINAL"))
         .child(terminals)
+        .child(crate::difftool::preferences(ui, cx))
         .child(div().pt_3().flex().child(kit::link(
             "tools-look",
             "Look again",

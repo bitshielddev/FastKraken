@@ -226,7 +226,10 @@ fn show(tab: &mut Tab, section: Section, cx: &mut Context<Tab>) {
             read_saved(tab, cx);
             crate::publish::show_account(tab, cx);
         }
-        Section::Tools => crate::tools::start(false, cx),
+        Section::Tools => {
+            crate::tools::start(false, cx);
+            crate::difftool::read(tab, cx);
+        }
         Section::Diff => crate::diff_text::look(tab, cx),
         Section::Repository => {
             crate::lfs::read_patterns(tab, cx);

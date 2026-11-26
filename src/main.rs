@@ -22,6 +22,7 @@ mod conflict;
 mod connect;
 mod credentials;
 mod diff_doc;
+mod difftool;
 mod diff_options;
 mod diff_select;
 mod diff_text;
@@ -1857,6 +1858,7 @@ impl Tab {
             Action::Identity(action) => identity::dispatch(self, action, window, cx),
             Action::AutoFetch(action) => autofetch::dispatch(self, action, window, cx),
             Action::Tools(action) => tools::dispatch(self, action, window, cx),
+            Action::DiffTool(action) => difftool::dispatch(self, action, window, cx),
             Action::Tabs(action) => tabs::dispatch(self, action, window, cx),
             Action::Cli(action) => cli::dispatch(self, action, window, cx),
             Action::Palette(action) => palette::dispatch(self, action, window, cx),

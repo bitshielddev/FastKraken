@@ -27,6 +27,7 @@ const FERN_SUMMIT: &str = "https://github.com/fern/summit-trail";
 const TEAM_SUMMIT: &str = "https://github.com/trailteam/summit-trail";
 
 const SIGNPOST: &str = "Signpost";
+const FERRY_TOOL: &str = "Ferry-tool";
 const KEYGEN: &str = "/usr/bin/ssh-keygen";
 const SIGNER: &str = "cedar@example.invalid";
 const LANTERN_PASSPHRASE: &str = "ridge lantern";
@@ -190,7 +191,8 @@ impl Replay<'_> {
         let signpost = self.a_signed_commit_shows_as_verified(dir).await?;
         self.a_commit_signed_by_an_unknown_key(&signpost).await?;
         self.sign_one_commit_from_the_commit_box(&signpost).await?;
-        self.generate_an_ssh_key(&signpost).await
+        self.generate_an_ssh_key(&signpost).await?;
+        self.open_a_conflict_in_a_merge_tool(dir).await
     }
 
     async fn until_tab_total(&mut self, description: &str, count: usize, front: usize) -> Result<()> {
@@ -1435,6 +1437,185 @@ impl Replay<'_> {
         if snapshot(root)? != before {
             return Err("Choosing an SSH key changed Signpost's refs or files".into());
         }
+        self.pass();
+        Ok(())
+    }
+
+    fn tool_row(&mut self, path: &str) -> Result<(String, Option<String>, Option<Action>)> {
+        let target = Target::Conflict(path.into());
+        self.menu_row(&target, "file.diff-tool")?.ok_or_else(|| format!("The menu of {path} has no merge tool row").into())
+    }
+
+    async fn looked_for_tools(&mut self, found: bool) -> Result<()> {
+        self.action(Action::Tools(crate::tools::Action::Look))?;
+        self.until("the tools looked for again", move |tab| {
+            crate::tools::detected().is_some_and(|detected| detected.comparers.iter().any(|tool| tool.tool.id == "smerge") == found)
+                && tab.ui.difftool.configured.is_some()
+        })
+        .await
+    }
+
+    async fn open_a_conflict_in_a_merge_tool(&mut self, dir: &Path) -> Result<()> {
+        use crate::difftool::{Action as D, Configured, Mode, Pick};
+        self.start("GAP1211");
+        let sandbox = super::sandbox().ok_or("The replay has no sandbox")?;
+        let global = super::global_config(&sandbox);
+        let global_before = fs::read(&global)?;
+        let root = init(dir, FERRY_TOOL)?;
+        record(&root, "ridge.txt", "Camp below the ridge\n", "Camp below the ridge")?;
+        record(&root, "camp.txt", "Tents\n", "Pitch the tents")?;
+        git(&root, &["switch", "-qc", "feature/ridge"])?;
+        fs::write(root.join("ridge.txt"), "Camp on the ridge\n")?;
+        fs::write(root.join("camp.txt"), "Tents and tarps\n")?;
+        git(&root, &["commit", "-qam", "Move camp up the ridge"])?;
+        git(&root, &["switch", "-q", "main"])?;
+        fs::write(root.join("ridge.txt"), "Camp by the lake\n")?;
+        fs::write(root.join("camp.txt"), "Tents and stoves\n")?;
+        git(&root, &["commit", "-qam", "Move camp to the lake"])?;
+        let local_before = fs::read(root.join(".git/config"))?;
+        let ridge = oid(&root, "feature/ridge")?;
+        self.open(&root)?;
+        self.until("Ferry-tool open on main", |tab| tab.ui.branch == "main" && tab.ui.history.iter().any(|row| row.oid == ridge)).await?;
+        self.begin_merge("feature/ridge").await?;
+        self.until("the merge stopped on two conflicts", |tab| {
+            let conflicted = tab.ui.operation.conflicted();
+            tab.ui.operation.active() && conflicted.len() == 2 && conflicted.contains(&Path::new("ridge.txt"))
+        })
+        .await?;
+
+        self.looked_for_tools(false).await?;
+        let unread = self.tab.read_with(self.cx, |tab, _| tab.ui.difftool.configured.clone())?;
+        if unread != Some(Ok(Configured::default())) {
+            return Err(format!("The sandbox's Git has a diff or merge tool set: {unread:?}").into());
+        }
+        let (title, disabled, action) = self.tool_row("ridge.txt")?;
+        let Some(action) = action.filter(|_| title == "Open in merge tool" && disabled.is_none()) else {
+            return Err(format!("The conflict's menu offers {title:?}, disabled {disabled:?}").into());
+        };
+        self.action(action)?;
+        self.until("Preferences open at External tools", |tab| {
+            tab.ui.preferences.shows_tools() && tab.ui.notices.items().iter().any(|n| n.title == "Choose a merge tool first")
+        })
+        .await?;
+        let said = self.notice_titled("Choose a merge tool first")?.map(|(_, detail, _, _)| detail);
+        if said.as_deref() != Some("FastKraken found no merge tool it knows on this Mac, and Git has none set.") {
+            return Err(format!("With no merge tool the notice says {said:?}").into());
+        }
+
+        let bin = sandbox.join("bin");
+        let tool = bin.join("smerge");
+        let arguments = sandbox.join("smerge-arguments.log");
+        fs::create_dir_all(&bin)?;
+        super::gap04::script(
+            &tool,
+            &format!(
+                "printf '%s\\n' \"$*\" >> '{}'\n[ \"$1\" = mergetool ] || exit 2\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift 2;; *) shift;; esac; done\n[ -n \"$out\" ] || exit 0\n/bin/sleep 2\nprintf 'Settled %s\\n' \"$out\" > \"$out\"\n",
+                arguments.display()
+            ),
+        )?;
+        self.looked_for_tools(true).await?;
+        let wanted = tool.clone();
+        let shown = self.tab.read_with(self.cx, |tab, _| {
+            let found = crate::tools::detected()?;
+            match tab.ui.difftool.pick(Mode::Merge, &found)? {
+                Pick::Found(found) => Some(found.place().to_owned()),
+                _ => None,
+            }
+        })?;
+        if shown != Some(wanted) {
+            return Err(format!("External tools shows the merge tool at {shown:?}").into());
+        }
+        self.action(Action::DiffTool(D::Choose(Mode::Merge, "smerge".into())))?;
+        let saved = self.cx.update(|cx| crate::settings::settings(cx).merge_tool)?;
+        if saved.as_deref() != Some("smerge") {
+            return Err(format!("The chosen merge tool was saved as {saved:?}").into());
+        }
+        self.action(Action::Preferences(preferences::Action::Close))?;
+
+        let (title, disabled, action) = self.tool_row("ridge.txt")?;
+        let Some(action) = action.filter(|_| title == "Open in Sublime Merge" && disabled.is_none()) else {
+            return Err(format!("After choosing, the conflict's menu offers {title:?}, disabled {disabled:?}").into());
+        };
+        self.action(action)?;
+        self.during("Sublime Merge open on ridge.txt without blocking the window", |tab| {
+            tab.ui.difftool.is_open(Mode::Merge, Path::new("ridge.txt")) && !tab.ui.busy() && tab.ui.jobs.network.is_none()
+        })
+        .await?;
+        let (_, disabled, _) = self.tool_row("ridge.txt")?;
+        if disabled.as_deref() != Some("ridge.txt is already open in the merge tool") {
+            return Err(format!("While the tool is open, the row reads disabled {disabled:?}").into());
+        }
+        self.until("ridge.txt moved to Resolved", |tab| {
+            !tab.ui.difftool.is_open(Mode::Merge, Path::new("ridge.txt"))
+                && tab.ui.operation.resolved().iter().any(|path| path == Path::new("ridge.txt"))
+                && tab.ui.operation.conflicted() == [Path::new("camp.txt")]
+        })
+        .await?;
+        let (detail, _) = self.noticed("Resolved ridge.txt").await?;
+        if detail != "Sublime Merge saved the merged file, and it is marked resolved." {
+            return Err(format!("The resolved notice says {detail:?}").into());
+        }
+        git_is(&root, &["ls-files", "--unmerged", "--", "ridge.txt"], "")?;
+        git_is(&root, &["show", ":ridge.txt"], "Settled ridge.txt\n")?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all", "--ignored"], "UU camp.txt\nM  ridge.txt\n")?;
+        if root.join("ridge.txt.orig").exists() {
+            return Err("The merge tool left ridge.txt.orig".into());
+        }
+        let logged = fs::read_to_string(&arguments)?;
+        let words: Vec<&str> = logged.trim_end().split(' ').collect();
+        let temporary = |word: &str, side: &str| word.contains(&format!("ridge_{side}_")) && !Path::new(word).starts_with(&root);
+        if words.len() != 6
+            || words[0] != "mergetool"
+            || !temporary(words[1], "BASE")
+            || !temporary(words[2], "LOCAL")
+            || !temporary(words[3], "REMOTE")
+            || words[4..] != ["-o", "ridge.txt"]
+        {
+            return Err(format!("Sublime Merge was run as {logged:?}").into());
+        }
+
+        self.action(Action::Merge(crate::merge::Action::Open("camp.txt".into())))?;
+        self.until("camp.txt in the resolver", |tab| {
+            crate::view::centre(&tab.ui) == crate::view::Centre::Resolver && tab.ui.merge.editing() == Some(Path::new("camp.txt"))
+        })
+        .await?;
+        self.key("cmd-d")?;
+        self.until("camp.txt resolved from Cmd-D", |tab| {
+            !tab.ui.difftool.is_open(Mode::Merge, Path::new("camp.txt"))
+                && tab.ui.operation.conflicted().is_empty()
+                && tab.ui.operation.resolved().len() == 2
+                && tab.ui.merge.editing().is_none()
+        })
+        .await?;
+        git_is(&root, &["show", ":camp.txt"], "Settled camp.txt\n")?;
+        git_is(&root, &["status", "--porcelain=v1", "--untracked-files=all", "--ignored"], "M  camp.txt\nM  ridge.txt\n")?;
+        if fs::read_to_string(&arguments)?.lines().count() != 2 {
+            return Err("Cmd-D did not run the merge tool exactly once more".into());
+        }
+        self.action(Action::Select(file("ridge.txt", true)))?;
+        self.until("ridge.txt selected under Staged", |tab| tab.ui.selection == Some(file("ridge.txt", true))).await?;
+        self.key("cmd-d")?;
+        self.until("the staged change sent to the diff tool", |_| {
+            fs::read_to_string(&arguments).is_ok_and(|logged| logged.lines().count() == 3)
+        })
+        .await?;
+        self.until("the diff tool closed", |tab| !tab.ui.difftool.is_open(Mode::Diff, Path::new("ridge.txt"))).await?;
+        let compared = fs::read_to_string(&arguments)?;
+        let third: Vec<&str> = compared.lines().nth(2).unwrap_or_default().split(' ').collect();
+        if third.len() != 3 || third[0] != "mergetool" || !third[1].contains("ridge") || !third[2].contains("ridge") {
+            return Err(format!("Cmd-D on a staged file ran the diff tool as {compared:?}").into());
+        }
+        let failed = self.tab.read_with(self.cx, |tab, _| tab.ui.notices.items().iter().find(|n| n.tone == crate::view::Tone::Error && n.title.contains("did not")).map(|n| n.title.clone()))?;
+        if let Some(title) = failed {
+            return Err(format!("The diff tool reported {title:?}").into());
+        }
+        if fs::read(&global)? != global_before || fs::read(root.join(".git/config"))? != local_before {
+            return Err("Opening the merge tool changed a Git configuration file".into());
+        }
+
+        fs::remove_file(&tool)?;
+        fs::remove_file(&arguments)?;
+        self.looked_for_tools(false).await?;
         self.pass();
         Ok(())
     }
