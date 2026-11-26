@@ -141,6 +141,10 @@ pub(crate) fn start(cx: &mut App) {
     cx.set_global(Waiting(waiting));
 }
 
+pub(crate) fn wait(notice: Notice, cx: &mut App) {
+    cx.default_global::<Waiting>().0.push(notice);
+}
+
 pub(crate) fn deliver(tab: &mut Tab, cx: &mut App) {
     if cx.try_global::<Waiting>().is_none_or(|waiting| waiting.0.is_empty()) {
         return;

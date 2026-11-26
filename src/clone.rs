@@ -41,6 +41,7 @@ pub(crate) const COMMANDS: &[crate::commands::Command] = {
 
 pub(crate) const LISTED_NOTE: &str = "Showing repositories on accounts where FastKraken is installed.";
 pub(crate) const CHOOSE: &str = "Choose repositories…";
+pub(crate) const FROM_LINK: &str = "This address came from a link. Check it, and where the clone goes, before you clone.";
 
 pub(crate) const MAX_DEPTH: u32 = 1_000_000;
 pub(crate) const DEPTH_PROBLEM: &str = "Enter how many of the latest commits to download, a whole number from 1.";
@@ -181,6 +182,7 @@ pub(crate) enum Action {
     Pick(String),
     PickFirst,
     ConnectGitHub,
+    Linked(String),
 }
 
 pub(crate) struct State {
@@ -203,6 +205,7 @@ pub(crate) struct State {
     pub(crate) filter: Entity<CommitInput>,
     picked: Option<(String, u64)>,
     list_scroll: gpui::ScrollHandle,
+    linked: bool,
 }
 
 impl State {
@@ -237,6 +240,7 @@ impl State {
             filter,
             picked: None,
             list_scroll: gpui::ScrollHandle::new(),
+            linked: false,
         }
     }
 
@@ -276,6 +280,10 @@ impl State {
             sparse: self.sparse,
             submodules: self.submodules,
         }
+    }
+
+    pub(crate) fn linked(&self) -> bool {
+        self.open && self.linked
     }
 
     pub(crate) fn open(&self) -> bool {
@@ -338,7 +346,7 @@ fn local(address: &str) -> bool {
     !address.contains("://") && !address.split_once(':').is_some_and(|(host, _)| !host.contains('/'))
 }
 
-fn address_problem(address: &str) -> Option<String> {
+pub(crate) fn address_problem(address: &str) -> Option<String> {
     if address.is_empty() {
         return Some(String::new());
     }
@@ -472,6 +480,7 @@ fn show(tab: &mut Tab, request: Option<Request>, window: &mut Window, cx: &mut C
     });
     let state = &mut tab.ui.cloning;
     state.open = true;
+    state.linked = false;
     state.source = Source::Address;
     state.ticket += 1;
     state.listing = Listing::Idle;
@@ -559,6 +568,17 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::Open if tab.ui.cloning.open => {}
         Action::Open => show(tab, None, window, cx),
         Action::Edit(request) => show(tab, Some(request), window, cx),
+        Action::Linked(address) => {
+            let request = Request {
+                address,
+                parent: default_parent(cx),
+                name: String::new(),
+                options: Options::default(),
+                account: None,
+            };
+            show(tab, Some(request), window, cx);
+            tab.ui.cloning.linked = true;
+        }
         Action::Close => close(tab, window),
         Action::ChooseParent => {
             let picker = cx.prompt_for_paths(PathPromptOptions {
@@ -804,6 +824,7 @@ pub(crate) fn dialog<T: Desk>(app: &T, cx: &mut Context<T>) -> Option<impl IntoE
         .when(source == Source::Address, |d| {
             d.child(div().on_key_down(submit(cx)).child(kit::field("Repository address", state.address.clone(), address.map(Into::into))))
         })
+        .when(state.linked, |d| d.child(kit::muted(FROM_LINK).text_size(px(TEXT_SMALL))))
         .when(source == Source::GitHub, |d| {
             d.child(github(app, &request, cx)).when(!request.address.is_empty(), |d| d.child(kit::muted(format!("Address: {}", request.address))))
         })

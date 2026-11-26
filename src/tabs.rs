@@ -7,7 +7,7 @@ use crate::{
     view::{self, Centre, Desk, Tone, Ui},
 };
 use gpui::{
-    AnyWindowHandle, App, AppContext, Context, DispatchPhase, Entity, EntityId, FontWeight, Global, IntoElement,
+    AnyWindowHandle, App, AppContext, Context, DispatchPhase, Entity, EntityId, ExternalPaths, FontWeight, Global, IntoElement,
     MouseButton, MouseDownEvent, Render, Subscription, WeakEntity, Window, WindowHandle, canvas, div, prelude::*, rgb,
 };
 use crate::theme::px;
@@ -131,6 +131,9 @@ pub(crate) enum Request {
     Step(isize),
     Close(EntityId),
     Handed(PathBuf),
+    Linked(PathBuf),
+    Clone(String),
+    Tell(crate::notice::Notice),
 }
 
 pub(crate) type Then = Box<dyn FnOnce(&mut Tab, &mut Context<Tab>)>;
@@ -479,7 +482,43 @@ impl Workspace {
                     self.handle(Request::Open { path, then: Box::new(|_, _| {}) }, window, cx);
                 }
             }
+            Request::Linked(path) => {
+                if let Some(index) = self.holding(&path, cx) {
+                    return self.bring(index, window, cx);
+                }
+                self.handle(Request::Tell(crate::links::offer(&path)), window, cx);
+            }
+            Request::Clone(address) => self.clone_from_link(address, window, cx),
+            Request::Tell(notice) => {
+                let front = self.front().clone();
+                if front.read(cx).ui.opening.is_some() {
+                    crate::guide::wait(notice, cx);
+                } else {
+                    front.update(cx, |tab, cx| {
+                        tab.ui.notices.show(notice);
+                        cx.notify();
+                    });
+                }
+            }
         }
+    }
+
+    fn clone_from_link(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
+        let linked = view::Action::Clone(crate::clone::Action::Linked(address));
+        let front = self.front().clone();
+        let free = {
+            let ui = &front.read(cx).ui;
+            ui.opening.is_none() && !ui.dialog_open() && !ui.modal_open() && !ui.preferences.open()
+        };
+        if free {
+            front.update(cx, |tab, cx| tab.dispatch(linked.clone(), window, cx));
+            if front.read(cx).ui.cloning.linked() {
+                return;
+            }
+        }
+        let tab = self.add(None, cx);
+        self.bring(self.tabs.len() - 1, window, cx);
+        tab.update(cx, |tab, cx| tab.dispatch(linked, window, cx));
     }
 
     fn holding(&self, path: &Path, cx: &App) -> Option<usize> {
@@ -562,6 +601,7 @@ impl Render for Workspace {
                     window.refresh();
                 }
             })
+            .on_drop(|dropped: &ExternalPaths, _, cx| crate::links::dropped(dropped.paths(), cx))
             .child(pointer_hides_focus_rings())
             .child(self.front().clone())
             .children(crate::view::commit_input::field_menu(window, cx))

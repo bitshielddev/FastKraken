@@ -754,11 +754,156 @@ impl Replay<'_> {
         git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
         git_is(&root, &["status", "--porcelain=v1"], "")?;
         self.pass();
+        self.clone_link(dir, &root).await
+    }
+}
+
+fn encoded(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+fn listed(folder: &Path) -> Result<Vec<PathBuf>> {
+    Ok(fs::read_dir(folder)?.map(|entry| entry.map(|entry| entry.path())).collect::<std::io::Result<_>>()?)
+}
+
+impl Replay<'_> {
+    fn follow(&mut self, link: &str) -> Result<()> {
+        let urls = vec![link.to_owned()];
+        self.cx.update(|cx| crate::links::follow(urls, cx))?;
+        Ok(())
+    }
+
+    fn titled_in(&mut self, index: usize, title: &str) -> Result<bool> {
+        Ok(self
+            .tab
+            .read_tab(self.cx, index, |tab, _| tab.ui.notices.items().iter().any(|notice| notice.title == title))?
+            .unwrap_or(false))
+    }
+
+    async fn clone_link(&mut self, dir: &Path, beacon: &Path) -> Result<()> {
+        self.start("GAP1309");
+        let beacon_head = oid(beacon, "HEAD")?;
+        if self.tab.tabs(self.cx)? != (1, 0) || self.tab.read_with(self.cx, |tab, _| tab.ui.repo.clone())? != BEACON {
+            return Err("Beacon is not open alone before the link".into());
+        }
+        let harbour = init(dir, HARBOUR)?;
+        record(&harbour, "trail.txt", TRAIL, "Chart the harbour")?;
+        let harbour_head = oid(&harbour, "HEAD")?;
+        let harbour = fs::canonicalize(&harbour)?;
+        let bare = dir.join("Harbour-origin.git");
+        let address = bare.to_str().ok_or("The sandbox path is not UTF-8")?.to_owned();
+        git(dir, &["clone", "-q", "--bare", harbour.to_str().ok_or("The sandbox path is not UTF-8")?, &address])?;
+        let clones = dir.join("link-clones");
+        fs::create_dir(&clones)?;
+        let parent = clones.clone();
+        self.cx.update(|cx| settings::Memory::update(cx, |memory| memory.set_clone_parent(&parent)))?;
+
+        self.follow(&format!("fastkraken://clone?url={}", encoded(&address)))?;
+        self.until("the clone dialog filled from the link", |tab| tab.ui.cloning.linked()).await?;
+        let (request, ready, repo) = self.tab.read_with(self.cx, |tab, cx| {
+            let request = tab.ui.cloning.request(cx);
+            let ready = request.problem().is_none();
+            (request, ready, tab.ui.repo.clone())
+        })?;
+        if request.address != address || request.name != "Harbour-origin" || request.parent != clones || !ready {
+            return Err(format!("The link filled the dialog with {request:?}, ready {ready}").into());
+        }
+        if repo != BEACON || self.tab.tabs(self.cx)? != (1, 0) {
+            return Err(format!("The link's dialog opened over {repo:?} in {:?}", self.tab.tabs(self.cx)?).into());
+        }
+        self.settle_frames().await?;
+        let still = self.tab.read_with(self.cx, |tab, _| (tab.ui.cloning.linked(), tab.ui.jobs.refusal()))?;
+        if still != (true, None) {
+            return Err(format!("After the link the dialog and jobs are {still:?}").into());
+        }
+        if !listed(&clones)?.is_empty() {
+            return Err(format!("The link cloned into {:?}", listed(&clones)?).into());
+        }
+        self.action(Action::Clone(crate::clone::Action::Close))?;
+        self.until("the dialog cancelled", |tab| !tab.ui.cloning.open()).await?;
+        self.settle_frames().await?;
+        if !listed(&clones)?.is_empty() {
+            return Err(format!("Cancelling the dialog cloned into {:?}", listed(&clones)?).into());
+        }
+
+        let marker = dir.join("link-ran");
+        let command = format!("ext::sh -c touch% {}", marker.display());
+        self.follow(&format!("fastkraken://clone?url={}", encoded(&command)))?;
+        self.until("the dangerous link refused", |tab| {
+            tab.ui.notices.items().iter().any(|notice| notice.title == crate::links::CANNOT_FOLLOW && notice.detail.contains("cannot be cloned"))
+        })
+        .await?;
+        self.settle_frames().await?;
+        if self.tab.read_with(self.cx, |tab, _| tab.ui.cloning.open())? || marker.exists() || !listed(&clones)?.is_empty() {
+            return Err("A clone link with a command opened the dialog or ran".into());
+        }
+        if let Some(id) = self.notice_id_titled(crate::links::CANNOT_FOLLOW)? {
+            self.action(Action::Notice(crate::notice::Action::Dismiss(id)))?;
+        }
+
+        let open = format!("fastkraken://open?path={}", encoded(harbour.to_str().ok_or("The sandbox path is not UTF-8")?));
+        let asked = format!("Open {HARBOUR}?");
+        self.follow(&open)?;
+        self.until("FastKraken asking to open Harbour", |tab| tab.ui.notices.items().iter().any(|notice| notice.title == asked))
+            .await?;
+        self.settle_frames().await?;
+        if self.tab.tabs(self.cx)? != (1, 0) || self.tab.read_with(self.cx, |tab, _| tab.ui.repo.clone())? != BEACON {
+            return Err("The open link opened something before it was confirmed".into());
+        }
+        let id = self.notice_id_titled(&asked)?.ok_or("The question went")?;
+        self.action(Action::Notice(crate::notice::Action::Take(id, 0)))?;
+        self.until("Harbour open in a new tab", |tab| tab.ui.repo == HARBOUR && tab.ui.history.len() == 1).await?;
+        let beside = self.tab.read_tab(self.cx, 0, |tab, _| tab.ui.repo.clone())?;
+        if self.tab.tabs(self.cx)? != (2, 1) || beside.as_deref() != Some(BEACON) {
+            return Err(format!("After Open the tabs are {:?} with {beside:?} first", self.tab.tabs(self.cx)?).into());
+        }
+
+        self.action(Action::Tabs(crate::tabs::Action::Show(0)))?;
+        self.until("Beacon back in front", |tab| tab.ui.repo == BEACON).await?;
+        self.follow(&open)?;
+        self.until("Harbour brought forward by the same link", |tab| tab.ui.repo == HARBOUR).await?;
+        self.settle_frames().await?;
+        if self.tab.tabs(self.cx)? != (2, 1) || self.titled_in(0, &asked)? || self.titled_in(1, &asked)? {
+            return Err("The link to an open repository asked again or opened another tab".into());
+        }
+
+        let dropped = vec![harbour.join("trail.txt")];
+        self.cx.update(|cx| crate::links::dropped(&dropped, cx))?;
+        self.until("a dropped file explained", |tab| {
+            tab.ui.notices.items().iter().any(|notice| notice.title == crate::links::FOLDERS_ONLY)
+        })
+        .await?;
+        self.settle_frames().await?;
+        if self.tab.tabs(self.cx)? != (2, 1) {
+            return Err("Dropping a file opened a tab".into());
+        }
+
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until("Beacon alone again", |tab| tab.ui.repo == BEACON).await?;
+        let folder = vec![harbour.clone()];
+        self.cx.update(|cx| crate::links::dropped(&folder, cx))?;
+        self.until("Harbour open from a dropped folder", |tab| tab.ui.repo == HARBOUR && tab.ui.history.len() == 1).await?;
+        if self.tab.tabs(self.cx)? != (2, 1) {
+            return Err(format!("The dropped folder opened as {:?}", self.tab.tabs(self.cx)?).into());
+        }
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until("Beacon alone at the end", |tab| tab.ui.repo == BEACON).await?;
+
+        if !listed(&clones)?.is_empty() || marker.exists() {
+            return Err("Something was cloned or run by the links".into());
+        }
+        git_is(beacon, &["rev-parse", "HEAD"], &format!("{beacon_head}\n"))?;
+        git_is(beacon, &["status", "--porcelain=v1"], "")?;
+        git_is(&harbour, &["rev-parse", "HEAD"], &format!("{harbour_head}\n"))?;
+        git_is(&harbour, &["status", "--porcelain=v1"], "")?;
+        git_is(&bare, &["rev-parse", "HEAD"], &format!("{harbour_head}\n"))?;
+        self.pass();
         Ok(())
     }
 }
 
 const BEACON: &str = "Beacon";
+const HARBOUR: &str = "Harbour";
 const BEACON_USER: &str = "cedar-keeper";
 const BEACON_PASSWORD: &str = "hunter2-beacon";
 const BEACON_TOKEN: &str = "ghp_beacon0123456789secret";

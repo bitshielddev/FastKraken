@@ -686,6 +686,7 @@ pub enum Action {
     Diagnostics(crate::diagnostics::Action),
     Maintenance(crate::maintenance::Action),
     Guide(crate::guide::Action),
+    Links(crate::links::Action),
     CommitOptions(crate::commit_options::Action),
 }
 

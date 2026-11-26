@@ -62,6 +62,7 @@ mod kit;
 mod lfs;
 mod line_patch;
 mod lines;
+mod links;
 mod maintenance;
 mod merge;
 mod navigate;
@@ -1631,6 +1632,7 @@ impl Tab {
                 | Action::Updates(_)
                 | Action::Diagnostics(_)
                 | Action::Guide(_)
+                | Action::Links(_)
         );
         if self.ui.prompt.open() {
             let choosing = matches!(action, Action::Worktree(worktree::Action::ChooseFolder));
@@ -1885,6 +1887,7 @@ impl Tab {
             Action::Diagnostics(action) => diagnostics::dispatch(self, action, window, cx),
             Action::Maintenance(action) => maintenance::dispatch(self, action, window, cx),
             Action::Guide(action) => guide::dispatch(self, action, window, cx),
+            Action::Links(action) => links::dispatch(self, action, window, cx),
             Action::Palette(action) => palette::dispatch(self, action, window, cx),
             Action::ToggleSidebar => {
                 let hidden = !self.ui.sidebar_hidden;
@@ -2117,7 +2120,7 @@ fn main() {
     } else {
         storage::directory().ok()
     };
-    let (handed, folders) = async_channel::unbounded::<Vec<String>>();
+    let (handed, handed_urls) = async_channel::unbounded::<Vec<String>>();
     let application = Application::new().with_assets(assets::Assets);
     application.on_open_urls(move |urls| {
         let _ = handed.try_send(urls);
@@ -2173,11 +2176,8 @@ fn main() {
             }).detach();
         }
         cx.spawn(async move |cx| {
-            while let Ok(urls) = folders.recv().await {
-                let Some(path) = urls.iter().find_map(|url| url::Url::parse(url).ok()?.to_file_path().ok()) else {
-                    continue;
-                };
-                let _ = cx.update(|cx| tabs::ask(cx, tabs::Request::Handed(path)));
+            while let Ok(urls) = handed_urls.recv().await {
+                let _ = cx.update(|cx| links::follow(urls, cx));
             }
         })
         .detach();
