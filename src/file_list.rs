@@ -12,11 +12,12 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
-    hash::{DefaultHasher, Hash, Hasher},
-    ops::Range,
+    fmt,
+    ops::{Deref, Range},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 pub(crate) const FILTER_FROM: usize = 15;
@@ -224,10 +225,11 @@ impl Node {
     }
 }
 
-pub(crate) fn arrange(files: &[Listed], shape: &Shape) -> Vec<Row> {
+fn arrange_counted(files: &[Listed], shape: &Shape) -> (Vec<Row>, usize) {
     let needle = needle(shape.filter);
     let mut kept: Vec<usize> = (0..files.len()).filter(|index| matches(files[*index].path, &needle)).collect();
-    match shape.mode {
+    let matching = kept.len();
+    let rows = match shape.mode {
         Mode::List => {
             order(files, &mut kept, shape.sort, false);
             kept.into_iter().map(|index| Row::File { index, depth: 0 }).collect()
@@ -241,7 +243,12 @@ pub(crate) fn arrange(files: &[Listed], shape: &Shape) -> Vec<Row> {
             root.emit(files, shape, Path::new(""), 0, &mut rows);
             rows
         }
-    }
+    };
+    (rows, matching)
+}
+
+pub(crate) fn arrange(files: &[Listed], shape: &Shape) -> Vec<Row> {
+    arrange_counted(files, shape).0
 }
 
 pub(crate) fn folders(files: &[Listed], filter: &str) -> Vec<PathBuf> {
@@ -266,19 +273,85 @@ pub(crate) fn within(files: &[Listed], filter: &str, folder: &Path) -> Vec<PathB
     kept.into_iter().map(|index| files[index].path.to_path_buf()).collect()
 }
 
-fn fingerprint(files: &[Listed], shape: &Shape) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    (shape.mode, shape.sort, needle(shape.filter)).hash(&mut hasher);
-    shape.folded.hash(&mut hasher);
-    files.len().hash(&mut hasher);
-    for file in files {
-        file.path.hash(&mut hasher);
-        file.status.hash(&mut hasher);
-    }
-    hasher.finish()
+static STAMPS: AtomicU64 = AtomicU64::new(1);
+
+pub struct Files<T> {
+    items: Vec<T>,
+    stamp: u64,
 }
 
-type Cached = Option<(u64, Rc<Vec<Row>>)>;
+impl<T> Files<T> {
+    pub(crate) fn set(&mut self, items: Vec<T>) {
+        self.items = items;
+        self.stamp = STAMPS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.set(Vec::new());
+    }
+
+    pub(crate) fn stamp(&self) -> u64 {
+        self.stamp
+    }
+}
+
+impl<T> Default for Files<T> {
+    fn default() -> Self {
+        Self { items: Vec::new(), stamp: STAMPS.fetch_add(1, Ordering::Relaxed) }
+    }
+}
+
+impl<T> Deref for Files<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        &self.items
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Files<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.items.fmt(f)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Key {
+    files: u64,
+    folds: u64,
+    mode: Mode,
+    sort: Sort,
+    needle: String,
+}
+
+impl Key {
+    fn new(files: u64, folds: u64, shape: &Shape) -> Self {
+        Self { files, folds, mode: shape.mode, sort: shape.sort, needle: needle(shape.filter) }
+    }
+}
+
+struct Arranged {
+    key: Key,
+    rows: Rc<Vec<Row>>,
+    matching: usize,
+}
+
+#[derive(Default)]
+struct Cache(RefCell<[Option<Arranged>; 5]>);
+
+impl Cache {
+    fn get<'a>(&self, which: Which, key: Key, shape: &Shape, files: impl FnOnce() -> Vec<Listed<'a>>) -> (Rc<Vec<Row>>, usize) {
+        let mut cache = self.0.borrow_mut();
+        let slot = &mut cache[which.slot()];
+        if let Some(kept) = slot.as_ref().filter(|kept| kept.key == key) {
+            return (kept.rows.clone(), kept.matching);
+        }
+        let (rows, matching) = arrange_counted(&files(), shape);
+        let rows = Rc::new(rows);
+        *slot = Some(Arranged { key, rows: rows.clone(), matching });
+        (rows, matching)
+    }
+}
 
 pub(crate) struct State {
     pub(crate) mode: Mode,
@@ -287,7 +360,8 @@ pub(crate) struct State {
     typed: [String; 4],
     asked: [bool; 4],
     folded: [BTreeSet<PathBuf>; 5],
-    cache: RefCell<[Cached; 5]>,
+    folds: [u64; 5],
+    cache: Cache,
 }
 
 impl State {
@@ -315,7 +389,8 @@ impl State {
             typed: Default::default(),
             asked: [false; 4],
             folded: Default::default(),
-            cache: RefCell::new(Default::default()),
+            folds: [0; 5],
+            cache: Cache::default(),
         }
     }
 
@@ -333,6 +408,11 @@ impl State {
 
     pub(crate) fn folded(&self, which: Which) -> &BTreeSet<PathBuf> {
         &self.folded[which.slot()]
+    }
+
+    fn folding(&mut self, which: Which) -> &mut BTreeSet<PathBuf> {
+        self.folds[which.slot()] += 1;
+        &mut self.folded[which.slot()]
     }
 
     fn shape(&self, which: Which) -> Shape<'_> {
@@ -361,19 +441,33 @@ pub(crate) fn source(ui: &Ui, which: Which) -> Vec<Listed<'_>> {
     }
 }
 
-pub(crate) fn rows(ui: &Ui, which: Which) -> Rc<Vec<Row>> {
-    let files = source(ui, which);
-    let shape = ui.file_list.shape(which);
-    let key = fingerprint(&files, &shape);
-    let mut cache = ui.file_list.cache.borrow_mut();
-    if let Some((seen, rows)) = &cache[which.slot()] {
-        if *seen == key {
-            return rows.clone();
-        }
+fn stamp(ui: &Ui, which: Which) -> u64 {
+    match which {
+        Which::Unstaged | Which::Staged => ui.files.stamp(),
+        Which::Commit => ui.inspection.files.stamp(),
+        Which::Stash => ui.stash.files.stamp(),
+        Which::Compare => ui.compare.files.stamp(),
     }
-    let rows = Rc::new(arrange(&files, &shape));
-    cache[which.slot()] = Some((key, rows.clone()));
-    rows
+}
+
+fn listed_len(ui: &Ui, which: Which) -> usize {
+    match which {
+        Which::Unstaged | Which::Staged => working_range(ui, which == Which::Staged).len(),
+        Which::Commit => ui.inspection.files.len(),
+        Which::Stash => ui.stash.files.len(),
+        Which::Compare => ui.compare.files.len(),
+    }
+}
+
+fn arranged(ui: &Ui, which: Which) -> (Rc<Vec<Row>>, usize) {
+    let state = &ui.file_list;
+    let shape = state.shape(which);
+    let key = Key::new(stamp(ui, which), state.folds[which.slot()], &shape);
+    state.cache.get(which, key, &shape, || source(ui, which))
+}
+
+pub(crate) fn rows(ui: &Ui, which: Which) -> Rc<Vec<Row>> {
+    arranged(ui, which).0
 }
 
 pub(crate) fn shown(ui: &Ui, which: Which) -> Vec<usize> {
@@ -419,17 +513,11 @@ pub(crate) fn under(ui: &Ui, which: Which, folder: &Path) -> Vec<PathBuf> {
 }
 
 pub(crate) fn counted(ui: &Ui, which: Which) -> (usize, usize) {
-    let files = source(ui, which);
-    let needle = needle(ui.file_list.filter(which.panel()));
-    if needle.is_empty() {
-        return (files.len(), files.len());
-    }
-    let matching = files.iter().filter(|file| matches(file.path, &needle)).count();
-    (matching, files.len())
+    (arranged(ui, which).1, listed_len(ui, which))
 }
 
 pub(crate) fn total(ui: &Ui, panel: Panel) -> usize {
-    panel.lists().iter().map(|which| source(ui, *which).len()).sum()
+    panel.lists().iter().map(|which| listed_len(ui, *which)).sum()
 }
 
 pub(crate) fn field_shown(ui: &Ui, panel: Panel) -> bool {
@@ -497,7 +585,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             }
         }
         Action::Fold { which, path } => {
-            let folded = &mut tab.ui.file_list.folded[which.slot()];
+            let folded = tab.ui.file_list.folding(which);
             if !folded.remove(&path) {
                 folded.insert(path);
             }
@@ -505,13 +593,13 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         }
         Action::ExpandAll(panel) => {
             for which in panel.lists() {
-                tab.ui.file_list.folded[which.slot()].clear();
+                tab.ui.file_list.folding(*which).clear();
             }
         }
         Action::CollapseAll(panel) => {
             for which in panel.lists() {
                 let all: BTreeSet<PathBuf> = folders(&source(&tab.ui, *which), tab.ui.file_list.filter(panel)).into_iter().collect();
-                tab.ui.file_list.folded[which.slot()] = all;
+                *tab.ui.file_list.folding(*which) = all;
             }
             refold(&mut tab.ui);
         }
@@ -1082,12 +1170,75 @@ mod tests {
         ]);
         assert_eq!(within(&files, "user", Path::new("src/app")), vec![PathBuf::from("src/app/models/user.rs")]);
         assert!(within(&files, "", Path::new("src/ap")).is_empty());
-        let mut changed = sample.clone();
-        changed[0].1 = "Deleted";
-        let changed = listed(&changed);
+    }
+
+    fn reloaded(rows: &[(&str, &'static str)]) -> Vec<crate::repository::ChangedFile> {
+        rows.iter().map(|(path, status)| crate::repository::ChangedFile { path: PathBuf::from(path), status, from: None }).collect()
+    }
+
+    fn read(cache: &Cache, files: &Files<crate::repository::ChangedFile>, folds: u64, shape: &Shape, built: &std::cell::Cell<usize>) -> (Vec<String>, usize) {
+        let (rows, matching) = cache.get(Which::Commit, Key::new(files.stamp(), folds, shape), shape, || {
+            built.set(built.get() + 1);
+            changed(files)
+        });
+        (drawn(&changed(files), &rows), matching)
+    }
+
+    #[test]
+    fn a_reloaded_file_list_is_arranged_again_and_an_unchanged_one_is_not() {
+        let mut files = Files::default();
+        files.set(reloaded(&[("src/lib.rs", "Modified"), ("README.md", "Added"), ("src/app/view.rs", "Deleted")]));
+        let cache = Cache::default();
+        let built = std::cell::Cell::new(0);
+        let none = BTreeSet::new();
+        let list = shape(Mode::List, Sort::Path, "", &none);
+        let first = read(&cache, &files, 0, &list, &built);
+        assert_eq!(first, (vec!["README.md".to_owned(), "src/app/view.rs".to_owned(), "src/lib.rs".to_owned()], 3));
+        assert_eq!(read(&cache, &files, 0, &list, &built), first);
+        assert_eq!(built.get(), 1);
+        let before = files.stamp();
+        files.set(reloaded(&[("src/lib.rs", "Modified"), ("README.md", "Added"), ("src/app/view.rs", "Deleted")]));
+        assert_ne!(files.stamp(), before);
+        assert_eq!(read(&cache, &files, 0, &list, &built), first);
+        assert_eq!(built.get(), 2);
+        files.set(reloaded(&[("src/lib.rs", "Modified"), ("notes.txt", "Untracked")]));
+        assert_eq!(read(&cache, &files, 0, &list, &built), (vec!["notes.txt".to_owned(), "src/lib.rs".to_owned()], 2));
+        files.set(reloaded(&[("src/lib.rs", "Deleted"), ("notes.txt", "Untracked")]));
+        let status = shape(Mode::List, Sort::Status, "", &none);
+        assert_eq!(read(&cache, &files, 0, &status, &built), (vec!["notes.txt".to_owned(), "src/lib.rs".to_owned()], 2));
+        files.set(reloaded(&[("src/lib.rs", "Modified"), ("notes.txt", "Untracked")]));
+        assert_eq!(read(&cache, &files, 0, &status, &built), (vec!["src/lib.rs".to_owned(), "notes.txt".to_owned()], 2));
+        files.clear();
+        assert_eq!(read(&cache, &files, 0, &status, &built), (Vec::new(), 0));
+        assert_ne!(Files::<crate::repository::ChangedFile>::default().stamp(), Files::<crate::repository::ChangedFile>::default().stamp());
+    }
+
+    #[test]
+    fn the_arranged_rows_follow_the_mode_the_sort_the_filter_and_the_folded_folders() {
+        let mut files = Files::default();
+        files.set(reloaded(&[("src/app/models/user.rs", "Added"), ("src/lib.rs", "Modified"), ("README.md", "Modified")]));
+        let cache = Cache::default();
+        let built = std::cell::Cell::new(0);
+        let none = BTreeSet::new();
         let tree = shape(Mode::Tree, Sort::Path, "", &none);
-        assert_ne!(fingerprint(&files, &tree), fingerprint(&changed, &tree));
-        assert_ne!(fingerprint(&files, &tree), fingerprint(&files, &shape(Mode::List, Sort::Path, "", &none)));
+        assert_eq!(read(&cache, &files, 0, &tree, &built).0, vec!["- src/ (2)", "  - app/models/ (1)", "    src/app/models/user.rs", "  src/lib.rs", "README.md"]);
+        let folded = BTreeSet::from([PathBuf::from("src/app/models")]);
+        let tree_folded = shape(Mode::Tree, Sort::Path, "", &folded);
+        assert_eq!(read(&cache, &files, 1, &tree_folded, &built).0, vec!["- src/ (2)", "  + app/models/ (1)", "  src/lib.rs", "README.md"]);
+        assert_eq!(read(&cache, &files, 2, &tree, &built).0, vec!["- src/ (2)", "  - app/models/ (1)", "    src/app/models/user.rs", "  src/lib.rs", "README.md"]);
+        let list = shape(Mode::List, Sort::Path, "", &none);
+        assert_eq!(read(&cache, &files, 2, &list, &built).0, vec!["README.md", "src/app/models/user.rs", "src/lib.rs"]);
+        let name = shape(Mode::List, Sort::Name, "", &none);
+        assert_eq!(read(&cache, &files, 2, &name, &built).0, vec!["src/lib.rs", "README.md", "src/app/models/user.rs"]);
+        let filtered = shape(Mode::List, Sort::Name, " SRC ", &none);
+        assert_eq!(read(&cache, &files, 2, &filtered, &built), (vec!["src/lib.rs".to_owned(), "src/app/models/user.rs".to_owned()], 2));
+        let same = shape(Mode::List, Sort::Name, "src", &none);
+        let count = built.get();
+        assert_eq!(read(&cache, &files, 2, &same, &built).1, 2);
+        assert_eq!(built.get(), count);
+        let (rows, matching) = read(&cache, &files, 3, &tree_folded, &built);
+        assert_eq!(rows, vec!["- src/ (2)", "  + app/models/ (1)", "  src/lib.rs", "README.md"]);
+        assert_eq!(matching, 3);
     }
 
     #[test]

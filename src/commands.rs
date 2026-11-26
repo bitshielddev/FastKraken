@@ -62,7 +62,7 @@ impl Target {
                 _ => Self::Stash(oid.clone()),
             },
             Some(Selection::Compare { .. } | Selection::Commits) => match crate::compare::picked_commits(ui) {
-                commits if commits.len() > 1 => Self::Commits(commits),
+                commits if commits.len() > 1 => Self::Commits(commits.to_vec()),
                 _ => Self::Repo,
             },
             Some(Selection::Changes) | None => match crate::conflict::open_path(ui) {

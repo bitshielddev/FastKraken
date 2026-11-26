@@ -116,6 +116,9 @@ fn reached_from<'a>(history: &[view::HistoryRow], head: &str, oids: &'a [String]
 }
 
 fn holds_merge(ui: &Ui, oids: &[String]) -> bool {
+    if oids == crate::compare::picked_commits(ui) {
+        return ui.compare.merges();
+    }
     oids.iter().any(|oid| ui.history.iter().any(|row| &row.oid == oid && row.parents.len() > 1))
 }
 

@@ -519,17 +519,19 @@ impl Tab {
                             tab.select(Selection::Changes, cx);
                         }
                         tab.ui.changed_paths = status.changed_paths;
-                        tab.ui.files = [(false, status.unstaged), (true, status.staged)]
-                            .into_iter()
-                            .flat_map(|(staged, paths)| {
-                                paths.into_iter().map(move |file| FileRow {
-                                    path: file.path,
-                                    staged,
-                                    status: file.status,
-                                    from: file.from,
+                        tab.ui.files.set(
+                            [(false, status.unstaged), (true, status.staged)]
+                                .into_iter()
+                                .flat_map(|(staged, paths)| {
+                                    paths.into_iter().map(move |file| FileRow {
+                                        path: file.path,
+                                        staged,
+                                        status: file.status,
+                                        from: file.from,
+                                    })
                                 })
-                            })
-                            .collect();
+                                .collect(),
+                        );
                         picked::refresh(&mut tab.ui);
                         compare::status_changed(tab, cx);
                         blame::status_changed(tab, cx);

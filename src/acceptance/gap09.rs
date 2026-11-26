@@ -505,7 +505,7 @@ impl Replay<'_> {
             return Err(format!("The pick's menu lists {rows:?}").into());
         }
         self.action(Action::Dismiss)?;
-        let kept = self.tab.read_with(self.cx, |tab, _| (tab.ui.selection.clone(), compare::picked_commits(&tab.ui)))?;
+        let kept = self.tab.read_with(self.cx, |tab, _| (tab.ui.selection.clone(), compare::picked_commits(&tab.ui).to_vec()))?;
         if kept != (Some(Selection::Commits), vec![newest, second, fourth]) {
             return Err(format!("After the menu the pick is {kept:?}").into());
         }
@@ -1823,7 +1823,7 @@ impl Replay<'_> {
             return Err(format!("The picked commits' menu lists {rows:?}").into());
         }
         let button = self.tab.read_with(self.cx, |tab, cx| {
-            crate::pick::offered(&tab.ui, &compare::picked_commits(&tab.ui), cx).map(|entry| (entry.disabled, entry.action.is_some()))
+            crate::pick::offered(&tab.ui, compare::picked_commits(&tab.ui), cx).map(|entry| (entry.disabled, entry.action.is_some()))
         })?;
         if button != Some((None, true)) {
             return Err(format!("The panel's Cherry-pick button is {button:?}").into());

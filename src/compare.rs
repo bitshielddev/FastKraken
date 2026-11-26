@@ -65,10 +65,12 @@ pub(crate) struct Names {
 pub(crate) struct State {
     pub(crate) picked: Option<Picked<Rev>>,
     commits: HashSet<String>,
+    ordered: Vec<String>,
+    merges: bool,
     primary: Option<Rev>,
     pub(crate) names: Option<Names>,
     shown: Option<Selection>,
-    pub(crate) files: Vec<ChangedFile>,
+    pub(crate) files: file_list::Files<ChangedFile>,
     fork: Option<String>,
     loading: bool,
     failed: Option<String>,
@@ -107,7 +109,11 @@ impl State {
         self.files.iter().find(|file| file.path == path).and_then(|file| file.from.clone())
     }
 
-    fn set_pick(&mut self, picked: Option<Picked<Rev>>, primary: Option<Rev>) {
+    pub(crate) fn merges(&self) -> bool {
+        self.merges
+    }
+
+    fn set_pick(&mut self, picked: Option<Picked<Rev>>, primary: Option<Rev>, history: &[HistoryRow]) {
         self.commits = picked
             .iter()
             .flat_map(|picked| picked.keys.iter())
@@ -115,10 +121,28 @@ impl State {
             .collect();
         self.picked = picked;
         self.primary = primary;
+        self.history_cleared();
+        self.history_added(history);
     }
 
     pub(crate) fn clear_pick(&mut self) {
-        self.set_pick(None, None);
+        self.set_pick(None, None, &[]);
+    }
+
+    pub(crate) fn history_cleared(&mut self) {
+        self.ordered.clear();
+        self.merges = false;
+    }
+
+    pub(crate) fn history_added(&mut self, rows: &[HistoryRow]) {
+        if self.commits.is_empty() {
+            return;
+        }
+        let commits = &self.commits;
+        for row in rows.iter().filter(|row| commits.contains(&row.oid)) {
+            self.ordered.push(row.oid.clone());
+            self.merges |= row.parents.len() > 1;
+        }
     }
 
     fn forget(&mut self) {
@@ -157,8 +181,8 @@ pub(crate) fn rows(history: &[HistoryRow]) -> Vec<Rev> {
     std::iter::once(Rev::WorkingTree).chain(history.iter().map(|row| Rev::Commit(row.oid.clone()))).collect()
 }
 
-pub(crate) fn picked_commits(ui: &Ui) -> Vec<String> {
-    ui.history.iter().filter(|row| ui.compare.picks(&row.oid)).map(|row| row.oid.clone()).collect()
+pub(crate) fn picked_commits(ui: &Ui) -> &[String] {
+    &ui.compare.ordered
 }
 
 pub(crate) fn run_base(history: &[HistoryRow], ordered: &[Rev]) -> Option<String> {
@@ -344,7 +368,7 @@ fn apply(tab: &mut Tab, picked: Picked<Rev>, primary: Rev, window: &mut Window, 
         select(tab, selection.clone(), window, cx);
     }
     if tab.ui.selection.as_ref() == Some(&selection) {
-        tab.ui.compare.set_pick(Some(picked), Some(primary));
+        tab.ui.compare.set_pick(Some(picked), Some(primary), &tab.ui.history);
     }
     cx.notify();
 }
@@ -459,7 +483,7 @@ fn load(tab: &mut Tab, cx: &mut Context<Tab>) {
             match result {
                 Ok((start, files)) => {
                     state.fork = since_fork.then_some(start);
-                    state.files = files;
+                    state.files.set(files);
                     if state.path.as_ref().is_some_and(|path| !state.files.iter().any(|file| &file.path == path)) {
                         state.path = None;
                         tab.ui.diff_open = false;
@@ -508,12 +532,12 @@ pub(crate) fn history_changed(tab: &mut Tab, cx: &mut Context<Tab>) {
     let primary = tab.ui.compare.primary.clone().filter(|rev| picked.contains(rev)).unwrap_or_else(|| picked.anchor.clone());
     tab.select(selection, cx);
     if ordered.len() > 1 {
-        tab.ui.compare.set_pick(Some(picked), Some(primary));
+        tab.ui.compare.set_pick(Some(picked), Some(primary), &tab.ui.history);
     }
 }
 
 pub(crate) fn context_target(ui: &Ui, oid: &str) -> Option<crate::commands::Target> {
-    (ui.compare.picks(oid) && ui.compare.count() > 1).then(|| crate::commands::Target::Commits(picked_commits(ui)))
+    (ui.compare.picks(oid) && ui.compare.count() > 1).then(|| crate::commands::Target::Commits(picked_commits(ui).to_vec()))
 }
 
 pub(crate) fn commits_of(target: &crate::commands::Target) -> Option<&[String]> {
@@ -696,8 +720,8 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
         })
         .when(state.count() > 1, |d| {
             let oids = picked_commits(ui);
-            let merges = oids.iter().any(|oid| ui.history.iter().any(|row| &row.oid == oid && row.parents.len() > 1));
-            let pick = crate::pick::offered(ui, &oids, cx);
+            let merges = state.merges();
+            let pick = crate::pick::offered(ui, oids, cx);
             d.child(
                 div()
                     .pt(px(2.))
@@ -716,14 +740,14 @@ pub(crate) fn panel<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
                         kit::btn("copy-picked-shas", format!("Copy {} SHAs", oids.len()))
                             .small()
                             .icon("copy")
-                            .on(copy_shas(&oids), cx),
+                            .on(copy_shas(oids), cx),
                     )
                     .when(!merges, |d| {
                         d.child(
                             kit::btn("save-picked-patch", "Save as patch…")
                                 .small()
                                 .icon("file")
-                                .on(crate::patch::save_commits(&oids), cx),
+                                .on(crate::patch::save_commits(oids), cx),
                         )
                     }),
             )
@@ -931,6 +955,52 @@ mod tests {
         assert_eq!(classify(&history, &ordered), Some(Selection::Commit(id(6))));
         let (picked, _) = pick(&history, &[(Rev::WorkingTree, How::Toggle), (commit(4), How::Toggle), (commit(4), How::Toggle)]);
         assert_eq!(classify(&history, &picked_order(&history, &picked)), Some(Selection::Changes));
+    }
+
+    fn walked(history: &[HistoryRow], state: &State) -> (Vec<String>, bool) {
+        let oids: Vec<String> = history.iter().filter(|row| state.picks(&row.oid)).map(|row| row.oid.clone()).collect();
+        let merges = oids.iter().any(|oid| history.iter().any(|row| &row.oid == oid && row.parents.len() > 1));
+        (oids, merges)
+    }
+
+    fn reload(state: &mut State, history: &[HistoryRow]) {
+        state.history_cleared();
+        state.history_added(history);
+    }
+
+    #[test]
+    fn the_ordered_pick_follows_new_picks_reloaded_history_and_more_pages() {
+        let history = line_with_a_merge();
+        let mut state = State::default();
+        let (picked, _) = pick(&history, &[(commit(2), How::Toggle), (commit(5), How::Toggle), (commit(6), How::Toggle)]);
+        state.set_pick(Some(picked), Some(commit(6)), &history);
+        assert_eq!((state.ordered.clone(), state.merges()), (vec![id(6), id(5), id(2)], true));
+        assert_eq!((state.ordered.clone(), state.merges()), walked(&history, &state));
+
+        let without_merge: Vec<HistoryRow> = history.iter().filter(|row| row.oid != id(5)).cloned().collect();
+        reload(&mut state, &without_merge);
+        assert_eq!((state.ordered.clone(), state.merges()), (vec![id(6), id(2)], false));
+        assert_eq!((state.ordered.clone(), state.merges()), walked(&without_merge, &state));
+
+        let mut reordered = history.clone();
+        reordered.swap(0, 4);
+        reload(&mut state, &reordered);
+        assert_eq!(state.ordered, vec![id(2), id(5), id(6)]);
+        assert_eq!((state.ordered.clone(), state.merges()), walked(&reordered, &state));
+
+        reload(&mut state, &history[..2]);
+        assert_eq!((state.ordered.clone(), state.merges()), (vec![id(6), id(5)], true));
+        state.history_added(&history[2..]);
+        assert_eq!((state.ordered.clone(), state.merges()), (vec![id(6), id(5), id(2)], true));
+        assert_eq!((state.ordered.clone(), state.merges()), walked(&history, &state));
+
+        let (fewer, _) = pick(&history, &[(commit(4), How::Toggle), (commit(3), How::Toggle)]);
+        state.set_pick(Some(fewer), Some(commit(4)), &history);
+        assert_eq!((state.ordered.clone(), state.merges()), (vec![id(4), id(3)], false));
+        state.clear_pick();
+        assert_eq!((state.ordered.clone(), state.merges()), (Vec::new(), false));
+        reload(&mut state, &history);
+        assert!(state.ordered.is_empty());
     }
 
     #[test]

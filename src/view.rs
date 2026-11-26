@@ -702,7 +702,7 @@ pub struct Ui {
     pub(crate) lines: crate::lines::State,
     pub(crate) text: crate::diff_select::State,
     pub(crate) message: crate::inspection::Message,
-    pub files: Vec<FileRow>,
+    pub files: crate::file_list::Files<FileRow>,
     pub changed_paths: usize,
     pub operation: crate::operation::State,
     pub inspection: crate::inspection::State,
@@ -811,7 +811,7 @@ impl Ui {
             lines: Default::default(),
             text: Default::default(),
             message: crate::inspection::Message::new(cx),
-            files: vec![],
+            files: Default::default(),
             changed_paths: 0,
             operation: Default::default(),
             inspection: crate::inspection::State::default(),
@@ -894,6 +894,7 @@ impl Ui {
         self.graph = Graph::pinned(crate::pin::active(self));
         self.highlight.clear();
         self.history.clear();
+        self.compare.history_cleared();
         self.append_history(rows);
     }
 
@@ -922,6 +923,7 @@ impl Ui {
         if !self.graph_view.hide_stashes {
             self.stash.place(&rows, self.history.len());
         }
+        self.compare.history_added(&rows);
         self.history.extend(rows);
     }
 

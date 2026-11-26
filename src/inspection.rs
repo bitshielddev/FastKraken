@@ -186,7 +186,7 @@ pub struct State {
     pub parents: Vec<String>,
     pub body: String,
     pub(crate) coauthors: Vec<crate::commit_options::Author>,
-    pub files: Vec<ChangedFile>,
+    pub files: crate::file_list::Files<ChangedFile>,
     stats: HashMap<PathBuf, (u32, u32)>,
     pub path: Option<PathBuf>,
     opening: Option<PathBuf>,
@@ -270,7 +270,7 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
                     state.coauthors = details.coauthors;
                     state.body = details.body;
                     state.stats = details.stats;
-                    state.files = details.files;
+                    state.files.set(details.files);
                     tab.ui.diff_title = details.subject.clone();
                     state.subject = Some(details.subject.clone());
                     let body = tab.ui.inspection.body.clone();

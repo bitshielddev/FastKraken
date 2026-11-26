@@ -1136,7 +1136,7 @@ impl Repository {
 #[derive(Default)]
 pub struct State {
     pub entries: Vec<Entry>,
-    pub files: Vec<ChangedFile>,
+    pub files: crate::file_list::Files<ChangedFile>,
     detail_oid: Option<String>,
     list_ticket: u64,
     placements: Vec<Placement>,
@@ -1474,7 +1474,7 @@ pub fn selected(tab: &mut Tab, oid: Option<&str>, cx: &mut Context<Tab>) {
             }
             match result {
                 Ok(files) => {
-                    tab.ui.stash.files = files;
+                    tab.ui.stash.files.set(files);
                     if let Some(path) = tab.ui.stash.opening.take() {
                         open_file(tab, path, cx);
                     }
