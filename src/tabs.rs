@@ -196,6 +196,9 @@ pub(crate) fn refusal(ui: &Ui) -> Option<String> {
     if let Some(running) = ui.jobs.refusal() {
         return Some(format!("{running}. Cancel it or let it finish before closing the tab."));
     }
+    if ui.repos.running() {
+        return Some(crate::repos::BUSY.to_owned());
+    }
     (!ui.jobs.idle_but_background()).then(|| "Wait for the current operation to finish".to_owned())
 }
 
@@ -746,7 +749,7 @@ impl Workspace {
                 let front = self.front().clone();
                 let free = {
                     let tab = front.read(cx);
-                    tab.repo.is_none() && tab.ui.opening.is_none() && tab.can_open() && !tab.ui.dialog_open() && !tab.ui.modal_open()
+                    tab.repo.is_none() && tab.ui.opening.is_none() && tab.can_open() && !engaged(tab) && !tab.ui.repos.running()
                 };
                 if free {
                     front.update(cx, |tab, cx| {
@@ -858,7 +861,7 @@ impl Workspace {
         let front = self.front().clone();
         let free = {
             let tab = front.read(cx);
-            tab.repo.is_none() && tab.ui.opening.is_none() && tab.can_open() && !tab.ui.dialog_open() && !tab.ui.modal_open()
+            tab.repo.is_none() && tab.ui.opening.is_none() && tab.can_open() && !tab.ui.dialog_open() && !tab.ui.modal_open() && !tab.ui.repos.running()
         };
         let tab = if free {
             front

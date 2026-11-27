@@ -1086,6 +1086,26 @@ impl Replay<'_> {
         if names.as_array().is_none_or(|names| !names.is_empty()) {
             return Err(format!("After Harbour closed state.json keeps the tab names {names}").into());
         }
+
+        self.key("cmd-t")?;
+        self.until_strip("an empty tab beside Beacon", 2, 1, &[BEACON, "New tab"]).await?;
+        self.key("cmd-,")?;
+        self.until("Preferences open over the empty tab", |tab| tab.ui.preferences.open()).await?;
+        let folder = harbour.to_owned();
+        self.cx.update(|cx| crate::tabs::ask(cx, crate::tabs::Request::Handed(folder)))?;
+        self.until_strip("Harbour opened behind the empty tab's Preferences", 3, 1, &[BEACON, "New tab", HARBOUR]).await?;
+        self.until("the empty tab told that Harbour waits behind it", |tab| {
+            tab.ui.preferences.open() && tab.ui.repo.is_empty() && tab.ui.notices.items().iter().any(|notice| notice.title == behind)
+        })
+        .await?;
+        self.key("escape")?;
+        self.until("Preferences closed over the empty tab", |tab| !tab.ui.preferences.open()).await?;
+        self.action(Action::Tabs(crate::tabs::Action::Show(2)))?;
+        self.until("Harbour open in the third tab", |tab| tab.ui.repo == HARBOUR && tab.ui.history.len() == 1).await?;
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until_strip("Harbour closed beside the empty tab", 2, 1, &[BEACON, "New tab"]).await?;
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until_strip("Beacon alone once more", 1, 0, &[BEACON]).await?;
         git_is(&beacon, &["rev-parse", "HEAD"], &format!("{beacon_head}\n"))?;
         git_is(&beacon, &["status", "--porcelain=v1"], "")?;
         git_is(harbour, &["rev-parse", "HEAD"], &format!("{harbour_head}\n"))?;
@@ -1185,10 +1205,30 @@ impl Replay<'_> {
         }
 
         self.action(Action::Repos(crate::repos::Action::Run(crate::repos::Kind::Pull)))?;
-        self.until("the three pulled", |tab| {
-            !tab.ui.repos.running() && tab.ui.notices.items().iter().any(|notice| notice.title == "Pulled 3 repositories")
-        })
-        .await?;
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        let kept = self.tab.read_with(self.cx, |tab, _| {
+            tab.ui.repos.running() && tab.ui.notices.items().iter().any(|notice| notice.title == crate::repos::BUSY)
+        })?;
+        if !kept {
+            return Err("Closing the manager while it pulled was not refused".into());
+        }
+        self.action(Action::Repos(crate::repos::Action::OpenRepository(wanted[0].clone())))?;
+        self.until_strip("Alder opened in a tab of its own while the pull ran", 3, 2, &[BEACON, crate::repos::HEADING, "Alder"]).await?;
+        let started = Instant::now();
+        loop {
+            let pulled = self.tab.read_tab(self.cx, 1, |tab, _| {
+                !tab.ui.repos.running() && tab.ui.notices.items().iter().any(|notice| notice.title == "Pulled 3 repositories")
+            })?;
+            if pulled == Some(true) {
+                break;
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                return Err("The manager never said it pulled the three".into());
+            }
+            self.cx.background_executor().timer(Duration::from_millis(12)).await;
+        }
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until_strip("the manager in front again", 2, 1, &[BEACON, crate::repos::HEADING]).await?;
         for (name, clone, _, after) in &planted {
             git_is(clone, &["rev-parse", "HEAD"], &format!("{after}\n")).map_err(|e| format!("{name}: {e}"))?;
             git_is(clone, &["status", "--porcelain=v1"], "")?;

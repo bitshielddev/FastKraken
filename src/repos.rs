@@ -25,6 +25,7 @@ const VISITED_LIMIT: usize = 20_000;
 const ROW: f32 = 34.;
 const LIST_HEIGHT: f32 = 420.;
 pub(crate) const HEADING: &str = "Repositories";
+pub(crate) const BUSY: &str = "Wait for the repositories being fetched or pulled to finish, or stop them";
 
 pub(crate) const COMMANDS: &[Command] = &[
     Command::new(
@@ -660,7 +661,7 @@ fn start_scan(tab: &mut Tab, folder: PathBuf, cx: &mut Context<Tab>) {
 
 fn run(tab: &mut Tab, kind: Kind, cx: &mut Context<Tab>) {
     if tab.ui.repos.running() {
-        tab.refuse("Wait for the repositories being fetched or pulled to finish, or stop them".to_owned(), cx);
+        tab.refuse(BUSY.to_owned(), cx);
         return;
     }
     let listed: Vec<PathBuf> = rows(&tab.ui, cx).into_iter().filter(|row| !row.missing).map(|row| row.path).collect();

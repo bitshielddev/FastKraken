@@ -251,6 +251,10 @@ impl Tab {
             tabs::ask(cx, tabs::Request::Show(index));
             return;
         }
+        if self.repo.is_none() && self.ui.repos.running() && tabs::present(cx) {
+            tabs::ask(cx, tabs::Request::Open { path, then: Box::new(then) });
+            return;
+        }
         if !self.can_open() {
             if self.repo.is_some() && tabs::present(cx) {
                 tabs::ask(cx, tabs::Request::Open { path, then: Box::new(then) });
