@@ -128,19 +128,45 @@ pub(crate) struct Row {
     pub(crate) parent: String,
     pub(crate) opened: i64,
     pub(crate) missing: bool,
+    pub(crate) favourite: bool,
+    pub(crate) open: bool,
 }
 
-pub(crate) fn matching(recents: &[Recent], query: &str, exists: impl Fn(&Path) -> bool) -> Vec<Row> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut scored: Vec<(i32, Row)> = recents
+pub(crate) fn known(memory: &Memory) -> Vec<(Recent, bool)> {
+    let favourites = memory.favourites();
+    let mut listed: Vec<(Recent, bool)> = favourites
         .iter()
-        .filter_map(|recent| {
+        .map(|path| {
+            let recent = memory.recents.iter().find(|recent| recent.path() == *path).cloned().unwrap_or_else(|| Recent {
+                path: path.as_os_str().as_encoded_bytes().to_vec(),
+                name: crate::repos::folder_name(path),
+                opened: 0,
+            });
+            (recent, true)
+        })
+        .collect();
+    listed.extend(memory.recents.iter().filter(|recent| !favourites.contains(&recent.path())).map(|recent| (recent.clone(), false)));
+    for (recent, _) in &mut listed {
+        if let Some(name) = memory.name_of(&recent.path()) {
+            recent.name = name.to_owned();
+        }
+    }
+    listed
+}
+
+pub(crate) fn matching(listed: &[(Recent, bool)], query: &str, exists: impl Fn(&Path) -> bool, open: &[PathBuf]) -> Vec<Row> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut scored: Vec<(i32, Row)> = listed
+        .iter()
+        .filter_map(|(recent, favourite)| {
             let path = recent.path();
             let shown = path.display().to_string();
             let score = palette::score(query, &recent.name).or_else(|| palette::score(query, &shown).map(|s| s - 1_000))?;
             let parent = path.parent().map(|parent| homely(parent, home.as_deref())).unwrap_or_default();
             let missing = !exists(&path);
-            Some((score, Row { path, name: recent.name.clone(), parent, opened: recent.opened, missing }))
+            let open = open.contains(&path);
+            let row = Row { path, name: recent.name.clone(), parent, opened: recent.opened, missing, favourite: *favourite, open };
+            Some((score, row))
         })
         .collect();
     if !query.trim().is_empty() {
@@ -163,7 +189,11 @@ fn typed(ui: &Ui, cx: &App) -> String {
 
 pub(crate) fn rows(ui: &Ui, cx: &App) -> Vec<Row> {
     let Some(memory) = settings::memory(cx) else { return Vec::new() };
-    matching(&memory.recents, &typed(ui, cx), Path::exists)
+    matching(&known(memory), &typed(ui, cx), Path::exists, &crate::tabs::open_roots(cx))
+}
+
+fn listed_none(cx: &App) -> bool {
+    settings::memory(cx).is_none_or(|memory| memory.recents.is_empty() && memory.favourites.is_empty())
 }
 
 pub(crate) fn highlighted(ui: &Ui, len: usize, cx: &App) -> Option<usize> {
@@ -178,11 +208,19 @@ pub(crate) fn highlighted(ui: &Ui, len: usize, cx: &App) -> Option<usize> {
 }
 
 pub(crate) fn others(ui: &Ui, cx: &App, limit: usize) -> Vec<(String, PathBuf)> {
-    let Some(memory) = settings::memory(cx) else { return Vec::new() };
-    titled(&memory.recents, &ui.root, limit)
+    listed_others(ui, cx, limit, true)
 }
 
-fn titled(recents: &[Recent], open: &Path, limit: usize) -> Vec<(String, PathBuf)> {
+fn listed_others(ui: &Ui, cx: &App, limit: usize, marked: bool) -> Vec<(String, PathBuf)> {
+    let Some(memory) = settings::memory(cx) else { return Vec::new() };
+    let listed: Vec<Recent> = known(memory).into_iter().map(|(recent, _)| recent).collect();
+    let open = if marked { crate::tabs::open_roots(cx) } else { Vec::new() };
+    titled(&listed, &ui.root, limit, &open)
+}
+
+pub(crate) const OPEN_MARK: &str = " (open)";
+
+fn titled(recents: &[Recent], open: &Path, limit: usize, elsewhere: &[PathBuf]) -> Vec<(String, PathBuf)> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let shown: Vec<&Recent> = recents.iter().filter(|recent| recent.path() != open).take(limit).collect();
     shown
@@ -190,10 +228,13 @@ fn titled(recents: &[Recent], open: &Path, limit: usize) -> Vec<(String, PathBuf
         .map(|recent| {
             let path = recent.path();
             let twin = shown.iter().filter(|other| other.name == recent.name).count() > 1;
-            let title = match path.parent() {
+            let mut title = match path.parent() {
                 Some(parent) if twin => format!("{} — {}", recent.name, homely(parent, home.as_deref())),
                 _ => recent.name.clone(),
             };
+            if elsewhere.contains(&path) {
+                title.push_str(OPEN_MARK);
+            }
             (title, path)
         })
         .collect()
@@ -205,7 +246,7 @@ pub(crate) fn menu_rows(ui: &Ui, cx: &App) -> Vec<Entry> {
 
 pub(crate) fn palette_rows(ui: &Ui, query: &str, cx: &App) -> Vec<(i32, Entry)> {
     let query = open_query(query);
-    others(ui, cx, settings::RECENTS)
+    listed_others(ui, cx, settings::RECENTS + settings::FAVOURITES, false)
         .into_iter()
         .filter_map(|(title, path)| {
             let score = palette::score(query, &title)?;
@@ -325,10 +366,7 @@ pub(crate) fn rearm(ui: &mut Ui) {
 }
 
 pub(crate) fn filter_shown(ui: &Ui, cx: &App) -> bool {
-    ui.repo.is_empty()
-        && ui.opening.is_none()
-        && !ui.preferences.open()
-        && settings::memory(cx).is_some_and(|memory| !memory.recents.is_empty())
+    ui.repo.is_empty() && ui.opening.is_none() && !ui.preferences.open() && !ui.repos.open && !listed_none(cx)
 }
 
 pub(crate) fn wants_focus(ui: &Ui, cx: &App) -> bool {
@@ -394,14 +432,25 @@ pub(crate) fn screen<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
 
 fn recents<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     let ui = app.ui();
-    let none = settings::memory(cx).is_none_or(|memory| memory.recents.is_empty());
+    let none = listed_none(cx);
+    let any_recent = settings::memory(cx).is_some_and(|memory| !memory.recents.is_empty());
     let heading = div()
         .mt_4()
         .flex()
         .items_center()
+        .gap_1()
         .child(kit::label("Recent repositories"))
         .child(kit::grow())
-        .when(!none, |d| {
+        .child(
+            kit::btn("repos-manage", "Manage repositories…")
+                .ghost()
+                .small()
+                .icon("list")
+                .hint(hint("⌥⌘O", "Ctrl Alt O"))
+                .tip("Favourites, a projects folder, display names, and fetching or pulling several repositories at once.")
+                .on(view::Action::Repos(crate::repos::Action::Open), cx),
+        )
+        .when(any_recent, |d| {
             d.child(
                 kit::btn("recents-clear", "Clear")
                     .ghost()
@@ -416,7 +465,7 @@ fn recents<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
             .flex_col()
             .gap_2()
             .child(heading)
-            .child(kit::muted("Repositories you open, clone or create are listed here."));
+            .child(kit::muted("Repositories you open, clone or create are listed here. Star one to keep it at the top."));
     }
     let shown = rows(ui, cx);
     let count = shown.len();
@@ -472,9 +521,14 @@ fn recents<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
 fn recent_row<T: Desk>(row: Row, index: usize, at: bool, now: i64, cx: &Context<T>) -> gpui::Stateful<Div> {
     let when = if row.missing {
         "No longer there".to_owned()
+    } else if row.open {
+        "Open in a tab".to_owned()
+    } else if row.opened == 0 {
+        "Favourite".to_owned()
     } else {
         view::when(row.opened, &view::date_of(row.opened), now)
     };
+    let starring = view::Action::Repos(crate::repos::Action::Favourite(row.path.clone(), !row.favourite));
     let tip = if row.missing {
         format!("Nothing is at {} any more. Opening it offers to take it off this list.", row.path.display())
     } else {
@@ -487,17 +541,19 @@ fn recent_row<T: Desk>(row: Row, index: usize, at: bool, now: i64, cx: &Context<
         .gap_2()
         .when(row.missing, |d| d.opacity(0.45))
         .tooltip(kit::tip(tip))
-        .child(kit::icon("folder").text_color(rgb(if row.missing { palette().text_3 } else { palette().accent })))
+        .child(crate::repos::star(("recent-star", index), row.favourite, starring, cx))
         .child(div().flex_shrink_0().max_w(px(220.)).min_w_0().flex().child(kit::fit(row.name).weight(FontWeight::MEDIUM)))
         .child(kit::fit(row.parent).size(TEXT_SMALL).color(palette().text_3).cut(kit::Cut::Start).grow())
         .child(div().flex_shrink_0().text_size(px(TEXT_SMALL)).text_color(rgb(palette().text_3)).child(when))
-        .child(kit::icon_btn(
-            ("recent-remove", index),
-            "x",
-            "Remove from recent repositories",
-            view::Action::Start(Action::Remove(row.path)),
-            cx,
-        ))
+        .when(!row.favourite || row.opened != 0, |d| {
+            d.child(kit::icon_btn(
+                ("recent-remove", index),
+                "x",
+                "Remove from recent repositories",
+                view::Action::Start(Action::Remove(row.path.clone())),
+                cx,
+            ))
+        })
         .on_click(cx.listener(move |app, _, w, cx| app.dispatch(view::Action::Start(Action::Open(path.clone())), w, cx)))
         .on_hover(cx.listener(move |app, hovered: &bool, w, cx| {
             if *hovered {
@@ -516,17 +572,39 @@ mod tests {
         memory.recents.remove(0)
     }
 
+    fn plain(recents: &[Recent]) -> Vec<(Recent, bool)> {
+        recents.iter().map(|recent| (recent.clone(), false)).collect()
+    }
+
     #[test]
     fn the_list_is_newest_first_and_a_filter_ranks_name_matches_first() {
-        let recents = [recent("/w/Juniper-trail", 30), recent("/w/apps/Aspen-ridge", 20), recent("/w/trail/sketches", 10)];
-        let all = matching(&recents, "", |_| true);
+        let recents = plain(&[recent("/w/Juniper-trail", 30), recent("/w/apps/Aspen-ridge", 20), recent("/w/trail/sketches", 10)]);
+        let all = matching(&recents, "", |_| true, &[]);
         assert_eq!(all.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(), ["Juniper-trail", "Aspen-ridge", "sketches"]);
         assert_eq!(all[1].parent, "/w/apps");
         assert_eq!(all[0].opened, 30);
-        let trail = matching(&recents, "trail", |_| true);
+        let trail = matching(&recents, "trail", |_| true, &[]);
         assert_eq!(trail.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(), ["Juniper-trail", "sketches"]);
-        assert!(matching(&recents, "zzz", |_| true).is_empty());
-        assert_eq!(matching(&recents, "asp", |_| true)[0].name, "Aspen-ridge");
+        assert!(matching(&recents, "zzz", |_| true, &[]).is_empty());
+        assert_eq!(matching(&recents, "asp", |_| true, &[])[0].name, "Aspen-ridge");
+    }
+
+    #[test]
+    fn favourites_come_first_under_their_display_names_and_open_ones_are_marked() {
+        let mut memory = Memory::default();
+        memory.add_recent(Path::new("/w/Oak"), 10);
+        memory.add_recent(Path::new("/w/Elm"), 20);
+        memory.add_recent(Path::new("/w/Ash"), 30);
+        memory.set_favourite(Path::new("/w/Elm"), true);
+        memory.set_favourite(Path::new("/w/Fir"), true);
+        memory.set_name(Path::new("/w/Oak"), Some("Oak (docs)"));
+        let listed = known(&memory);
+        let rows = matching(&listed, "", |_| true, &[PathBuf::from("/w/Ash")]);
+        let shown: Vec<_> = rows.iter().map(|row| (row.name.as_str(), row.favourite, row.open, row.opened)).collect();
+        assert_eq!(shown, [("Elm", true, false, 20), ("Fir", true, false, 0), ("Ash", false, true, 30), ("Oak (docs)", false, false, 10)]);
+        let plain: Vec<Recent> = listed.into_iter().map(|(recent, _)| recent).collect();
+        let titles: Vec<_> = titled(&plain, Path::new("/w/Elm"), IN_MENU, &[PathBuf::from("/w/Ash")]).into_iter().map(|(title, _)| title).collect();
+        assert_eq!(titles, ["Fir", "Ash (open)", "Oak (docs)"]);
     }
 
     #[test]
@@ -536,7 +614,7 @@ mod tests {
         std::fs::create_dir(&here).unwrap();
         let gone = folder.path().join("Gone");
         let recents = [recent(gone.to_str().unwrap(), 2), recent(here.to_str().unwrap(), 1)];
-        let rows = matching(&recents, "", Path::exists);
+        let rows = matching(&plain(&recents), "", Path::exists, &[]);
         assert_eq!(rows.iter().map(|row| (row.name.as_str(), row.missing)).collect::<Vec<_>>(), [("Gone", true), ("Here", false)]);
     }
 
@@ -560,11 +638,11 @@ mod tests {
             recent("/w/Ash", 4),
             recent("/w/Fir", 3),
         ];
-        let listed = titled(&recents, Path::new("/w/Open-one"), IN_MENU);
+        let listed = titled(&recents, Path::new("/w/Open-one"), IN_MENU, &[]);
         let titles: Vec<_> = listed.iter().map(|(title, _)| title.as_str()).collect();
         assert_eq!(titles, ["site — /a", "site — /b", "Oak", "Elm", "Ash"]);
         assert_eq!(listed[0].1, PathBuf::from("/a/site"));
-        assert_eq!(titled(&recents, Path::new(""), 2).into_iter().map(|(title, _)| title).collect::<Vec<_>>(), ["Open-one", "site"]);
+        assert_eq!(titled(&recents, Path::new(""), 2, &[]).into_iter().map(|(title, _)| title).collect::<Vec<_>>(), ["Open-one", "site"]);
     }
 
     #[test]

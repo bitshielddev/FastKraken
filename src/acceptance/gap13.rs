@@ -3,7 +3,7 @@ use crate::{
     accessibility::Display,
     appearance::{self, Choice, Contrast},
     commands::{self, Availability, Target},
-    photos,
+    photos, prompt,
     preferences::{self, Section},
     theme::{self, Shade},
     view::Column,
@@ -941,12 +941,321 @@ impl Replay<'_> {
         git_is(&harbour, &["status", "--porcelain=v1"], "")?;
         git_is(&bare, &["rev-parse", "HEAD"], &format!("{harbour_head}\n"))?;
         self.pass();
+        self.reopen_tab(beacon, &harbour).await?;
+        self.fetch_three(dir, beacon).await
+    }
+}
+
+impl Replay<'_> {
+    fn strip_now(&mut self) -> Result<(usize, usize, Vec<String>)> {
+        let (count, front) = self.tab.tabs(self.cx)?;
+        let titles = self.cx.update(|cx| {
+            crate::tabs::strip(cx).map_or_else(Vec::new, |strip| strip.tabs.iter().map(|shown| shown.title.clone()).collect())
+        })?;
+        Ok((count, front, titles))
+    }
+
+    async fn until_strip(&mut self, description: &str, count: usize, front: usize, titles: &[&str]) -> Result<()> {
+        let wanted: Vec<String> = titles.iter().map(|title| title.to_string()).collect();
+        let started = Instant::now();
+        loop {
+            self.cx.update_window(self.tab.into(), |_, window, cx| window.draw(cx).clear())?;
+            let strip = self.strip_now()?;
+            let settled = self.tab.read_with(self.cx, |tab, _| tab.settled())?;
+            if settled && strip == (count, front, wanted.clone()) {
+                return Ok(());
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                return Err(format!("Timed out waiting for {description}: the strip is {strip:?}").into());
+            }
+            self.cx.background_executor().timer(Duration::from_millis(12)).await;
+        }
+    }
+
+    async fn answer_prompt(&mut self, text: &str) -> Result<()> {
+        self.during("the name prompt", |tab| tab.ui.prompt.open() && tab.ui.prompt.field().is_some()).await?;
+        let typed = text.to_owned();
+        self.tab.update(self.cx, move |tab, _, cx| {
+            if let Some(field) = tab.ui.prompt.field().cloned() {
+                field.update(cx, |field, cx| field.set_text(&typed, cx));
+            }
+        })?;
+        self.action(Action::Prompt(prompt::Action::Confirm))?;
+        self.during("the name prompt closed", |tab| !tab.ui.prompt.open()).await
+    }
+
+    fn tab_menu(&mut self, index: usize) -> Result<Vec<(&'static str, bool)>> {
+        Ok(self.tab.read_with(self.cx, move |tab, cx| {
+            let mut entries: Vec<(&'static str, bool)> = commands::menu(&tab.ui, &Target::Tab(index), cx)
+                .into_iter()
+                .map(|entry| (entry.id, entry.disabled.is_none()))
+                .collect();
+            entries.sort();
+            entries
+        })?)
+    }
+
+    fn root_in(&mut self, index: usize) -> Result<Option<PathBuf>> {
+        Ok(self.tab.read_tab(self.cx, index, |tab, _| tab.repo.as_ref().map(|repo| repo.root.clone()))?.flatten())
+    }
+
+    async fn reopen_tab(&mut self, beacon: &Path, harbour: &Path) -> Result<()> {
+        self.start("GAP1310");
+        let state = storage::override_directory().ok_or("No state folder for the replay")?;
+        let beacon = fs::canonicalize(beacon)?;
+        let (beacon_head, harbour_head) = (oid(&beacon, "HEAD")?, oid(harbour, "HEAD")?);
+        self.until_strip("Beacon alone before the tabs", 1, 0, &[BEACON]).await?;
+        self.key("cmd-,")?;
+        self.until("Preferences open over Beacon", |tab| tab.ui.preferences.open()).await?;
+        let folder = harbour.to_owned();
+        self.cx.update(|cx| crate::tabs::ask(cx, crate::tabs::Request::Handed(folder)))?;
+        let behind = format!("Opening {HARBOUR} in a new tab");
+        self.until_strip("Harbour opened behind Preferences", 2, 0, &[BEACON, HARBOUR]).await?;
+        self.until("Beacon told that Harbour waits behind it", |tab| {
+            tab.ui.preferences.open() && tab.ui.notices.items().iter().any(|notice| notice.title == behind)
+        })
+        .await?;
+        self.key("escape")?;
+        self.until("Preferences closed", |tab| !tab.ui.preferences.open()).await?;
+        let id = self.notice_id_titled(&behind)?.ok_or("The notice about Harbour went")?;
+        self.action(Action::Notice(crate::notice::Action::Take(id, 0)))?;
+        self.until("Harbour open in a second tab", |tab| tab.ui.repo == HARBOUR && tab.ui.history.len() == 1).await?;
+        self.until_strip("Beacon and Harbour side by side", 2, 1, &[BEACON, HARBOUR]).await?;
+        let marked = self.tab.read_with(self.cx, |tab, cx| crate::start::others(&tab.ui, cx, crate::start::IN_MENU))?;
+        if !marked.iter().any(|(title, path)| title == "Beacon (open)" && *path == beacon) {
+            return Err(format!("From Harbour the recent repositories read {marked:?}").into());
+        }
+
+        self.action(Action::Tabs(crate::tabs::Action::Rename(None)))?;
+        self.answer_prompt(HARBOUR_TAB).await?;
+        self.until_strip("the renamed tab", 2, 1, &[BEACON, HARBOUR_TAB]).await?;
+        let window_menu = self.cx.update(|cx| crate::tabs::bar_titles(cx))?;
+        if window_menu != [BEACON, HARBOUR_TAB] {
+            return Err(format!("The Window menu lists {window_menu:?}").into());
+        }
+        self.cx.update(|cx| settings::flush(cx))?;
+        let names = saved(&state, "state.json", &["tab_names"])?;
+        if names.as_array().map(Vec::len) != Some(1) || names[0]["name"] != HARBOUR_TAB {
+            return Err(format!("state.json keeps the tab names {names}").into());
+        }
+
+        let menu = self.tab_menu(1)?;
+        let wanted = [
+            ("tab.close", true),
+            ("tab.close-others", true),
+            ("tab.close-right", false),
+            ("tab.move-left", true),
+            ("tab.move-right", false),
+            ("tab.rename", true),
+        ];
+        let shown: Vec<_> = menu.iter().filter(|(id, _)| *id != "tab.reopen").cloned().collect();
+        if shown != wanted || !menu.iter().any(|(id, _)| *id == "tab.reopen") {
+            return Err(format!("Right-clicking Harbour's tab offers {menu:?}").into());
+        }
+
+        self.action(Action::Tabs(crate::tabs::Action::Move { from: 1, to: 0 }))?;
+        self.until_strip("Harbour dragged before Beacon", 2, 0, &[HARBOUR_TAB, BEACON]).await?;
+
+        self.key("cmd-w")?;
+        self.until_strip("Harbour's tab closed", 1, 0, &[BEACON]).await?;
+        self.until("Beacon in front again", |tab| tab.ui.repo == BEACON).await?;
+        self.key("cmd-shift-t")?;
+        self.until("Harbour reopened", |tab| tab.ui.repo == HARBOUR && tab.ui.history.len() == 1).await?;
+        self.until_strip("Harbour back where it was, with its name", 2, 0, &[HARBOUR_TAB, BEACON]).await?;
+        if self.root_in(0)?.as_deref() != Some(harbour) || self.root_in(1)?.as_deref() != Some(beacon.as_path()) {
+            return Err(format!("After reopening the tabs hold {:?} and {:?}", self.root_in(0)?, self.root_in(1)?).into());
+        }
+
+        self.action(Action::Tabs(crate::tabs::Action::CloseOthers(None)))?;
+        self.until_strip("only Harbour left", 1, 0, &[HARBOUR_TAB]).await?;
+        self.action(Action::Run("tab.reopen"))?;
+        self.until_strip("Beacon reopened after Harbour", 2, 1, &[HARBOUR_TAB, BEACON]).await?;
+        self.until("Beacon open again", |tab| tab.ui.repo == BEACON && tab.ui.history.len() == 1).await?;
+        self.action(Action::Tabs(crate::tabs::Action::CloseRight(Some(0))))?;
+        self.until_strip("the tab to the right of Harbour closed", 1, 0, &[HARBOUR_TAB]).await?;
+        self.key("cmd-shift-t")?;
+        self.until_strip("Beacon reopened once more", 2, 1, &[HARBOUR_TAB, BEACON]).await?;
+        self.until("Beacon open once more", |tab| tab.ui.repo == BEACON && tab.ui.history.len() == 1).await?;
+
+        self.action(Action::Tabs(crate::tabs::Action::Shift(None, -1)))?;
+        self.until_strip("Beacon moved back to the left", 2, 0, &[BEACON, HARBOUR_TAB]).await?;
+        self.action(Action::Tabs(crate::tabs::Action::Close(Some(1))))?;
+        self.until_strip("Beacon alone at the end", 1, 0, &[BEACON]).await?;
+        self.cx.update(|cx| settings::flush(cx))?;
+        let names = saved(&state, "state.json", &["tab_names"])?;
+        if names.as_array().is_none_or(|names| !names.is_empty()) {
+            return Err(format!("After Harbour closed state.json keeps the tab names {names}").into());
+        }
+        git_is(&beacon, &["rev-parse", "HEAD"], &format!("{beacon_head}\n"))?;
+        git_is(&beacon, &["status", "--porcelain=v1"], "")?;
+        git_is(harbour, &["rev-parse", "HEAD"], &format!("{harbour_head}\n"))?;
+        git_is(harbour, &["status", "--porcelain=v1"], "")?;
+        self.pass();
+        Ok(())
+    }
+
+    fn manager(&mut self) -> Result<Vec<(String, crate::repos::Section, bool)>> {
+        Ok(self.tab.read_with(self.cx, |tab, cx| {
+            crate::repos::rows(&tab.ui, cx).into_iter().map(|row| (row.name, row.section, row.favourite)).collect()
+        })?)
+    }
+
+    async fn fetch_three(&mut self, dir: &Path, beacon: &Path) -> Result<()> {
+        self.start("GAP1311");
+        let beacon_head = oid(beacon, "HEAD")?;
+        let projects = dir.join("projects");
+        let origins = dir.join("origins");
+        let work = dir.join("upstream-work");
+        for folder in [&projects, &origins, &work, &projects.join("team/apps"), &projects.join("a/b/c"), &projects.join("notes")] {
+            fs::create_dir_all(folder)?;
+        }
+        let projects = fs::canonicalize(&projects)?;
+        let deep = init(&projects.join("a/b/c"), "Deep")?;
+        record(&deep, "trail.txt", TRAIL, "Too deep to find")?;
+        let mut planted = Vec::new();
+        for (name, at) in [("Alder", "Alder"), ("Birch", "team/Birch"), ("Hazel", "team/apps/Hazel")] {
+            let source = init(&work, name)?;
+            record(&source, "trail.txt", TRAIL, &format!("Plant {name}"))?;
+            let bare = origins.join(format!("{name}.git"));
+            let path = |path: &Path| path.to_str().map(str::to_owned).ok_or("The sandbox path is not UTF-8");
+            git(dir, &["clone", "-q", "--bare", &path(&source)?, &path(&bare)?])?;
+            let clone = projects.join(at);
+            git(dir, &["clone", "-q", &path(&bare)?, &path(&clone)?])?;
+            let before = oid(&clone, "HEAD")?;
+            record(&source, "growth.txt", "rings\n", &format!("Grow {name}"))?;
+            git(&source, &["push", "-q", &path(&bare)?, "main"])?;
+            let after = oid(&source, "HEAD")?;
+            planted.push((name, clone, before, after));
+        }
+
+        self.action(Action::Run("repo.manage"))?;
+        self.until("the repository manager in a new tab", |tab| tab.ui.repo.is_empty() && tab.ui.repos.open).await?;
+        if self.tab.tabs(self.cx)? != (2, 1) {
+            return Err(format!("Manage repositories opened as {:?}", self.tab.tabs(self.cx)?).into());
+        }
+        self.action(Action::Repos(crate::repos::Action::UseProjects(projects.clone())))?;
+        self.until("the projects folder searched", |tab| !tab.ui.repos.scanning() && !tab.ui.repos.found().is_empty()).await?;
+        let found = self.tab.read_with(self.cx, |tab, _| tab.ui.repos.found().to_vec())?;
+        let wanted: Vec<PathBuf> = planted.iter().map(|(_, clone, _, _)| clone.clone()).collect();
+        if found != wanted {
+            return Err(format!("The projects folder gave {found:?}").into());
+        }
+        let kept = self.cx.update(|cx| settings::memory(cx).and_then(settings::Memory::projects))?;
+        if kept.as_deref() != Some(projects.as_path()) {
+            return Err(format!("The projects folder kept is {kept:?}").into());
+        }
+        let listed: Vec<String> = self
+            .manager()?
+            .into_iter()
+            .filter(|(_, section, _)| *section == crate::repos::Section::Projects)
+            .map(|(name, _, _)| name)
+            .collect();
+        if listed != ["Alder", "Birch", "Hazel"] {
+            return Err(format!("The manager lists {listed:?} from the projects folder").into());
+        }
+
+        for path in &wanted {
+            self.action(Action::Repos(crate::repos::Action::Pick(path.clone())))?;
+        }
+        let ticked = self.tab.read_with(self.cx, |tab, _| tab.ui.repos.picked().iter().cloned().collect::<Vec<_>>())?;
+        if ticked.len() != 3 || wanted.iter().any(|path| !ticked.contains(path)) {
+            return Err(format!("Ticking the three left {ticked:?} ticked").into());
+        }
+        self.action(Action::Repos(crate::repos::Action::Run(crate::repos::Kind::Fetch)))?;
+        let started = self.tab.read_with(self.cx, |tab, _| tab.ui.repos.batch().map(|batch| (batch.running, batch.peak, batch.rows.len())))?;
+        if started != Some((3, 3, 3)) {
+            return Err(format!("Fetch started as {started:?}").into());
+        }
+        self.until("the three fetched", |tab| {
+            !tab.ui.repos.running() && tab.ui.notices.items().iter().any(|notice| notice.title == "Fetched 3 repositories")
+        })
+        .await?;
+        let (peak, detail) = self.tab.read_with(self.cx, |tab, _| {
+            let peak = tab.ui.repos.batch().map(|batch| batch.peak);
+            let detail = tab.ui.notices.items().iter().find(|notice| notice.title == "Fetched 3 repositories").map(|notice| notice.detail.clone());
+            (peak, detail)
+        })?;
+        if peak.is_none_or(|peak| peak > crate::repos::LIMIT) || detail.as_deref() != Some("Fetched Alder, Birch and Hazel.") {
+            return Err(format!("The fetch ran {peak:?} at once and said {detail:?}").into());
+        }
+        for (name, clone, before, after) in &planted {
+            git_is(clone, &["rev-parse", "refs/remotes/origin/main"], &format!("{after}\n")).map_err(|e| format!("{name}: {e}"))?;
+            git_is(clone, &["rev-parse", "HEAD"], &format!("{before}\n")).map_err(|e| format!("{name}: {e}"))?;
+            git_is(clone, &["status", "--porcelain=v1"], "")?;
+        }
+
+        self.action(Action::Repos(crate::repos::Action::Run(crate::repos::Kind::Pull)))?;
+        self.until("the three pulled", |tab| {
+            !tab.ui.repos.running() && tab.ui.notices.items().iter().any(|notice| notice.title == "Pulled 3 repositories")
+        })
+        .await?;
+        for (name, clone, _, after) in &planted {
+            git_is(clone, &["rev-parse", "HEAD"], &format!("{after}\n")).map_err(|e| format!("{name}: {e}"))?;
+            git_is(clone, &["status", "--porcelain=v1"], "")?;
+            if fs::read_to_string(clone.join("growth.txt"))? != "rings\n" {
+                return Err(format!("{name} has not got the pulled file").into());
+            }
+        }
+        git_is(&deep, &["remote"], "")?;
+
+        let alder = wanted[0].clone();
+        self.action(Action::Repos(crate::repos::Action::Favourite(alder.clone(), true)))?;
+        self.action(Action::Repos(crate::repos::Action::Rename(alder.clone())))?;
+        self.answer_prompt("Alder (docs)").await?;
+        let first = self.manager()?.into_iter().next();
+        if first != Some(("Alder (docs)".to_owned(), crate::repos::Section::Favourites, true)) {
+            return Err(format!("After starring and naming Alder the list starts with {first:?}").into());
+        }
+        let start_first = self.tab.read_with(self.cx, |tab, cx| {
+            crate::start::rows(&tab.ui, cx).into_iter().next().map(|row| (row.name, row.favourite))
+        })?;
+        if start_first != Some(("Alder (docs)".to_owned(), true)) {
+            return Err(format!("The start screen lists {start_first:?} first").into());
+        }
+        self.action(Action::Repos(crate::repos::Action::OpenRepository(alder.clone())))?;
+        self.until("Alder open under its display name", |tab| tab.ui.repo == "Alder" && tab.ui.history.len() == 2).await?;
+        self.until_strip("the tab named after the display name", 2, 1, &[BEACON, "Alder (docs)"]).await?;
+        self.until("Alder's branch read", |tab| tab.ui.branch == "main").await?;
+        let started = Instant::now();
+        loop {
+            let title = self.window_title()?;
+            if title == "Alder (docs) — main" {
+                break;
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                return Err(format!("The window is called {title:?}").into());
+            }
+            self.cx.background_executor().timer(Duration::from_millis(12)).await;
+        }
+
+        self.action(Action::Repos(crate::repos::Action::Rename(alder.clone())))?;
+        self.answer_prompt("").await?;
+        self.action(Action::Repos(crate::repos::Action::Favourite(alder.clone(), false)))?;
+        self.until_strip("Alder by its folder name again", 2, 1, &[BEACON, "Alder"]).await?;
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until_strip("Beacon alone after the manager", 1, 0, &[BEACON]).await?;
+        self.action(Action::Run("repo.manage"))?;
+        self.until("the manager again", |tab| tab.ui.repo.is_empty() && tab.ui.repos.open).await?;
+        self.action(Action::Repos(crate::repos::Action::ForgetProjects))?;
+        let left = self.cx.update(|cx| settings::memory(cx).map(|memory| (memory.projects(), memory.favourites.len(), memory.names.len())))?;
+        if left != Some((None, 0, 0)) {
+            return Err(format!("After tidying up the memory keeps {left:?}").into());
+        }
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until_strip("Beacon alone at the end", 1, 0, &[BEACON]).await?;
+        for (name, clone, _, after) in &planted {
+            git_is(clone, &["rev-parse", "HEAD"], &format!("{after}\n")).map_err(|e| format!("{name}: {e}"))?;
+        }
+        git_is(beacon, &["rev-parse", "HEAD"], &format!("{beacon_head}\n"))?;
+        git_is(beacon, &["status", "--porcelain=v1"], "")?;
+        self.pass();
         Ok(())
     }
 }
 
 const BEACON: &str = "Beacon";
 const HARBOUR: &str = "Harbour";
+const HARBOUR_TAB: &str = "Harbour review";
 const BEACON_USER: &str = "cedar-keeper";
 const BEACON_PASSWORD: &str = "hunter2-beacon";
 const BEACON_TOKEN: &str = "ghp_beacon0123456789secret";

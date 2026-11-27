@@ -28,6 +28,9 @@ pub(crate) const COMMANDS: &[Command] = {
         Availability::unless((count(cx) < 2).then(|| "There is only one tab".to_owned()))
     }
     fn closing(ui: &Ui, target: &Target, cx: &App) -> Availability {
+        if let Target::Tab(index) = target {
+            return Availability::unless((*index >= count(cx)).then(|| "That tab has closed".to_owned()));
+        }
         if *target != Target::Repo {
             return Availability::Hidden;
         }
@@ -50,8 +53,9 @@ pub(crate) const COMMANDS: &[Command] = {
         Command::new(
             "tab.close",
             Group::Tabs,
-            |ui, _| {
+            |ui, target| {
                 match view::centre(ui) {
+                    _ if matches!(target, Target::Tab(_)) => "Close tab",
                     _ if ui.repo.is_empty() => "Close tab",
                     Centre::Activity => "Close the activity log",
                     Centre::Diff | Centre::Resolver | Centre::Chooser => "Close the open file",
@@ -64,8 +68,9 @@ pub(crate) const COMMANDS: &[Command] = {
                 .into()
             },
             closing,
-            |ui, _| {
+            |ui, target| {
                 Some(match view::centre(ui) {
+                    _ if matches!(target, Target::Tab(_)) => view::Action::Tabs(Action::Close(index_of_target(target))),
                     _ if ui.repo.is_empty() => view::Action::Tabs(Action::Close(None)),
                     Centre::Activity => view::Action::Activity(crate::activity::Action::Close),
                     Centre::Resolver => view::Action::Merge(crate::merge::Action::Close),
@@ -95,8 +100,93 @@ pub(crate) const COMMANDS: &[Command] = {
         .words(&["switch tab", "other repository"])
         .keys("ctrl-shift-tab")
         .bar(Bar::Window),
+        Command::new("tab.reopen", Group::Tabs, |_, _| "Reopen closed tab".into(), reopenable, |_, _| {
+            Some(view::Action::Tabs(Action::Reopen))
+        })
+        .words(&["closed recently", "undo close tab", "restore tab", "last closed"])
+        .icon("undo")
+        .keys("cmd-shift-t")
+        .bar(Bar::File),
+        Command::new("tab.rename", Group::Tabs, |_, _| "Rename tab…".into(), on_a_tab, |_, target| {
+            Some(view::Action::Tabs(Action::Rename(index_of_target(target))))
+        })
+        .words(&["tab name", "alias", "label tab", "worktree"])
+        .icon("pencil")
+        .bar(Bar::Window),
+        Command::new("tab.close-others", Group::Tabs, |_, _| "Close other tabs".into(), others_open, |_, target| {
+            Some(view::Action::Tabs(Action::CloseOthers(index_of_target(target))))
+        })
+        .words(&["close all but this", "keep only this tab"])
+        .icon("x"),
+        Command::new("tab.close-right", Group::Tabs, |_, _| "Close tabs to the right".into(), right_open, |_, target| {
+            Some(view::Action::Tabs(Action::CloseRight(index_of_target(target))))
+        })
+        .words(&["close later tabs"])
+        .icon("x"),
+        Command::new("tab.move-left", Group::Tabs, |_, _| "Move tab left".into(), |ui, target, cx| movable(ui, target, cx, -1), |_, target| {
+            Some(view::Action::Tabs(Action::Shift(index_of_target(target), -1)))
+        })
+        .words(&["reorder tabs", "move tab earlier"]),
+        Command::new("tab.move-right", Group::Tabs, |_, _| "Move tab right".into(), |ui, target, cx| movable(ui, target, cx, 1), |_, target| {
+            Some(view::Action::Tabs(Action::Shift(index_of_target(target), 1)))
+        })
+        .words(&["reorder tabs", "move tab later"]),
     ]
 };
+
+fn index_of_target(target: &Target) -> Option<usize> {
+    match target {
+        Target::Tab(index) => Some(*index),
+        _ => None,
+    }
+}
+
+fn target_index(target: &Target, cx: &App) -> Option<usize> {
+    match target {
+        Target::Tab(index) => Some(*index).filter(|index| *index < count(cx)),
+        Target::Repo => Some(strip(cx).map_or(0, |strip| strip.front)),
+        _ => None,
+    }
+}
+
+fn reopenable(_: &Ui, target: &Target, cx: &App) -> Availability {
+    if !matches!(target, Target::Repo | Target::Tab(_)) {
+        return Availability::Hidden;
+    }
+    Availability::unless(last_closed(cx).is_none().then(|| "No tab has been closed".to_owned()))
+}
+
+fn on_a_tab(_: &Ui, target: &Target, cx: &App) -> Availability {
+    match target_index(target, cx) {
+        Some(_) => Availability::Enabled,
+        None => Availability::Hidden,
+    }
+}
+
+fn others_open(_: &Ui, target: &Target, cx: &App) -> Availability {
+    if target_index(target, cx).is_none() {
+        return Availability::Hidden;
+    }
+    Availability::unless((count(cx) < 2).then(|| "There is only one tab".to_owned()))
+}
+
+fn right_open(_: &Ui, target: &Target, cx: &App) -> Availability {
+    let Some(index) = target_index(target, cx) else { return Availability::Hidden };
+    Availability::unless((index + 1 >= count(cx)).then(|| "No tab is to the right of this one".to_owned()))
+}
+
+fn movable(_: &Ui, target: &Target, cx: &App, by: isize) -> Availability {
+    let Some(index) = target_index(target, cx) else { return Availability::Hidden };
+    let len = count(cx);
+    let blocked = if by < 0 && index == 0 {
+        Some("This is the first tab")
+    } else if by > 0 && index + 1 >= len {
+        Some("This is the last tab")
+    } else {
+        None
+    };
+    Availability::unless(blocked.map(str::to_owned))
+}
 
 fn covered(ui: &Ui) -> bool {
     matches!(view::centre(ui), Centre::Activity | Centre::Diff | Centre::FileHistory | Centre::Blame | Centre::Browse | Centre::Resolver | Centre::Chooser)
@@ -122,6 +212,13 @@ pub(crate) enum Action {
     Next,
     Previous,
     Close(Option<usize>),
+    Reopen,
+    Rename(Option<usize>),
+    CloseOthers(Option<usize>),
+    CloseRight(Option<usize>),
+    Shift(Option<usize>, isize),
+    Move { from: usize, to: usize },
+    Bring(EntityId),
 }
 
 pub(crate) enum Request {
@@ -134,7 +231,84 @@ pub(crate) enum Request {
     Linked(PathBuf),
     Clone(String),
     Tell(crate::notice::Notice),
+    Reopen,
+    CloseOthers(EntityId),
+    CloseRight(EntityId),
+    Move { from: usize, to: usize },
+    Bring(EntityId),
+    Name(EntityId, Option<String>),
+    Manage,
 }
+
+pub(crate) const CLOSED_KEPT: usize = 20;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Closed {
+    pub(crate) root: PathBuf,
+    pub(crate) name: Option<String>,
+    pub(crate) at: usize,
+}
+
+#[derive(Default)]
+struct ClosedTabs(Vec<Closed>);
+
+impl Global for ClosedTabs {}
+
+pub(crate) fn remember_closed(root: PathBuf, name: Option<String>, at: usize, cx: &mut App) {
+    let closed = &mut cx.default_global::<ClosedTabs>().0;
+    closed.retain(|earlier| earlier.root != root);
+    closed.push(Closed { root, name, at });
+    let excess = closed.len().saturating_sub(CLOSED_KEPT);
+    closed.drain(..excess);
+}
+
+fn pop_existing(closed: &mut Vec<Closed>) -> Option<Closed> {
+    while let Some(last) = closed.pop() {
+        if last.root.is_dir() {
+            return Some(last);
+        }
+    }
+    None
+}
+
+pub(crate) fn last_closed(cx: &App) -> Option<&Closed> {
+    cx.try_global::<ClosedTabs>().and_then(|closed| closed.0.last())
+}
+
+fn take_closed(cx: &mut App) -> Option<Closed> {
+    pop_existing(&mut cx.default_global::<ClosedTabs>().0)
+}
+
+pub(crate) fn index_of(id: EntityId, cx: &App) -> Option<usize> {
+    strip(cx).and_then(|strip| strip.tabs.iter().position(|shown| shown.id == id))
+}
+
+pub(crate) fn open_roots(cx: &App) -> Vec<PathBuf> {
+    strip(cx).map_or_else(Vec::new, |strip| strip.tabs.iter().filter_map(|shown| shown.root.clone()).collect())
+}
+
+pub(crate) fn moved(front: usize, from: usize, to: usize) -> usize {
+    if front == from {
+        to
+    } else if from < front && to >= front {
+        front - 1
+    } else if from > front && to <= front {
+        front + 1
+    } else {
+        front
+    }
+}
+
+pub(crate) fn inside(path: &Path, root: &Path) -> bool {
+    path.starts_with(root) && path.ancestors().take_while(|folder| *folder != root).all(|folder| !folder.join(".git").exists())
+}
+
+fn engaged(tab: &Tab) -> bool {
+    let ui = &tab.ui;
+    ui.dialog_open() || ui.modal_open() || ui.preferences.open() || ui.menu.is_some()
+}
+
+pub(crate) const OPENED_BEHIND: &str = "It waits behind this tab, so nothing you were doing here was interrupted.";
 
 pub(crate) type Then = Box<dyn FnOnce(&mut Tab, &mut Context<Tab>)>;
 
@@ -142,6 +316,7 @@ pub(crate) type Then = Box<dyn FnOnce(&mut Tab, &mut Context<Tab>)>;
 pub(crate) struct Shown {
     pub(crate) id: EntityId,
     pub(crate) title: String,
+    pub(crate) name: Option<String>,
     pub(crate) root: Option<PathBuf>,
     pub(crate) busy: bool,
     pub(crate) asking: bool,
@@ -216,6 +391,7 @@ pub(crate) fn title(ui: &Ui) -> String {
             let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
             format!("Opening {name}…")
         }
+        None if ui.repos.open => crate::repos::HEADING.to_owned(),
         None => "New tab".to_owned(),
     }
 }
@@ -223,9 +399,15 @@ pub(crate) fn title(ui: &Ui) -> String {
 impl Shown {
     fn of(tab: &Entity<Tab>, cx: &App) -> Self {
         let open = tab.read(cx);
+        let title = match (&open.name, &open.repo) {
+            (Some(name), _) => name.clone(),
+            (None, Some(repo)) => crate::repos::display_name(&repo.root, cx).unwrap_or_else(|| title(&open.ui)),
+            (None, None) => title(&open.ui),
+        };
         Self {
             id: tab.entity_id(),
-            title: title(&open.ui),
+            title,
+            name: open.name.clone(),
             root: open.repo.as_ref().map(|repo| repo.root.clone()),
             busy: !open.settled(),
             asking: open.ui.prompt.open(),
@@ -279,6 +461,49 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::Previous => {
             ask(cx, Request::Step(-1));
         }
+        Action::Reopen => {
+            if last_closed(cx).is_none() {
+                tab.refuse("No tab has been closed".to_owned(), cx);
+            } else if !ask(cx, Request::Reopen) {
+                reopen_here(tab, cx);
+            }
+        }
+        Action::Rename(index) => {
+            let Some(id) = chosen(index, me, cx) else { return };
+            let current = if id == me {
+                tab.name.clone()
+            } else {
+                strip(cx).and_then(|strip| strip.tabs.iter().find(|shown| shown.id == id)).and_then(|shown| shown.name.clone())
+            };
+            crate::repos::rename_tab(tab, id, current, cx);
+        }
+        Action::CloseOthers(index) => {
+            let Some(id) = chosen(index, me, cx) else { return };
+            if count(cx) < 2 {
+                tab.refuse("There is only one tab".to_owned(), cx);
+            } else {
+                ask(cx, Request::CloseOthers(id));
+            }
+        }
+        Action::CloseRight(index) => {
+            let Some(id) = chosen(index, me, cx) else { return };
+            ask(cx, Request::CloseRight(id));
+        }
+        Action::Shift(index, by) => {
+            let Some(from) = index.or_else(|| index_of(me, cx)).or(Some(0)).filter(|from| *from < count(cx)) else { return };
+            let to = from as isize + by;
+            if to < 0 || to as usize >= count(cx) {
+                tab.refuse(if by < 0 { "This is the first tab" } else { "This is the last tab" }.to_owned(), cx);
+            } else {
+                ask(cx, Request::Move { from, to: to as usize });
+            }
+        }
+        Action::Move { from, to } => {
+            ask(cx, Request::Move { from, to });
+        }
+        Action::Bring(id) => {
+            ask(cx, Request::Bring(id));
+        }
         Action::Close(index) => {
             let id = match index {
                 Some(index) => match strip(cx).and_then(|strip| strip.tabs.get(index)) {
@@ -300,6 +525,26 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         }
     }
     cx.notify();
+}
+
+fn chosen(index: Option<usize>, me: EntityId, cx: &App) -> Option<EntityId> {
+    match index {
+        Some(index) => strip(cx).and_then(|strip| strip.tabs.get(index)).map(|shown| shown.id),
+        None => Some(me),
+    }
+}
+
+fn reopen_here(tab: &mut Tab, cx: &mut Context<Tab>) {
+    if tab.repo.is_some() || tab.ui.opening.is_some() || !tab.can_open() {
+        tab.refuse("Close this repository first to reopen the closed one here".to_owned(), cx);
+        return;
+    }
+    let Some(closed) = take_closed(cx) else {
+        tab.refuse("The closed repositories are no longer there".to_owned(), cx);
+        return;
+    };
+    tab.name = closed.name;
+    tab.open(closed.root, cx);
 }
 
 fn forward(tab: &mut Tab, window: &mut Window, cx: &mut Context<Tab>) {
@@ -346,11 +591,13 @@ pub(crate) fn mirror(tab: &mut Tab, cx: &mut Context<Tab>) {
 }
 
 
+type Session = (Vec<PathBuf>, Option<PathBuf>, Vec<(PathBuf, String)>);
+
 pub(crate) struct Workspace {
     tabs: Vec<Entity<Tab>>,
     watching: Vec<Subscription>,
     front: usize,
-    saved: Option<(Vec<PathBuf>, Option<PathBuf>)>,
+    saved: Option<Session>,
 }
 
 impl Workspace {
@@ -384,19 +631,33 @@ impl Workspace {
     }
 
     pub(crate) fn launch(&mut self, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        let (session, front) = match settings::memory(cx) {
-            Some(memory) if settings::settings(cx).reopen_last => (memory.session(), memory.last_repository()),
-            _ => (Vec::new(), None),
+        let (session, front, names) = match settings::memory(cx) {
+            Some(memory) if settings::settings(cx).reopen_last => {
+                let session = memory.session();
+                let names: Vec<Option<String>> = session.iter().map(|root| memory.tab_name_of(root).map(str::to_owned)).collect();
+                (session, memory.last_repository(), names)
+            }
+            _ => (Vec::new(), None, Vec::new()),
         };
-        let (here, gone): (Vec<PathBuf>, Vec<PathBuf>) = session.into_iter().partition(|root| root.exists());
-        let mut front = front.and_then(|front| here.iter().position(|root| *root == front)).unwrap_or(0);
-        for (index, root) in here.iter().enumerate() {
+        let (here, gone): (Vec<(PathBuf, Option<String>)>, Vec<(PathBuf, Option<String>)>) =
+            session.into_iter().zip(names.into_iter().chain(std::iter::repeat(None))).partition(|(root, _)| root.exists());
+        let gone: Vec<PathBuf> = gone.into_iter().map(|(root, _)| root).collect();
+        let mut front = front.and_then(|front| here.iter().position(|(root, _)| *root == front)).unwrap_or(0);
+        for (index, (root, name)) in here.iter().enumerate() {
             let tab = if index == 0 { self.tabs[0].clone() } else { self.add(None, cx) };
-            tab.update(cx, |tab, cx| tab.open(root.clone(), cx));
+            tab.update(cx, |tab, cx| {
+                tab.name = name.clone();
+                tab.open(root.clone(), cx)
+            });
         }
+        let here: Vec<PathBuf> = here.into_iter().map(|(root, _)| root).collect();
         let restored = path.as_ref().and_then(|path| {
             let path = std::fs::canonicalize(path).ok()?;
-            here.iter().position(|root| *root == path)
+            here.iter()
+                .enumerate()
+                .filter(|(_, root)| inside(&path, root))
+                .max_by_key(|(_, root)| root.as_os_str().len())
+                .map(|(index, _)| index)
         });
         if let Some(index) = restored {
             front = index;
@@ -453,8 +714,22 @@ impl Workspace {
                 if let Some(index) = self.holding(&path, cx) {
                     return self.bring(index, window, cx);
                 }
+                let front = self.front().clone();
+                let behind = engaged(front.read(cx));
                 let tab = self.add(None, cx);
-                self.bring(self.tabs.len() - 1, window, cx);
+                if behind {
+                    tab.update(cx, |tab, _| tab.front = false);
+                    let name = crate::repos::display_name(&path, cx).unwrap_or_else(|| crate::repos::folder_name(&path));
+                    let notice = crate::notice::Notice::new(Tone::Info, format!("Opening {name} in a new tab"), OPENED_BEHIND)
+                        .offer("Show", view::Action::Tabs(Action::Bring(tab.entity_id())));
+                    front.update(cx, |front, cx| {
+                        front.ui.notices.show(notice);
+                        cx.notify();
+                    });
+                    self.sync(cx);
+                } else {
+                    self.bring(self.tabs.len() - 1, window, cx);
+                }
                 tab.update(cx, |tab, cx| {
                     tab.transient = true;
                     tab.open_then(path, then, cx);
@@ -500,7 +775,157 @@ impl Workspace {
                     });
                 }
             }
+            Request::Reopen => self.reopen(window, cx),
+            Request::CloseOthers(id) => {
+                let ids: Vec<EntityId> = self.tabs.iter().map(|tab| tab.entity_id()).filter(|other| *other != id).collect();
+                self.close_many(id, ids, window, cx);
+            }
+            Request::CloseRight(id) => {
+                let Some(at) = self.position(id) else { return };
+                let ids: Vec<EntityId> = self.tabs[at + 1..].iter().map(|tab| tab.entity_id()).collect();
+                if ids.is_empty() {
+                    let front = self.front().clone();
+                    front.update(cx, |tab, cx| tab.refuse("No tab is to the right of this one".to_owned(), cx));
+                    return;
+                }
+                self.close_many(id, ids, window, cx);
+            }
+            Request::Move { from, to } => {
+                self.shift(from, to, cx);
+            }
+            Request::Bring(id) => {
+                if let Some(index) = self.position(id) {
+                    self.bring(index, window, cx);
+                }
+            }
+            Request::Name(id, name) => {
+                let Some(index) = self.position(id) else { return };
+                let tab = self.tabs[index].clone();
+                tab.update(cx, |tab, cx| {
+                    tab.name = name;
+                    tab.ui.bar_shown.clear();
+                    cx.notify();
+                });
+                self.sync(cx);
+            }
+            Request::Manage => {
+                let index = self.tabs.iter().position(|tab| {
+                    let tab = tab.read(cx);
+                    tab.repo.is_none() && tab.ui.opening.is_none() && !tab.ui.dialog_open() && !tab.ui.modal_open()
+                });
+                let index = match index {
+                    Some(index) => index,
+                    None => {
+                        self.add(None, cx);
+                        self.tabs.len() - 1
+                    }
+                };
+                self.bring(index, window, cx);
+                let tab = self.tabs[index].clone();
+                tab.update(cx, |tab, cx| tab.dispatch(view::Action::Repos(crate::repos::Action::Open), window, cx));
+            }
         }
+    }
+
+    fn position(&self, id: EntityId) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.entity_id() == id)
+    }
+
+    fn shift(&mut self, from: usize, to: usize, cx: &mut Context<Self>) -> bool {
+        let len = self.tabs.len();
+        if from >= len || to >= len || from == to {
+            return false;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        let watch = self.watching.remove(from);
+        self.watching.insert(to, watch);
+        self.front = moved(self.front, from, to);
+        self.sync(cx);
+        cx.notify();
+        true
+    }
+
+    fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(closed) = take_closed(cx) else {
+            let front = self.front().clone();
+            front.update(cx, |tab, cx| tab.refuse("The closed repositories are no longer there".to_owned(), cx));
+            return;
+        };
+        if let Some(index) = self.holding(&closed.root, cx) {
+            return self.bring(index, window, cx);
+        }
+        let front = self.front().clone();
+        let free = {
+            let tab = front.read(cx);
+            tab.repo.is_none() && tab.ui.opening.is_none() && tab.can_open() && !tab.ui.dialog_open() && !tab.ui.modal_open()
+        };
+        let tab = if free {
+            front
+        } else {
+            let tab = self.add(None, cx);
+            let at = closed.at.min(self.tabs.len() - 1);
+            self.shift(self.tabs.len() - 1, at, cx);
+            self.bring(at, window, cx);
+            tab
+        };
+        tab.update(cx, |tab, cx| {
+            tab.name = closed.name;
+            tab.open(closed.root, cx);
+            view::focus(&tab.ui, window);
+        });
+        self.sync(cx);
+    }
+
+    fn close_many(&mut self, keep: EntityId, ids: Vec<EntityId>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(at) = self.position(keep) else { return };
+        self.bring(at, window, cx);
+        let mut busy = 0;
+        for id in ids {
+            let Some(index) = self.position(id) else { continue };
+            if refusal(&self.tabs[index].read(cx).ui).is_some() {
+                busy += 1;
+                continue;
+            }
+            self.remove(index, cx);
+        }
+        if let Some(index) = self.position(keep) {
+            self.front = index;
+        }
+        self.bring(self.front, window, cx);
+        if busy > 0 {
+            let kept = match busy {
+                1 => "1 tab is".to_owned(),
+                n => format!("{n} tabs are"),
+            };
+            let notice = crate::notice::Notice::new(
+                Tone::Info,
+                format!("{kept} still busy, so it stayed open"),
+                "Close it when its job has finished.",
+            );
+            let front = self.front().clone();
+            front.update(cx, |tab, cx| {
+                tab.ui.notices.show(notice);
+                cx.notify();
+            });
+        }
+    }
+
+    fn remove(&mut self, index: usize, cx: &mut Context<Self>) {
+        let tab = self.tabs[index].clone();
+        let closed = tab.update(cx, |tab, _| {
+            autofetch::stop(tab);
+            tab.repo.as_ref().map(|repo| (repo.root.clone(), tab.name.clone()))
+        });
+        if let Some((root, name)) = closed {
+            remember_closed(root, name, index, cx);
+        }
+        self.tabs.remove(index);
+        drop(self.watching.remove(index));
+        if index < self.front {
+            self.front -= 1;
+        }
+        self.front = self.front.min(self.tabs.len().saturating_sub(1));
     }
 
     fn clone_from_link(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -551,11 +976,9 @@ impl Workspace {
             tab.update(cx, |tab, cx| tab.close(cx));
             return;
         }
-        tab.update(cx, |tab, _| autofetch::stop(tab));
         let front = after_close(self.front, index, self.tabs.len());
-        self.tabs.remove(index);
-        drop(self.watching.remove(index));
         let was_front = index == self.front;
+        self.remove(index, cx);
         self.front = front;
         if was_front {
             self.bring(front, window, cx);
@@ -579,11 +1002,22 @@ impl Workspace {
         }
         let roots: Vec<PathBuf> =
             self.tabs.iter().filter_map(|tab| tab.read(cx).repo.as_ref().map(|repo| repo.root.clone())).collect();
+        let named: Vec<(PathBuf, String)> = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                let tab = tab.read(cx);
+                Some((tab.repo.as_ref()?.root.clone(), tab.name.clone()?))
+            })
+            .collect();
         let front = self.front().read(cx).repo.as_ref().map(|repo| repo.root.clone());
-        let session = (roots, front);
+        let session = (roots, front, named);
         if self.saved.as_ref() != Some(&session) {
             if self.saved.is_some() {
-                Memory::update(cx, |memory| memory.set_session(&session.0, session.1.as_deref()));
+                Memory::update(cx, |memory| {
+                    memory.set_session(&session.0, session.1.as_deref());
+                    memory.set_tab_names(&session.2);
+                });
             }
             self.saved = Some(session);
         }
@@ -711,6 +1145,7 @@ fn button<T: Desk>(index: usize, shown: &Shown, front: bool, cx: &mut Context<T>
         view::Action::Tabs(Action::Close(Some(index))),
         cx,
     );
+    let carried = Carried { from: index, title: shown.title.clone() };
     let control = div()
         .id(("tab", index))
         .h(px(STRIP - 5.))
@@ -734,6 +1169,15 @@ fn button<T: Desk>(index: usize, shown: &Shown, front: bool, cx: &mut Context<T>
         .on_mouse_down(MouseButton::Middle, cx.listener(move |app, _, window, cx| {
             app.dispatch(view::Action::Tabs(Action::Close(Some(index))), window, cx);
         }))
+        .on_mouse_down(MouseButton::Right, cx.listener(move |app, event: &MouseDownEvent, window, cx| {
+            cx.stop_propagation();
+            let menu = view::Menu::Object { target: Target::Tab(index), at: event.position };
+            app.dispatch(view::Action::Menu(Some(menu)), window, cx);
+        }))
+        .on_drag(carried, |carried, grabbed, _, cx| {
+            let title = carried.title.clone();
+            cx.new(|_| Lifted { title, grabbed })
+        })
         .children(mark)
         .child(
             div()
@@ -746,7 +1190,51 @@ fn button<T: Desk>(index: usize, shown: &Shown, front: bool, cx: &mut Context<T>
                 .child(shown.title.clone()),
         )
         .child(close);
+    let control = if cx.has_active_drag() {
+        control
+            .drag_over::<Carried>(move |style, carried, _, _| match carried.from == index {
+                true => style,
+                false => style.bg(soft(palette().accent, 0x2e)),
+            })
+            .on_drop(cx.listener(move |app, carried: &Carried, window, cx| {
+                app.dispatch(view::Action::Tabs(Action::Move { from: carried.from, to: index }), window, cx)
+            }))
+    } else {
+        control
+    };
     kit::pressable(control, view::Action::Tabs(Action::Show(index)), cx)
+}
+
+#[derive(Clone)]
+struct Carried {
+    from: usize,
+    title: String,
+}
+
+struct Lifted {
+    title: String,
+    grabbed: gpui::Point<gpui::Pixels>,
+}
+
+impl Render for Lifted {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let left = (self.grabbed.x - px(8.)).max(px(0.));
+        let top = (self.grabbed.y - px(10.)).max(px(0.));
+        div().pl(left).pt(top).child(
+            div()
+                .px_2()
+                .py_1()
+                .max_w(px(220.))
+                .rounded(px(RADIUS))
+                .border_1()
+                .border_color(rgb(palette().accent))
+                .bg(rgb(palette().raised))
+                .text_size(px(TEXT_SMALL))
+                .text_color(rgb(palette().text))
+                .opacity(0.92)
+                .child(self.title.clone()),
+        )
+    }
 }
 
 pub(crate) fn bar_rows(cx: &App) -> Vec<gpui::MenuItem> {
@@ -789,7 +1277,13 @@ mod tests {
 
     #[test]
     fn every_tab_key_runs_its_command() {
-        for (shortcut, id) in [("cmd-t", "tab.new"), ("cmd-w", "tab.close"), ("ctrl-tab", "tab.next"), ("ctrl-shift-tab", "tab.previous")] {
+        for (shortcut, id) in [
+            ("cmd-t", "tab.new"),
+            ("cmd-w", "tab.close"),
+            ("ctrl-tab", "tab.next"),
+            ("ctrl-shift-tab", "tab.previous"),
+            ("cmd-shift-t", "tab.reopen"),
+        ] {
             let command = crate::commands::find(id).unwrap_or_else(|| panic!("{id}"));
             assert_eq!(command.shortcut, Some(shortcut), "{id}");
             assert_eq!(command.group, Group::Tabs, "{id}");
@@ -798,5 +1292,50 @@ mod tests {
         assert_eq!(crate::commands::find("tab.close").unwrap().bar, Some(Bar::File));
         assert_eq!(crate::commands::find("tab.next").unwrap().bar, Some(Bar::Window));
         assert!(crate::commands::find("view.close-diff").is_none());
+        assert_eq!(crate::commands::find("tab.reopen").unwrap().bar, Some(Bar::File));
+        assert_eq!(crate::commands::find("tab.rename").unwrap().bar, Some(Bar::Window));
+        assert_eq!(crate::commands::find("repo.manage").and_then(|command| command.shortcut), Some("alt-cmd-o"));
+    }
+
+    #[test]
+    fn moving_a_tab_keeps_the_same_tab_in_front() {
+        assert_eq!(moved(1, 1, 3), 3);
+        assert_eq!(moved(2, 0, 3), 1);
+        assert_eq!(moved(2, 3, 0), 3);
+        assert_eq!(moved(2, 0, 1), 2);
+        assert_eq!(moved(0, 2, 3), 0);
+        assert_eq!(moved(3, 1, 3), 2);
+    }
+
+    #[test]
+    fn a_folder_counts_as_inside_a_repository_only_without_a_repository_between() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().join("Harbour");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("docs/guides")).unwrap();
+        std::fs::create_dir_all(root.join("vendor/inner/.git")).unwrap();
+        std::fs::create_dir_all(root.join("vendor/inner/src")).unwrap();
+        assert!(inside(&root, &root));
+        assert!(inside(&root.join("docs/guides"), &root));
+        assert!(!inside(&root.join("vendor/inner"), &root));
+        assert!(!inside(&root.join("vendor/inner/src"), &root));
+        assert!(inside(&root.join("vendor/inner/src"), &root.join("vendor/inner")));
+        assert!(!inside(&folder.path().join("Harbour-two"), &root));
+    }
+
+    #[test]
+    fn the_closed_list_keeps_each_repository_once_and_skips_ones_that_have_gone() {
+        let folder = tempfile::tempdir().unwrap();
+        let here = folder.path().join("Here");
+        std::fs::create_dir(&here).unwrap();
+        let gone = folder.path().join("Gone");
+        let mut closed = ClosedTabs::default();
+        for (root, at) in [(here.clone(), 0), (gone.clone(), 1), (here.clone(), 2)] {
+            closed.0.retain(|earlier| earlier.root != root);
+            closed.0.push(Closed { root, name: None, at });
+        }
+        assert_eq!(closed.0.iter().map(|closed| closed.at).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(pop_existing(&mut closed.0).map(|closed| closed.root), Some(here));
+        assert_eq!(pop_existing(&mut closed.0), None);
     }
 }

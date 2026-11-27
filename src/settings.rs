@@ -17,6 +17,9 @@ const LOCK: &str = "state.lock";
 const PAUSE: Duration = Duration::from_millis(500);
 const REPOSITORIES: usize = 64;
 pub(crate) const RECENTS: usize = 30;
+pub(crate) const FAVOURITES: usize = 99;
+const NAMES: usize = 200;
+pub(crate) const NAME_LENGTH: usize = 60;
 pub(crate) const FETCH_MINUTES: u32 = 5;
 pub(crate) const MAX_FETCH_MINUTES: u32 = 60;
 pub(crate) const MIN_WINDOW: (f32, f32) = (860., 520.);
@@ -193,7 +196,23 @@ pub(crate) struct Memory {
     pub(crate) hints_seen: Option<Vec<String>>,
     #[serde(deserialize_with = "storage::lenient")]
     pub(crate) report_seen: Option<String>,
+    #[serde(deserialize_with = "storage::lenient_list")]
+    pub(crate) favourites: Vec<Vec<u8>>,
+    #[serde(deserialize_with = "storage::lenient_list")]
+    pub(crate) names: Vec<Named>,
+    #[serde(deserialize_with = "storage::lenient_list")]
+    pub(crate) tab_names: Vec<Named>,
+    #[serde(deserialize_with = "storage::lenient")]
+    pub(crate) projects: Option<Vec<u8>>,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct Named {
+    pub(crate) path: Vec<u8>,
+    pub(crate) name: String,
+}
+
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
@@ -402,6 +421,75 @@ impl Memory {
 
     pub(crate) fn clone_parent(&self) -> Option<PathBuf> {
         self.clone_parent.as_ref().map(|bytes| PathBuf::from(OsStr::from_bytes(bytes)))
+    }
+
+    pub(crate) fn favourites(&self) -> Vec<PathBuf> {
+        self.favourites.iter().map(|bytes| PathBuf::from(OsStr::from_bytes(bytes))).collect()
+    }
+
+    pub(crate) fn is_favourite(&self, path: &Path) -> bool {
+        let path = path.as_os_str().as_bytes();
+        self.favourites.iter().any(|kept| kept == path)
+    }
+
+    pub(crate) fn set_favourite(&mut self, path: &Path, favourite: bool) -> bool {
+        let bytes = path.as_os_str().as_bytes().to_vec();
+        self.favourites.retain(|kept| *kept != bytes);
+        if favourite {
+            if self.favourites.len() >= FAVOURITES {
+                return false;
+            }
+            self.favourites.push(bytes);
+        }
+        true
+    }
+
+    pub(crate) fn name_of(&self, path: &Path) -> Option<&str> {
+        named(&self.names, path)
+    }
+
+    pub(crate) fn set_name(&mut self, path: &Path, name: Option<&str>) {
+        rename(&mut self.names, path, name);
+        let excess = self.names.len().saturating_sub(NAMES);
+        self.names.drain(..excess);
+    }
+
+    pub(crate) fn tab_name_of(&self, path: &Path) -> Option<&str> {
+        named(&self.tab_names, path)
+    }
+
+    pub(crate) fn set_tab_names(&mut self, names: &[(PathBuf, String)]) {
+        self.tab_names = names
+            .iter()
+            .map(|(path, name)| Named { path: path.as_os_str().as_bytes().to_vec(), name: name.clone() })
+            .collect();
+    }
+
+    pub(crate) fn projects(&self) -> Option<PathBuf> {
+        self.projects.as_ref().map(|bytes| PathBuf::from(OsStr::from_bytes(bytes)))
+    }
+
+    pub(crate) fn set_projects(&mut self, folder: Option<&Path>) {
+        self.projects = folder.map(|folder| folder.as_os_str().as_bytes().to_vec());
+    }
+}
+
+pub(crate) fn tidy_name(name: &str) -> Option<String> {
+    let name: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!name.is_empty()).then(|| name.chars().take(NAME_LENGTH).collect())
+}
+
+fn named<'a>(names: &'a [Named], path: &Path) -> Option<&'a str> {
+    let path = path.as_os_str().as_bytes();
+    names.iter().find(|named| named.path == path).map(|named| named.name.as_str())
+}
+
+fn rename(names: &mut Vec<Named>, path: &Path, name: Option<&str>) {
+    let bytes = path.as_os_str().as_bytes().to_vec();
+    names.retain(|named| named.path != bytes);
+    if let Some(name) = name.and_then(tidy_name) {
+        names.push(Named { path: bytes, name });
     }
 }
 
@@ -683,6 +771,10 @@ mod tests {
             last_version: Some("0.8.0".into()),
             hints_seen: Some(vec!["menus".into()]),
             report_seen: Some("crash-20261126-101500.txt".into()),
+            favourites: vec![b"/tmp/Cedar".to_vec()],
+            names: vec![Named { path: b"/tmp/Oak".to_vec(), name: "Oak (work)".into() }],
+            tab_names: vec![Named { path: b"/tmp/Cedar".to_vec(), name: "Review".into() }],
+            projects: Some(b"/tmp/projects".to_vec()),
         };
         memory.add_recent(Path::new("/tmp/Oak"), 1_795_000_000);
         memory.add_recent(Path::new("/tmp/Cedar"), 1_795_000_100);
@@ -796,6 +888,49 @@ mod tests {
         assert!(damaged.session.is_empty());
         memory.set_session(&[], None);
         assert!(memory.session().is_empty() && memory.last_repository.is_none());
+    }
+
+    #[test]
+    fn favourites_names_and_the_projects_folder_are_kept_once_each() {
+        let mut memory = Memory::default();
+        assert!(memory.set_favourite(Path::new("/r/Oak"), true));
+        assert!(memory.set_favourite(Path::new("/r/Elm"), true));
+        assert!(memory.set_favourite(Path::new("/r/Oak"), true));
+        assert_eq!(memory.favourites(), [PathBuf::from("/r/Elm"), PathBuf::from("/r/Oak")]);
+        assert!(memory.is_favourite(Path::new("/r/Oak")) && !memory.is_favourite(Path::new("/r/Ash")));
+        memory.set_favourite(Path::new("/r/Elm"), false);
+        assert_eq!(memory.favourites(), [PathBuf::from("/r/Oak")]);
+        for n in 0..FAVOURITES + 3 {
+            memory.set_favourite(Path::new(&format!("/many/{n}")), true);
+        }
+        assert_eq!(memory.favourites.len(), FAVOURITES);
+        assert!(!memory.set_favourite(Path::new("/r/one-too-many"), true));
+
+        memory.set_name(Path::new("/r/Oak"), Some("  Oak\n  (work) "));
+        assert_eq!(memory.name_of(Path::new("/r/Oak")), Some("Oak (work)"));
+        memory.set_name(Path::new("/r/Oak"), Some(&"x".repeat(NAME_LENGTH + 9)));
+        assert_eq!(memory.name_of(Path::new("/r/Oak")).map(str::len), Some(NAME_LENGTH));
+        memory.set_name(Path::new("/r/Oak"), Some("   "));
+        assert_eq!(memory.name_of(Path::new("/r/Oak")), None);
+        memory.set_name(Path::new("/r/Elm"), Some("Elm"));
+        memory.set_name(Path::new("/r/Elm"), None);
+        assert!(memory.names.is_empty());
+
+        memory.set_tab_names(&[(PathBuf::from("/r/Oak"), "Review".into())]);
+        assert_eq!(memory.tab_name_of(Path::new("/r/Oak")), Some("Review"));
+        assert_eq!(memory.tab_name_of(Path::new("/r/Elm")), None);
+        memory.set_tab_names(&[]);
+        assert!(memory.tab_names.is_empty());
+
+        assert_eq!(memory.projects(), None);
+        memory.set_projects(Some(Path::new("/r/projects")));
+        assert_eq!(memory.projects(), Some(PathBuf::from("/r/projects")));
+        memory.set_projects(None);
+        assert_eq!(memory.projects(), None);
+        let damaged: Memory = serde_json::from_str(r#"{"favourites": [7, [47]], "names": [{"path": [47], "name": "r"}, 3], "projects": 9}"#).unwrap();
+        assert_eq!(damaged.favourites(), [PathBuf::from("/")]);
+        assert_eq!(damaged.name_of(Path::new("/")), Some("r"));
+        assert_eq!(damaged.projects(), None);
     }
 
     #[test]

@@ -624,8 +624,8 @@ impl Replay<'_> {
         let wanted = [
             ("repo.open", "Open repository…"),
             ("repo.recent", "sketches"),
-            ("repo.recent", "Aspen-ridge"),
-            ("repo.recent", "Juniper-trail"),
+            ("repo.recent", "Aspen-ridge (open)"),
+            ("repo.recent", "Juniper-trail (open)"),
             ("repo.close", "Close repository"),
         ];
         if listed.len() < wanted.len() || listed[..wanted.len()] != wanted {

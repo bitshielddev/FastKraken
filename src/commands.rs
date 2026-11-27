@@ -42,6 +42,7 @@ pub(crate) enum Target {
     Submodule(PathBuf),
     PullRequest { remote: String, number: u64 },
     Pair { dragged: Box<Target>, onto: Box<Target> },
+    Tab(usize),
 }
 
 impl Target {
@@ -265,6 +266,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::clone::COMMANDS,
         crate::init::COMMANDS,
         crate::start::COMMANDS,
+        crate::repos::COMMANDS,
         view::COMMANDS,
         crate::discard::COMMANDS,
         crate::picked::COMMANDS,
@@ -1143,13 +1145,27 @@ mod tests {
         assert_eq!(ids(Bar::App), ["app.about", "app.updates", "app.preferences", "app.install-command"]);
         assert_eq!(
             ids(Bar::File),
-            ["tab.new", "tab.close", "repo.clone", "repo.init", "repo.open", "repo.close", "repo.refresh", "repo.apply-patch", "repo.reveal", "repo.terminal", "repo.editor"]
+            [
+                "tab.new",
+                "tab.close",
+                "tab.reopen",
+                "repo.clone",
+                "repo.init",
+                "repo.open",
+                "repo.close",
+                "repo.manage",
+                "repo.refresh",
+                "repo.apply-patch",
+                "repo.reveal",
+                "repo.terminal",
+                "repo.editor",
+            ]
         );
-        assert_eq!(bar_index(Bar::File, "repo.clone"), Some(3));
-        assert_eq!(bar_index(Bar::File, "repo.open"), Some(5));
-        assert_eq!(bar_index(Bar::File, "repo.apply-patch"), Some(9));
-        assert_eq!(bar_index(Bar::File, "repo.reveal"), Some(11));
-        assert_eq!(ids(Bar::Window), ["tab.next", "tab.previous"]);
+        assert_eq!(bar_index(Bar::File, "repo.clone"), Some(4));
+        assert_eq!(bar_index(Bar::File, "repo.open"), Some(6));
+        assert_eq!(bar_index(Bar::File, "repo.apply-patch"), Some(11));
+        assert_eq!(bar_index(Bar::File, "repo.reveal"), Some(13));
+        assert_eq!(ids(Bar::Window), ["tab.next", "tab.previous", "tab.rename"]);
         assert_eq!(bar_index(Bar::File, "repo.labels"), None);
         assert_eq!(ids(Bar::Edit), ["repo.find", "view.find-next", "view.find-previous"]);
         assert_eq!(ids(Bar::View), ["view.sidebar", "view.panel", "view.diff-mode", "view.activity", "repo.labels", "graph.only-current", "graph.author", "view.filter-sidebar", "view.zoom-in", "view.zoom-out", "view.actual-size"]);

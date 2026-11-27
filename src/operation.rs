@@ -1232,6 +1232,7 @@ pub(crate) fn disturbs(action: &view::Action) -> bool {
         | A::Diagnostics(_)
         | A::Guide(_)
         | A::Links(_)
+        | A::Repos(_)
         | A::CommitOptions(_)
         | A::Help(_)
         | A::Palette(_)

@@ -53,6 +53,8 @@ icons!(
     "search",
     "sort",
     "spinner",
+    "star",
+    "star-filled",
     "stash",
     "tag",
     "trash",

@@ -63,6 +63,7 @@ mod lfs;
 mod line_patch;
 mod lines;
 mod links;
+mod repos;
 mod maintenance;
 mod merge;
 mod navigate;
@@ -185,6 +186,7 @@ struct Tab {
     stale: Option<bool>,
     transient: bool,
     replaying: bool,
+    name: Option<String>,
 }
 
 impl Tab {
@@ -214,6 +216,7 @@ impl Tab {
             stale: None,
             transient: false,
             replaying: false,
+            name: None,
         }
     }
 
@@ -399,6 +402,10 @@ impl Tab {
             return;
         }
         autofetch::stop(self);
+        if let Some(repo) = &self.repo {
+            let at = tabs::index_of(cx.entity_id(), cx).unwrap_or(0);
+            tabs::remember_closed(repo.root.clone(), self.name.take(), at, cx);
+        }
         self.opening_ticket += 1;
         self.epoch += 1;
         self.watcher = None;
@@ -1893,6 +1900,7 @@ impl Tab {
             Action::Maintenance(action) => maintenance::dispatch(self, action, window, cx),
             Action::Guide(action) => guide::dispatch(self, action, window, cx),
             Action::Links(action) => links::dispatch(self, action, window, cx),
+            Action::Repos(action) => repos::dispatch(self, action, window, cx),
             Action::Palette(action) => palette::dispatch(self, action, window, cx),
             Action::ToggleSidebar => {
                 let hidden = !self.ui.sidebar_hidden;

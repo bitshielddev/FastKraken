@@ -376,6 +376,19 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             None
         }
         "newtab" => Some(Action::Tabs(crate::tabs::Action::New)),
+        "tabname" => {
+            tab.name = Some(argument.to_owned());
+            None
+        }
+        "tabmenu" => Some(Action::Menu(Some(Menu::Object {
+            target: crate::commands::Target::Tab(index),
+            at: gpui::point(px(90. + 160. * index as f32), px(62.)),
+        }))),
+        "manage" => Some(Action::Repos(crate::repos::Action::Open)),
+        "projects" => Some(Action::Repos(crate::repos::Action::UseProjects(argument.into()))),
+        "favourite" => Some(Action::Repos(crate::repos::Action::Favourite(argument.into(), true))),
+        "repopick" => Some(Action::Repos(crate::repos::Action::Pick(argument.into()))),
+        "repofetch" => Some(Action::Repos(crate::repos::Action::Run(crate::repos::Kind::Fetch))),
         "showtab" => Some(Action::Tabs(crate::tabs::Action::Show(index))),
         "startfilter" => {
             tab.ui.start.filter.update(cx, |input, cx| input.set_text(argument, cx));

@@ -687,6 +687,7 @@ pub enum Action {
     Maintenance(crate::maintenance::Action),
     Guide(crate::guide::Action),
     Links(crate::links::Action),
+    Repos(crate::repos::Action),
     CommitOptions(crate::commit_options::Action),
 }
 
@@ -777,6 +778,7 @@ pub struct Ui {
     pub cloning: crate::clone::State,
     pub init: crate::init::State,
     pub(crate) start: crate::start::State,
+    pub(crate) repos: crate::repos::State,
     pub(crate) preferences: crate::preferences::State,
     pub(crate) identity: crate::identity::State,
     pub(crate) autofetch: crate::autofetch::State,
@@ -902,6 +904,7 @@ impl Ui {
             cloning: crate::clone::State::new(cx),
             init: crate::init::State::new(cx),
             start: crate::start::State::new(cx),
+            repos: Default::default(),
             preferences: crate::preferences::State::new(cx),
             identity: crate::identity::State::new(cx),
             autofetch: Default::default(),
@@ -1122,18 +1125,18 @@ impl Ui {
         self.prompt.open() || self.publish.open() || self.refs.draft.is_some() || self.cloning.open() || self.init.open()
     }
 
-    pub(crate) fn window_title(&self) -> String {
+    pub(crate) fn window_title(&self, name: &str) -> String {
         if self.repo.is_empty() {
             return "FastKraken".to_owned();
         }
         if self.branch.is_empty() {
-            return self.repo.clone();
+            return name.to_owned();
         }
         let branch = match (self.detached, &self.head) {
             (true, Some(head)) => format!("detached at {}", &head[..head.len().min(7)]),
             _ => self.branch.clone(),
         };
-        format!("{} — {}", self.repo, branch)
+        format!("{name} — {branch}")
     }
 
     pub fn can_commit_all(&self, cx: &App) -> bool {
@@ -1443,7 +1446,7 @@ fn window_items(ui: &Ui, cx: &App) -> Vec<gpui::MenuItem> {
 }
 
 fn sync_chrome<T: Desk>(app: &mut T, window: &mut Window, cx: &mut Context<T>) {
-    let title = app.ui().window_title();
+    let title = app.ui().window_title(&crate::repos::shown(app.ui(), cx));
     if app.ui().title_shown.as_ref() != Some(&title) {
         window.set_window_title(&title);
         app.ui_mut().title_shown = Some(title);
@@ -1687,7 +1690,7 @@ fn toolbar<T: Desk>(app: &T, cx: &mut Context<T>) -> Div {
     let repo_menu = matches!(ui.menu, Some(Menu::Repo));
     bar.child(
         held(
-            kit::btn("repo-menu", ui.repo.clone())
+            kit::btn("repo-menu", crate::repos::shown(ui, cx))
                 .ghost()
                 .icon("folder")
                 .trailing("chevron-down")
@@ -3426,6 +3429,8 @@ pub fn render<T: Desk>(
                 app.dispatch(Action::Conflict(crate::conflict::Action::Close), w, cx);
             } else if ui.search.open() {
                 app.dispatch(Action::Search(crate::search::Action::Close), w, cx);
+            } else if ui.repo.is_empty() && ui.opening.is_none() && ui.repos.open {
+                app.dispatch(Action::Repos(crate::repos::Action::Close), w, cx);
             } else if crate::start::clear_filter(ui, cx) {
             } else if !ui.refs.filter.read(cx).text().is_empty() {
                 ui.refs.filter.clone().update(cx, |filter, cx| filter.clear(cx));
@@ -3471,6 +3476,8 @@ pub fn render<T: Desk>(
                     ),
             )
             .child(kit::muted(path))
+    } else if !open && ui.repos.open {
+        crate::repos::screen(app, cx)
     } else if !open {
         crate::start::screen(app, cx)
     } else {

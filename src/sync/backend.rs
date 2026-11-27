@@ -447,6 +447,22 @@ pub(super) fn pull_fetch(repo: &Repository, branch: &str, head: &str) -> Result<
     Ok(Fetched { target, oid })
 }
 
+pub(super) fn fast_forward_checked_out(repo: &Repository, branch: &str, head: &str) -> Result<String, String> {
+    let fetched = pull_fetch(repo, branch, head).map_err(|failure| failure.text)?;
+    let oid = fetched.oid.clone();
+    if oid != head && !repo.is_ancestor(&oid, head)? && !repo.is_ancestor(head, &oid)? {
+        let own = repo.count(&Revisions::reachable(head).not(oid.as_str()))?;
+        return Err(format!(
+            "{branch} has {} that {} does not, so it was left as it is. Open the repository to merge or rebase.",
+            notice::commits(own),
+            display(&fetched.target.tracking_ref)
+        ));
+    }
+    let started = Mutex::new(None);
+    pull_integrate(repo, branch, head, false, fetched, Strategy::FastForwardOnly, &started, false, &Kept::default())
+        .map_err(|failure| failure.text)
+}
+
 pub(super) fn moved_tip(repo: &Repository, branch: &str, head: &str) -> Result<String, String> {
     validate_oid(head)?;
     let local = format!("refs/heads/{branch}");

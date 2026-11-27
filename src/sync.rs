@@ -767,6 +767,10 @@ pub(crate) fn fetch_every(repo: &Repository, prune: bool) -> Result<String, Stri
     backend::fetch_all(repo, prune)
 }
 
+pub(crate) fn fast_forward_checked_out(repo: &Repository, branch: &str, head: &str) -> Result<String, String> {
+    backend::fast_forward_checked_out(repo, branch, head)
+}
+
 pub(crate) fn fetch_remote(tab: &mut Tab, name: String, cx: &mut Context<Tab>) {
     if crate::remotes::validate_name(&name).is_err() {
         tab.error(format!("Fetch Failed — {name} is not a remote FastKraken can fetch."), cx);
