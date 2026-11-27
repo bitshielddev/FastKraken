@@ -76,7 +76,8 @@ fn exits_with_post_hooks(command: &Command) -> bool {
 }
 
 pub(crate) struct Trace {
-    path: tempfile::TempPath,
+    path: PathBuf,
+    _folder: tempfile::TempDir,
     link: Option<Link>,
     post_hooks_count: bool,
     stop: Arc<AtomicBool>,
@@ -85,7 +86,8 @@ pub(crate) struct Trace {
 
 impl Trace {
     pub(crate) fn attach(command: &mut Command, link: Option<&Link>) -> Option<Self> {
-        let path = tempfile::Builder::new().prefix("fastkraken-hooks-").suffix(".json").tempfile().ok()?.into_temp_path();
+        let folder = tempfile::Builder::new().prefix("fastkraken-hooks-").tempdir().ok()?;
+        let path = folder.path().join("events.json");
         let post_hooks_count = exits_with_post_hooks(command);
         command.env("GIT_TRACE2_EVENT", &path);
         let stop = Arc::new(AtomicBool::new(false));
@@ -93,7 +95,7 @@ impl Trace {
             let (file, stop) = (path.to_path_buf(), stop.clone());
             thread::spawn(move || watch(&file, &link, &stop))
         });
-        Some(Self { path, link: link.cloned(), post_hooks_count, stop, watcher })
+        Some(Self { path, _folder: folder, link: link.cloned(), post_hooks_count, stop, watcher })
     }
 
     pub(crate) fn finish(mut self) -> Vec<Ran> {
@@ -342,6 +344,19 @@ mod tests {
     use super::*;
     use crate::repository::tests::Fixture;
     use std::{fs, os::unix::fs::PermissionsExt, time::Instant};
+
+    #[test]
+    fn a_finished_trace_leaves_nowhere_for_a_late_write_to_land() {
+        let mut command = Command::new("true");
+        let trace = Trace::attach(&mut command, None).unwrap();
+        let path = trace.path.clone();
+        let folder = path.parent().unwrap().to_path_buf();
+        assert!(folder.is_dir());
+        assert_eq!(trace.finish(), Vec::new());
+        assert!(!folder.exists());
+        assert!(fs::write(&path, b"{}").is_err());
+        assert!(!path.exists());
+    }
 
     fn hook(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
