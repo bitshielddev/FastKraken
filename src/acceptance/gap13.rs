@@ -889,6 +889,49 @@ impl Replay<'_> {
         self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
         self.until("Beacon alone at the end", |tab| tab.ui.repo == BEACON).await?;
 
+        let unreadable = "fastkraken://pull".to_owned();
+        let gone = dir.join("Gone");
+        let wrong = unreadable.clone();
+        self.cx.update(|cx| {
+            crate::tabs::ask(cx, crate::tabs::Request::Handed(gone));
+            crate::links::follow(vec![wrong], cx);
+        })?;
+        self.until("a link that came while a folder failed to open still explained", |tab| {
+            tab.ui.opening.is_none()
+                && tab.ui.repo.is_empty()
+                && tab.ui.notices.items().iter().any(|notice| notice.title == crate::links::CANNOT_FOLLOW)
+        })
+        .await?;
+        if self.tab.tabs(self.cx)? != (2, 1) {
+            return Err(format!("The missing folder opened as {:?}", self.tab.tabs(self.cx)?).into());
+        }
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until("Beacon alone after the missing folder", |tab| tab.ui.repo == BEACON).await?;
+
+        let folder = harbour.clone();
+        let links = vec![unreadable, format!("fastkraken://clone?url={}", encoded(&address))];
+        self.cx.update(|cx| {
+            crate::tabs::ask(cx, crate::tabs::Request::Handed(folder));
+            crate::links::follow(links, cx);
+        })?;
+        self.until("a link that came while Harbour opened shown beside the clone dialog", |tab| {
+            tab.ui.cloning.linked() && tab.ui.notices.items().iter().any(|notice| notice.title == crate::links::CANNOT_FOLLOW)
+        })
+        .await?;
+        let behind = self.tab.read_tab(self.cx, 1, |tab, _| tab.ui.repo.clone())?;
+        if self.tab.tabs(self.cx)? != (3, 2) || behind.as_deref() != Some(HARBOUR) {
+            return Err(format!("While Harbour opened the links gave {:?} with {behind:?} second", self.tab.tabs(self.cx)?).into());
+        }
+        self.action(Action::Clone(crate::clone::Action::Close))?;
+        self.until("the second dialog cancelled", |tab| !tab.ui.cloning.open()).await?;
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until("Harbour in front again", |tab| tab.ui.repo == HARBOUR).await?;
+        self.action(Action::Tabs(crate::tabs::Action::Close(None)))?;
+        self.until("Beacon alone after the clone tab", |tab| tab.ui.repo == BEACON).await?;
+        if self.tab.tabs(self.cx)? != (1, 0) {
+            return Err(format!("After the links the tabs are {:?}", self.tab.tabs(self.cx)?).into());
+        }
+
         if !listed(&clones)?.is_empty() || marker.exists() {
             return Err("Something was cloned or run by the links".into());
         }

@@ -280,6 +280,7 @@ impl Tab {
                     Err(why) => {
                         tab.transient = false;
                         init::refused(tab, asked, why, cx);
+                        guide::pass_on(cx);
                         return;
                     }
                 };
@@ -289,11 +290,13 @@ impl Tab {
                         tabs::ask(cx, tabs::Request::Close(me));
                     }
                     tabs::ask(cx, tabs::Request::Show(index));
+                    guide::pass_on(cx);
                     cx.notify();
                     return;
                 }
                 if !tab.can_open() {
                     tab.refuse(tab.open_refusal(), cx);
+                    guide::pass_on(cx);
                     return;
                 }
                 autofetch::stop(tab);
@@ -322,6 +325,8 @@ impl Tab {
                 }
                 if tab.front {
                     guide::deliver(tab, cx);
+                } else {
+                    guide::pass_on(cx);
                 }
                 tab.ui
                     .refs

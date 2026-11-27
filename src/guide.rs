@@ -3,6 +3,7 @@ use crate::{
     notice::Notice,
     refs::Kind,
     settings::{self, Memory},
+    tabs,
     updates::{self, Version},
     view::{self, Tone, Ui},
 };
@@ -151,6 +152,15 @@ pub(crate) fn deliver(tab: &mut Tab, cx: &mut App) {
     }
     for notice in std::mem::take(&mut cx.global_mut::<Waiting>().0) {
         tab.ui.notices.show(notice);
+    }
+}
+
+pub(crate) fn pass_on(cx: &mut App) {
+    if cx.try_global::<Waiting>().is_none_or(|waiting| waiting.0.is_empty()) || !tabs::present(cx) {
+        return;
+    }
+    for notice in std::mem::take(&mut cx.global_mut::<Waiting>().0) {
+        tabs::ask(cx, tabs::Request::Tell(notice));
     }
 }
 
