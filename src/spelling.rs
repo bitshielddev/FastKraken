@@ -148,6 +148,7 @@ pub(crate) fn moved(marks: &[Range<usize>], before: &str, after: &str) -> Vec<Ra
     let shift = |at: usize| (at as isize + grown) as usize;
     marks
         .iter()
+        .filter(|mark| mark.start <= mark.end && before.is_char_boundary(mark.start) && before.is_char_boundary(mark.end))
         .filter_map(|mark| {
             let before_edit = mark.end < prefix || (mark.end == prefix && !word(after[mark.end..].chars().next()));
             let after_edit = mark.start > changed_end
@@ -450,5 +451,7 @@ mod tests {
         assert_eq!(moved(&marks, before, before), marks);
         assert!(moved(&marks, before, "").is_empty());
         assert_eq!(moved(&[4..7], "a b teh", "a b teh c"), vec![4..7]);
+        assert!(moved(&[2..5], "xé", "a teh©").is_empty());
+        assert!(moved(&[1..2, 0..9], "é b", "é bc").is_empty());
     }
 }

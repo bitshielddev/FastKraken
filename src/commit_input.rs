@@ -618,7 +618,10 @@ impl CommitInput {
     }
 
     fn check_spelling(&mut self, ticket: u64, cx: &mut Context<Self>) {
-        if !self.spelling.as_ref().is_some_and(|spelling| spelling.ticket == ticket) || !self.spelling_on(cx) {
+        let value = &self.editor.value;
+        if !self.spelling.as_ref().is_some_and(|spelling| spelling.ticket == ticket && spelling.seen.as_deref() == Some(value.as_str()))
+            || !self.spelling_on(cx)
+        {
             return;
         }
         let marks = crate::spelling::misspelt(&self.editor.value);

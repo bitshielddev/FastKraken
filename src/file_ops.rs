@@ -425,9 +425,9 @@ pub(crate) fn describe(ask: &Ask, _: &Ui) -> Spec {
     }
 }
 
-fn tracked_row(ui: &Ui, path: &Path) -> Option<bool> {
-    let rows: Vec<&FileRow> = ui.files.iter().filter(|row| row.path == path).collect();
-    (!rows.is_empty()).then(|| rows.iter().any(|row| row.staged || row.status != "Untracked"))
+fn tracked_row<'a>(rows: impl IntoIterator<Item = &'a FileRow>, path: &Path) -> Option<bool> {
+    let rows: Vec<&FileRow> = rows.into_iter().filter(|row| row.path == path).collect();
+    (!rows.is_empty()).then(|| rows.iter().any(|row| if row.staged { row.status != "Deleted" } else { row.status != "Untracked" }))
 }
 
 fn refuse(tab: &mut Tab, reason: String, cx: &mut Context<Tab>) {
@@ -447,13 +447,13 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, _: &mut Window, cx: &mut C
             prompt::ask(&mut tab.ui, prompt::Kind::Files(Ask::New { folder }), cx);
         }
         Action::Rename(path) => {
-            let Some(tracked) = tracked_row(&tab.ui, &path) else {
+            let Some(tracked) = tracked_row(tab.ui.files.iter(), &path) else {
                 return refuse(tab, format!("{} is no longer in the list of changes", shown_name(&path)), cx);
             };
             prompt::ask(&mut tab.ui, prompt::Kind::Files(Ask::Rename { path, tracked }), cx);
         }
         Action::Trash(path) => {
-            let Some(tracked) = tracked_row(&tab.ui, &path) else {
+            let Some(tracked) = tracked_row(tab.ui.files.iter(), &path) else {
                 return refuse(tab, format!("{} is no longer in the list of changes", shown_name(&path)), cx);
             };
             let bin = match Bin::current() {
@@ -794,6 +794,24 @@ mod tests {
         assert!(f.repo.trash_file(Path::new("docs/gone.txt"), false, &bin).unwrap_err().contains("no longer in the working tree"));
         assert!(f.repo.trash_file(Path::new("../outside.txt"), false, &bin).is_err());
         assert!(!folder.exists());
+    }
+
+    #[test]
+    fn a_file_counts_as_tracked_only_while_the_index_holds_it() {
+        let row = |path: &str, staged: bool, status: &'static str| FileRow { path: path.into(), staged, status, from: None, submodule: None };
+        let path = Path::new("docs/trail.txt");
+        assert_eq!(tracked_row(&[row("docs/trail.txt", true, "Deleted"), row("docs/trail.txt", false, "Untracked")], path), Some(false));
+        assert_eq!(tracked_row(&[row("docs/trail.txt", false, "Untracked")], path), Some(false));
+        assert_eq!(tracked_row(&[row("docs/trail.txt", true, "Added"), row("docs/trail.txt", false, "Deleted")], path), Some(true));
+        assert_eq!(tracked_row(&[row("docs/trail.txt", false, "Modified")], path), Some(true));
+        assert_eq!(tracked_row(&[row("docs/trail.txt", true, "Renamed")], path), Some(true));
+        assert_eq!(tracked_row(&[row("docs/other.txt", false, "Modified")], path), None);
+        let f = committed();
+        f.git(&["rm", "-q", "--cached", "docs/trail.txt"]);
+        let shown = [row("docs/trail.txt", true, "Deleted"), row("docs/trail.txt", false, "Untracked")];
+        let tracked = tracked_row(&shown, path).unwrap();
+        f.repo.rename_file(path, "path.txt", tracked).unwrap();
+        assert_eq!(status(&f), "D  docs/trail.txt\n?? docs/path.txt\n");
     }
 
     #[test]
