@@ -442,6 +442,19 @@ fn step(tab: &mut Tab, step: &str, window: &mut gpui::Window, cx: &mut gpui::Con
             });
             None
         }
+        "spellmenu" => {
+            let (x, y) = argument.split_once('x').unwrap_or(("900", "560"));
+            let at = gpui::point(px(x.parse().unwrap_or(900.)), px(y.parse().unwrap_or(560.)));
+            let field = tab.ui.input.clone();
+            tab.ui.focus_on_open = false;
+            window.focus(&gpui::Focusable::focus_handle(field.read(cx), cx));
+            field.update(cx, |input, cx| {
+                if input.select_misspelt(0, cx) && !input.misspelt().is_empty() {
+                    input.open_menu(at, window, cx);
+                }
+            });
+            None
+        }
         "say" => {
             let (tone, text) = argument.split_once(':').unwrap_or(("info", argument));
             tab.ui.say(

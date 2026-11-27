@@ -626,6 +626,7 @@ pub enum Action {
     Lfs(crate::lfs::Action),
     Sparse(crate::sparse::Action),
     Ignore(crate::ignore::Action),
+    Files(crate::file_ops::Action),
     Rebase(crate::rebase::Action),
     Rewrite(crate::rewrite::Action),
     RebaseEditor(crate::rebase_editor::Action),
@@ -847,7 +848,7 @@ impl Ui {
             .unwrap_or_default();
         let input = cx.new(CommitInput::new);
         let description = cx.new(CommitInput::description);
-        let operation_message = cx.new(|cx| CommitInput::multiline(cx, "Commit message"));
+        let operation_message = cx.new(|cx| CommitInput::multiline(cx, "Commit message").spelled());
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
         cx.observe(&description, |_, _, cx| cx.notify()).detach();
         cx.observe(&operation_message, |_, _, cx| cx.notify()).detach();

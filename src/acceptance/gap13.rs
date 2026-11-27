@@ -942,7 +942,8 @@ impl Replay<'_> {
         git_is(&bare, &["rev-parse", "HEAD"], &format!("{harbour_head}\n"))?;
         self.pass();
         self.reopen_tab(beacon, &harbour).await?;
-        self.fetch_three(dir, beacon).await
+        self.fetch_three(dir, beacon).await?;
+        self.trash_tracked(dir).await
     }
 }
 
@@ -1293,6 +1294,92 @@ impl Replay<'_> {
     }
 }
 
+impl Replay<'_> {
+    fn menu_entry(&mut self, target: &Target, id: &str) -> Result<(String, Option<String>, Option<Action>)> {
+        let found = self.tab.read_with(self.cx, |tab, cx| {
+            commands::menu(&tab.ui, target, cx).into_iter().find(|entry| entry.id == id).map(|entry| (entry.title, entry.disabled, entry.action))
+        })?;
+        found.ok_or_else(|| format!("{target:?} offers no {id}").into())
+    }
+
+    async fn trash_tracked(&mut self, dir: &Path) -> Result<()> {
+        self.start("GAP1312");
+        let sandbox = crate::acceptance::sandbox().ok_or("The replay has no sandbox")?;
+        let trash = sandbox.join("Trash");
+        if crate::file_ops::Bin::current() != Ok(crate::file_ops::Bin::Folder(trash.clone())) {
+            return Err(format!("The replay would move files to {:?}", crate::file_ops::Bin::current()).into());
+        }
+        let root = init(dir, "Ferry")?;
+        fs::create_dir_all(root.join("docs"))?;
+        record(&root, "docs/timetable.txt", TIMETABLE, "Post the ferry timetable")?;
+        record(&root, "docs/fares.txt", FARES, "Post the fares")?;
+        let head = oid(&root, "HEAD")?;
+        let index = git(&root, &["ls-files", "--stage"])?;
+        let edited = format!("{TIMETABLE}Sunday: no crossings.\n");
+        fs::write(root.join("docs/timetable.txt"), &edited)?;
+        self.open(&root)?;
+        self.until("Ferry open with the timetable edited", |tab| {
+            tab.ui.repo == "Ferry" && files(tab, &[], &["docs/timetable.txt"])
+        })
+        .await?;
+        let target = Target::File { path: "docs/timetable.txt".into(), side: commands::Side::Unstaged };
+        let rows: Vec<(&str, String, Option<String>)> =
+            self.menu_rows(&target)?.into_iter().filter(|row| ["file.new", "file.rename", "file.trash"].contains(&row.0)).collect();
+        let wanted = [("file.new", "New file…"), ("file.rename", "Rename…"), ("file.trash", "Move to Trash")]
+            .map(|(id, title)| (id, title.to_owned(), None));
+        if rows != wanted {
+            return Err(format!("The timetable's menu offers {rows:?}").into());
+        }
+        let (_, _, action) = self.menu_entry(&target, "file.trash")?;
+        let action = action.ok_or("Move to Trash cannot run")?;
+        if !matches!(&action, Action::Files(crate::file_ops::Action::Trash(path)) if path == Path::new("docs/timetable.txt")) {
+            return Err(format!("Move to Trash would run {action:?}").into());
+        }
+        self.action(action)?;
+        self.until("the timetable deleted and unstaged", |tab| {
+            files(tab, &[], &["docs/timetable.txt"])
+                && tab.ui.files.iter().any(|row| !row.staged && row.path == Path::new("docs/timetable.txt") && row.status == "Deleted")
+                && tab.ui.notices.items().iter().any(|notice| notice.title == "Moved timetable.txt to the Trash")
+        })
+        .await?;
+        git_is(&root, &["status", "--porcelain=v1"], " D docs/timetable.txt\n")?;
+        git_is(&root, &["ls-files", "--stage"], &index)?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        if root.join("docs/timetable.txt").symlink_metadata().is_ok() {
+            return Err("docs/timetable.txt is still in the working tree".into());
+        }
+        let trashed = trash.join("timetable.txt");
+        if fs::read_to_string(&trashed).ok().as_deref() != Some(edited.as_str()) {
+            return Err(format!("The Trash does not hold the edited timetable at {}", trashed.display()).into());
+        }
+        let deleted = Target::File { path: "docs/timetable.txt".into(), side: commands::Side::Unstaged };
+        let (_, refused, _) = self.menu_entry(&deleted, "file.trash")?;
+        if refused.as_deref() != Some("timetable.txt is not in the working tree") {
+            return Err(format!("On the deleted timetable Move to Trash says {refused:?}").into());
+        }
+
+        let id = self.notice_id_titled("Moved timetable.txt to the Trash")?.ok_or("The Trash notice went")?;
+        self.action(Action::Notice(crate::notice::Action::Take(id, 0)))?;
+        self.until("the timetable put back", |tab| {
+            files(tab, &[], &["docs/timetable.txt"])
+                && tab.ui.files.iter().any(|row| row.path == Path::new("docs/timetable.txt") && row.status == "Modified")
+        })
+        .await?;
+        git_is(&root, &["status", "--porcelain=v1"], " M docs/timetable.txt\n")?;
+        if fs::read_to_string(root.join("docs/timetable.txt"))? != edited || trashed.exists() {
+            return Err("Put back did not return the edited timetable from the Trash".into());
+        }
+        git(&root, &["checkout", "-q", "--", "docs/timetable.txt"])?;
+        git_is(&root, &["ls-files", "--stage"], &index)?;
+        git_is(&root, &["rev-parse", "HEAD"], &format!("{head}\n"))?;
+        fs::remove_dir_all(&trash)?;
+        self.pass();
+        Ok(())
+    }
+}
+
+const TIMETABLE: &str = "Ferry: hourly crossings.\n";
+const FARES: &str = "Fares: one shell each way.\n";
 const BEACON: &str = "Beacon";
 const HARBOUR: &str = "Harbour";
 const HARBOUR_TAB: &str = "Harbour review";

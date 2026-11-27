@@ -943,6 +943,9 @@ impl Replay<'_> {
                 "file.discard",
                 "file.ignore-menu",
                 "file.stash",
+                "file.new",
+                "file.rename",
+                "file.trash",
                 "file.history",
                 "file.blame",
                 "file.edit",
@@ -988,7 +991,7 @@ impl Replay<'_> {
         let staged = Target::File { path: "trail.txt".into(), side: commands::Side::Staged };
         let rows = self.menu_rows(&staged)?;
         if ids(rows.clone())
-            != ["file.unstage", "file.stash", "file.history", "file.blame", "file.edit", "file.open", "file.reveal", "file.diff-tool", "file.copy-path", "file.copy-full-path", "file.save-patch"]
+            != ["file.unstage", "file.stash", "file.new", "file.rename", "file.trash", "file.history", "file.blame", "file.edit", "file.open", "file.reveal", "file.diff-tool", "file.copy-path", "file.copy-full-path", "file.save-patch"]
         {
             return Err(format!("The menu of the staged trail.txt lists {rows:?}").into());
         }

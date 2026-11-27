@@ -1090,7 +1090,7 @@ impl Replay<'_> {
         self.until("src/app folded", |tab| drawn(tab, Which::Unstaged) == folded).await?;
         let folder = Target::Folder { path: app.clone(), side: Side::Unstaged };
         let offered: Vec<&str> = self.ticked(&folder)?.into_iter().map(|(id, _)| id).collect();
-        if offered != ["folder.stage", "folder.discard", "folder.ignore", "folder.stash", "folder.copy-path", "folder.save-patch"] {
+        if offered != ["folder.stage", "folder.discard", "folder.ignore", "folder.stash", "folder.new-file", "folder.copy-path", "folder.save-patch"] {
             return Err(format!("The menu on src/app offers {offered:?}").into());
         }
         self.run_entry(&folder, "folder.stage", "Stage folder").await?;
@@ -1109,7 +1109,7 @@ impl Replay<'_> {
 
         let models = Target::Folder { path: PathBuf::from("src/app/models"), side: Side::Staged };
         let offered: Vec<&str> = self.ticked(&models)?.into_iter().map(|(id, _)| id).collect();
-        if offered != ["folder.unstage", "folder.stash", "folder.copy-path", "folder.save-patch"] {
+        if offered != ["folder.unstage", "folder.stash", "folder.new-file", "folder.copy-path", "folder.save-patch"] {
             return Err(format!("The menu on the staged models folder offers {offered:?}").into());
         }
         self.run_entry(&models, "folder.unstage", "Unstage folder").await?;

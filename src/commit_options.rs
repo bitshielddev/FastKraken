@@ -46,6 +46,7 @@ pub(crate) enum Action {
     TogglePush,
     TogglePushDefault,
     ToggleTemplate,
+    ToggleSpelling,
     OpenCoauthors,
     CloseCoauthors,
     AddCoauthor(Author),
@@ -157,7 +158,7 @@ fn chosen(ui: &Ui, cx: &App) -> usize {
 }
 
 pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &mut Context<Tab>) {
-    if tab.repo.is_none() && !matches!(action, Action::TogglePushDefault | Action::ToggleTemplate) {
+    if tab.repo.is_none() && !matches!(action, Action::TogglePushDefault | Action::ToggleTemplate | Action::ToggleSpelling) {
         return;
     }
     match action {
@@ -191,6 +192,13 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         Action::ToggleTemplate => {
             Settings::update(cx, |s| s.fill_from_template = !s.fill_from_template);
             fill(tab, cx);
+        }
+        Action::ToggleSpelling => {
+            Settings::update(cx, |s| s.check_spelling = !s.check_spelling);
+            cx.notify();
+            for field in [&tab.ui.input, &tab.ui.description, &tab.ui.operation_message] {
+                field.update(cx, |_, cx| cx.notify());
+            }
         }
         Action::OpenCoauthors => {
             let state = &mut tab.ui.commit_options;
@@ -629,6 +637,14 @@ pub(crate) fn preferences<T: Desk>(cx: &mut Context<T>) -> Div {
             "Fill the commit box from the repository’s template",
             "Uses the file Git’s commit.template names, without its comment lines, whenever the commit box is empty.",
             view::Action::CommitOptions(Action::ToggleTemplate),
+            cx,
+        ))
+        .child(crate::preferences::tick(
+            "preferences-check-spelling",
+            chosen.check_spelling,
+            "Check spelling",
+            "Underlines misspelt words in the commit summary and description with the Mac’s own spelling checker. Right-click an underlined word for suggestions.",
+            view::Action::CommitOptions(Action::ToggleSpelling),
             cx,
         ))
         .child(div().pt_3().child(kit::muted("Skip hooks is chosen for each commit and is never remembered.")))

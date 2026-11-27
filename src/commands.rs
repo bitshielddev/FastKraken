@@ -272,6 +272,7 @@ pub(crate) fn all() -> impl Iterator<Item = &'static Command> {
         crate::picked::COMMANDS,
         crate::file_list::COMMANDS,
         crate::file_list::FOLDER_COMMANDS,
+        crate::file_ops::COMMANDS,
         crate::ignore::COMMANDS,
         crate::search::COMMANDS,
         crate::find::COMMANDS,

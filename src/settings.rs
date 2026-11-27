@@ -101,6 +101,7 @@ pub(crate) struct Settings {
     pub(crate) toolbar: crate::appearance::Toolbar,
     pub(crate) label_highlight: bool,
     pub(crate) check_updates: bool,
+    pub(crate) check_spelling: bool,
 }
 
 impl Settings {
@@ -168,6 +169,7 @@ impl Default for Settings {
             toolbar: crate::appearance::Toolbar::default(),
             label_highlight: true,
             check_updates: false,
+            check_spelling: true,
         }
     }
 }
@@ -853,6 +855,7 @@ mod tests {
             toolbar: crate::appearance::Toolbar::Icons,
             label_highlight: false,
             check_updates: true,
+            check_spelling: false,
         };
         let memory = sample_memory();
         write_files(&folder.0, &settings, &memory, None).unwrap();
@@ -999,6 +1002,14 @@ mod tests {
         assert_eq!((chosen.diff_font_size, chosen.tab_width, chosen.line_numbers), (Some(14), Some(8), false));
         let odd = read(r#"{"diff_font": 7, "diff_font_size": "huge", "tab_width": -2}"#);
         assert_eq!((odd.diff_font, odd.diff_font_size, odd.tab_width), (None, None, None));
+    }
+
+    #[test]
+    fn spelling_is_checked_unless_turned_off_and_older_settings_check_it() {
+        let read = |json: &str| serde_json::from_str::<Settings>(json).unwrap();
+        assert!(Settings::default().check_spelling);
+        assert!(read(r#"{"wrap_lines": true}"#).check_spelling);
+        assert!(!read(r#"{"check_spelling": false}"#).check_spelling);
     }
 
     #[test]

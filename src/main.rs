@@ -37,6 +37,7 @@ mod environment;
 mod explain;
 mod file_history;
 mod file_list;
+mod file_ops;
 mod file_view;
 mod find;
 mod forecast;
@@ -100,6 +101,7 @@ mod settings;
 mod sidebar;
 mod signing;
 mod sparse;
+mod spelling;
 mod start;
 mod stash;
 mod storage;
@@ -1764,6 +1766,7 @@ impl Tab {
             Action::Lfs(action) => lfs::dispatch(self, action, cx),
             Action::Sparse(action) => sparse::dispatch(self, action, cx),
             Action::Ignore(action) => ignore::dispatch(self, action, window, cx),
+            Action::Files(action) => file_ops::dispatch(self, action, window, cx),
             Action::Rebase(action) => rebase::dispatch(self, action, window, cx),
             Action::Rewrite(action) => rewrite::dispatch(self, action, window, cx),
             Action::RebaseEditor(action) => rebase_editor::dispatch(self, action, window, cx),

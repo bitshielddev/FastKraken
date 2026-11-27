@@ -153,6 +153,7 @@ pub(crate) enum Kind {
     Keys(crate::keys::Ask),
     Profiles(crate::profiles::Ask),
     Repos(crate::repos::Ask),
+    Files(crate::file_ops::Ask),
 }
 
 fn describe(kind: &Kind, ui: &Ui) -> Spec {
@@ -188,6 +189,7 @@ fn describe(kind: &Kind, ui: &Ui) -> Spec {
         Kind::Keys(ask) => crate::keys::describe(ask, ui),
         Kind::Profiles(ask) => crate::profiles::describe(ask),
         Kind::Repos(ask) => crate::repos::describe(ask, ui),
+        Kind::Files(ask) => crate::file_ops::describe(ask, ui),
     }
 }
 
@@ -224,6 +226,7 @@ fn confirm(tab: &mut Tab, kind: Kind, answer: Answer, window: &mut Window, cx: &
         Kind::Keys(ask) => crate::keys::confirm(tab, ask, answer, cx),
         Kind::Profiles(ask) => crate::profiles::confirm(tab, ask, cx),
         Kind::Repos(ask) => crate::repos::confirm(tab, ask, answer, cx),
+        Kind::Files(ask) => crate::file_ops::confirm(tab, ask, answer, window, cx),
     }
 }
 

@@ -64,6 +64,9 @@ pub(crate) enum FieldCommand {
     Paste,
     Delete,
     SelectAll,
+    Correct(usize),
+    IgnoreSpelling,
+    LearnSpelling,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +137,33 @@ pub(crate) fn links(text: &str) -> Vec<Range<usize>> {
     found
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Offer {
+    pub(crate) range: Range<usize>,
+    pub(crate) word: String,
+    pub(crate) guesses: Vec<String>,
+}
+
+pub(crate) fn spelling_items(offer: &Offer) -> Vec<(FieldCommand, String, bool)> {
+    let mut items: Vec<(FieldCommand, String, bool)> =
+        offer.guesses.iter().enumerate().map(|(index, guess)| (FieldCommand::Correct(index), guess.clone(), true)).collect();
+    if items.is_empty() {
+        items.push((FieldCommand::Correct(0), "No suggestions".to_owned(), false));
+    }
+    items.push((FieldCommand::IgnoreSpelling, "Ignore spelling".to_owned(), true));
+    items.push((FieldCommand::LearnSpelling, "Learn spelling".to_owned(), true));
+    items
+}
+
+#[derive(Debug, Default)]
+struct Spelling {
+    marks: Vec<Range<usize>>,
+    seen: Option<String>,
+    ticket: u64,
+    generation: u64,
+    offer: Option<Offer>,
+}
+
 struct OpenMenu {
     field: WeakEntity<CommitInput>,
     at: Point<Pixels>,
@@ -173,6 +203,21 @@ pub(crate) fn field_menu(window: &mut Window, cx: &mut App) -> Option<impl IntoE
         return None;
     };
     let mut menu = crate::kit::float().w(px(MENU_WIDTH)).py_1();
+    if let Some(offer) = entity.read(cx).offer().cloned() {
+        for (index, (command, label, enabled)) in spelling_items(&offer).into_iter().enumerate() {
+            if command == FieldCommand::IgnoreSpelling {
+                menu = menu.child(crate::kit::separator());
+            }
+            let row = crate::kit::item(ElementId::NamedInteger("field-spelling".into(), index as u64), label).enabled(enabled).inert();
+            menu = menu.child(if enabled {
+                let entity = entity.clone();
+                row.on_click(move |_, window, cx| entity.update(cx, |input, cx| input.choose(command, window, cx)))
+            } else {
+                row
+            });
+        }
+        menu = menu.child(crate::kit::separator());
+    }
     for (index, item) in entity.read(cx).menu_items(paste).into_iter().enumerate() {
         if item.command == FieldCommand::SelectAll {
             menu = menu.child(crate::kit::separator());
@@ -254,17 +299,23 @@ pub struct CommitInput {
     links: Vec<Range<usize>>,
     pressed_link: Option<usize>,
     over_link: bool,
+    spelling: Option<Spelling>,
 }
 
 impl CommitInput {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut input = Self::with_placeholder(cx, "Commit summary");
         input.count = true;
-        input
+        input.spelled()
     }
 
     pub fn description(cx: &mut Context<Self>) -> Self {
-        Self::multiline(cx, "Description (optional)")
+        Self::multiline(cx, "Description (optional)").spelled()
+    }
+
+    pub(crate) fn spelled(mut self) -> Self {
+        self.spelling = Some(Spelling::default());
+        self
     }
 
     pub fn multiline(cx: &mut Context<Self>, placeholder: &'static str) -> Self {
@@ -289,6 +340,7 @@ impl CommitInput {
             links: Vec::new(),
             pressed_link: None,
             over_link: false,
+            spelling: None,
         }
     }
 
@@ -479,10 +531,120 @@ impl CommitInput {
                 }
             }
             FieldCommand::SelectAll => self.select_all(cx),
+            FieldCommand::Correct(index) => {
+                let Some(offer) = self.spelling.as_mut().and_then(|spelling| spelling.offer.take()) else { return };
+                let Some(guess) = offer.guesses.get(index) else { return };
+                if self.editable() && self.editor.value.get(offer.range.clone()) == Some(offer.word.as_str()) {
+                    self.replace(offer.range, guess, Edit::Other, cx);
+                }
+            }
+            FieldCommand::IgnoreSpelling | FieldCommand::LearnSpelling => {
+                let Some(offer) = self.spelling.as_mut().and_then(|spelling| spelling.offer.take()) else { return };
+                if command == FieldCommand::LearnSpelling {
+                    crate::spelling::learn(&offer.word);
+                } else {
+                    crate::spelling::ignore(&offer.word);
+                }
+                self.accept_spelling();
+                cx.notify();
+            }
         }
     }
 
+    pub(crate) fn offer(&self) -> Option<&Offer> {
+        self.spelling.as_ref()?.offer.as_ref()
+    }
+
+    pub(crate) fn misspelt(&self) -> Vec<&str> {
+        self.spelling
+            .as_ref()
+            .map(|spelling| spelling.marks.iter().filter_map(|mark| self.editor.value.get(mark.clone())).collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn select_misspelt(&mut self, nth: usize, cx: &mut Context<Self>) -> bool {
+        self.follow_spelling(cx);
+        if let Some(ticket) = self.spelling.as_ref().map(|spelling| spelling.ticket) {
+            self.check_spelling(ticket, cx);
+        }
+        let Some(mark) = self.spelling.as_ref().and_then(|spelling| spelling.marks.get(nth)).cloned() else { return false };
+        self.editor.select(mark.start, mark.end);
+        cx.notify();
+        true
+    }
+
+    fn spelling_on(&self, cx: &App) -> bool {
+        self.spelling.is_some() && self.editable() && !self.editor.masked && crate::settings::peek(cx, |settings| settings.check_spelling)
+    }
+
+    fn accept_spelling(&mut self) {
+        let value = &self.editor.value;
+        if let Some(spelling) = self.spelling.as_mut() {
+            spelling.marks.retain(|mark| value.get(mark.clone()).is_some_and(|word| !crate::spelling::accepted(word)));
+            spelling.generation = crate::spelling::generation();
+        }
+    }
+
+    fn follow_spelling(&mut self, cx: &mut Context<Self>) {
+        if self.spelling.is_none() {
+            return;
+        }
+        if !self.spelling_on(cx) {
+            if let Some(spelling) = self.spelling.as_mut() {
+                *spelling = Spelling::default();
+            }
+            return;
+        }
+        if self.spelling.as_ref().is_some_and(|spelling| spelling.generation != crate::spelling::generation()) {
+            self.accept_spelling();
+        }
+        let value = &self.editor.value;
+        let Some(spelling) = self.spelling.as_mut() else { return };
+        if spelling.seen.as_deref() == Some(value.as_str()) {
+            return;
+        }
+        if let Some(seen) = &spelling.seen {
+            spelling.marks = crate::spelling::moved(&spelling.marks, seen, value);
+        }
+        spelling.seen = Some(value.clone());
+        spelling.offer = None;
+        spelling.ticket += 1;
+        let ticket = spelling.ticket;
+        cx.spawn(async move |input, cx| {
+            cx.background_executor().timer(crate::spelling::DELAY).await;
+            let _ = input.update(cx, |input, cx| input.check_spelling(ticket, cx));
+        })
+        .detach();
+    }
+
+    fn check_spelling(&mut self, ticket: u64, cx: &mut Context<Self>) {
+        if !self.spelling.as_ref().is_some_and(|spelling| spelling.ticket == ticket) || !self.spelling_on(cx) {
+            return;
+        }
+        let marks = crate::spelling::misspelt(&self.editor.value);
+        if let Some(spelling) = self.spelling.as_mut() {
+            spelling.generation = crate::spelling::generation();
+            if spelling.marks != marks {
+                spelling.marks = marks;
+                cx.notify();
+            }
+        }
+    }
+
+    fn mark_at(&self, index: usize) -> Option<Range<usize>> {
+        self.spelling.as_ref()?.marks.iter().find(|mark| mark.start <= index && index <= mark.end).cloned()
+    }
+
     pub(crate) fn open_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.selection();
+        let offer = self.mark_at(selected.start).filter(|mark| selected.is_empty() || *mark == selected).and_then(|range| {
+            let word = self.editor.value.get(range.clone())?.to_owned();
+            let guesses = crate::spelling::guesses(&self.editor.value, range.clone());
+            Some(Offer { range, word, guesses })
+        });
+        if let Some(spelling) = self.spelling.as_mut() {
+            spelling.offer = offer.filter(|_| self.reading.is_none());
+        }
         let paste = cx.read_from_clipboard().and_then(|item| item.text()).is_some();
         cx.set_global(FieldMenu(Some(OpenMenu { field: cx.weak_entity(), at, paste })));
         window.refresh();
@@ -588,7 +750,10 @@ impl CommitInput {
         window.focus(&self.focus);
         let at = self.hit(event.position);
         let selected = self.selection();
-        if selected.is_empty() || at < selected.start || at > selected.end {
+        let word = self.layout.as_ref().filter(|layout| layout.bounds.contains(&event.position)).and_then(|layout| self.mark_at(layout.under(event.position)));
+        if let Some(word) = word {
+            self.editor.select(word.start, word.end);
+        } else if selected.is_empty() || at < selected.start || at > selected.end {
             self.editor.select(at, at);
         }
         self.drag = None;
@@ -811,6 +976,10 @@ impl CommitInput {
         let selection = self.to_display(selection.start)..self.to_display(selection.end);
         let marked_range = self.marked.as_ref().map(|marked| self.to_display(marked.start)..self.to_display(marked.end));
         let focused = self.focus.is_focused(window);
+        let marks: Vec<Range<usize>> = match &self.spelling {
+            Some(spelling) if !self.editor.masked => spelling.marks.clone(),
+            _ => Vec::new(),
+        };
         for (i, line) in layout.lines.iter().enumerate() {
             let y = layout.origin.y + line_height * i as f32;
             if y + line_height <= bounds.top() || y >= bounds.bottom() {
@@ -849,6 +1018,20 @@ impl CommitInput {
                     rgb(palette().accent),
                 ));
             }
+            for mark in &marks {
+                let (start, end) = (mark.start.max(line.range.start), mark.end.min(line.range.end));
+                if start >= end {
+                    continue;
+                }
+                let (left, right) = (x(start), x(end));
+                let dot = px(1.5);
+                let gap = px(3.);
+                let mut at = left;
+                while at + dot <= right + px(0.5) {
+                    window.paint_quad(fill(Bounds::new(point(at, y + line_height - px(3.)), size(dot, dot)), rgb(palette().deleted)));
+                    at += gap;
+                }
+            }
             let _ = line.shape.paint(point(layout.origin.x, y), line_height, window, cx);
         }
         if let Some(placeholder) = placeholder {
@@ -867,6 +1050,7 @@ impl CommitInput {
 
 impl Render for CommitInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.follow_spelling(cx);
         let entity = cx.entity();
         let multiline = self.editor.multiline;
         let reading = self.reading;
@@ -991,6 +1175,19 @@ mod tests {
         );
         let keys: Vec<_> = menu_items(true, false, true, true).into_iter().map(|item| item.keys).collect();
         assert_eq!(keys, [Some("cmd-x"), Some("cmd-c"), Some("cmd-v"), None, Some("cmd-a")]);
+    }
+
+    #[test]
+    fn a_misspelt_word_offers_its_suggestions_then_ignore_and_learn() {
+        let offer = Offer { range: 4..10, word: "brigde".to_owned(), guesses: vec!["bridge".to_owned(), "bride".to_owned()] };
+        let items: Vec<(FieldCommand, String, bool)> = spelling_items(&offer);
+        let shown: Vec<(&str, bool)> = items.iter().map(|(_, label, enabled)| (label.as_str(), *enabled)).collect();
+        assert_eq!(shown, [("bridge", true), ("bride", true), ("Ignore spelling", true), ("Learn spelling", true)]);
+        assert_eq!(items[1].0, FieldCommand::Correct(1));
+        assert_eq!((items[2].0, items[3].0), (FieldCommand::IgnoreSpelling, FieldCommand::LearnSpelling));
+        let none = spelling_items(&Offer { guesses: Vec::new(), ..offer });
+        assert_eq!((none[0].1.as_str(), none[0].2), ("No suggestions", false));
+        assert_eq!(none.len(), 3);
     }
 
     #[test]
