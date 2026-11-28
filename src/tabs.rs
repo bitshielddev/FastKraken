@@ -1082,6 +1082,14 @@ impl Front {
         })
     }
 
+    pub(crate) fn worktree_tab<C: AppContext>(&self, cx: &C, worktree: &crate::agent::Worktree) -> gpui::Result<Option<Entity<Tab>>> {
+        cx.read_window(&self.0, |desk, cx| {
+            desk.read(cx).tabs.iter().find(|tab| {
+                tab.read(cx).repo.as_ref().is_some_and(|repo| worktree.matches_opened(repo))
+            }).cloned()
+        })
+    }
+
     pub(crate) fn read_tab<C: AppContext, R>(&self, cx: &C, index: usize, read: impl FnOnce(&Tab, &App) -> R) -> gpui::Result<Option<R>> {
         cx.read_window(&self.0, |desk, cx| {
             let tab = desk.read(cx).tabs.get(index).cloned();

@@ -1,6 +1,10 @@
 mod acceptance;
 mod accessibility;
 mod activity;
+mod agent_ui;
+mod agent;
+mod agent_git;
+mod agent_transport;
 mod appearance;
 mod address;
 mod askpass;
@@ -2050,6 +2054,20 @@ fn main() {
     let launched = Instant::now();
     let argv0 = std::env::args_os().next().unwrap_or_default();
     let all: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if all.first().is_some_and(|arg| arg == "--mcp") {
+        if all.len() != 1 {
+            eprintln!("Usage: fastkraken --mcp");
+            std::process::exit(2);
+        }
+        if std::env::var_os(storage::STATE_DIR).is_some() && storage::override_directory().is_none() {
+            eprintln!("{} must be an absolute path.", storage::STATE_DIR);
+            std::process::exit(2);
+        }
+        std::process::exit(agent_transport::stdio());
+    }
+    // Only the stdio helper consumes this credential. Remove it before creating
+    // desktop threads or launching any credential, Git, or GUI subprocess.
+    unsafe { std::env::remove_var(agent_transport::TOKEN_ENV) };
     if let Some(prepared) = std::env::var_os(rewrite::TODO_FILE)
         && let [target] = all.as_slice()
         && let Some(code) = rewrite::edit_todo(&prepared, target)
@@ -2121,7 +2139,7 @@ fn main() {
     };
     if path.as_deref() == Some("--help".as_ref()) {
         println!(
-            "fastkraken [repository]           Open the repository, in a tab of the FastKraken already running\nfastkraken                        Through the installed command: open the folder you are in\nfastkraken --acceptance-wave-1    Replay the first 16 core Git scenarios in temporary repositories\nfastkraken --acceptance-wave-2    Replay 13 stash, merge, reset and revert scenarios\nfastkraken --acceptance-wave-3    Replay five sync scenarios against local bare remotes\nfastkraken --acceptance-gap-NN    Run additional acceptance suite NN (01 to 13)\nfastkraken --measure repository   Measure a read-only walkthrough\nfastkraken --measure-edits        Measure staging and committing in a new temporary repo\nAppend -offscreen to a measure option to time native scene builds without display presentation."
+            "fastkraken [repository]           Open the repository, in a tab of the FastKraken already running\nfastkraken                        Through the installed command: open the folder you are in\nfastkraken --mcp                  Serve an authorized local MCP client over stdin and stdout\nfastkraken --acceptance-wave-1    Replay the first 16 core Git scenarios in temporary repositories\nfastkraken --acceptance-wave-2    Replay 13 stash, merge, reset and revert scenarios\nfastkraken --acceptance-wave-3    Replay five sync scenarios against local bare remotes\nfastkraken --acceptance-gap-NN    Run additional acceptance suite NN (01 to 13)\nfastkraken --measure repository   Measure a read-only walkthrough\nfastkraken --measure-edits        Measure staging and committing in a new temporary repo\nAppend -offscreen to a measure option to time native scene builds without display presentation."
         );
         return;
     }
@@ -2202,6 +2220,9 @@ fn main() {
         })
         .detach();
         if let Some(state) = listen {
+            if let Err(error) = agent_ui::start(&state, handle, cx) {
+                eprintln!("FastKraken agent access is unavailable: {error}");
+            }
             if let Err(error) = instance::serve_app(&state, cx) {
                 eprintln!("FastKraken cannot take folders from a second launch: {error}");
             }

@@ -81,6 +81,7 @@ pub(crate) enum Action {
     Open(Option<Section>),
     Close,
     Show(Section),
+    Agent(crate::agent_ui::Action),
     ToggleReopen,
     ToggleLoginPath,
     FetchEvery(u32),
@@ -89,6 +90,7 @@ pub(crate) enum Action {
 }
 
 pub(crate) struct State {
+    pub(crate) agent: crate::agent_ui::Settings,
     open: bool,
     section: Section,
     pub(crate) branch: Entity<CommitInput>,
@@ -106,6 +108,7 @@ impl State {
         let filter = cx.new(|cx| CommitInput::with_placeholder(cx, "Filter shortcuts"));
         cx.observe(&filter, |_, _, cx| cx.notify()).detach();
         Self {
+            agent: crate::agent_ui::Settings::new(cx),
             open: false,
             section: Section::General,
             branch,
@@ -166,6 +169,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
         }
         Action::Close => {
             tab.ui.preferences.open = false;
+            tab.ui.preferences.agent.close();
             crate::publish::hide_account(tab);
             view::focus(&tab.ui, window);
         }
@@ -173,6 +177,7 @@ pub(crate) fn dispatch(tab: &mut Tab, action: Action, window: &mut Window, cx: &
             show(tab, section, cx);
             view::focus(&tab.ui, window);
         }
+        Action::Agent(action) => crate::agent_ui::dispatch(tab, action, cx),
         Action::ToggleReopen => Settings::update(cx, |s| s.reopen_last = !s.reopen_last),
         Action::ToggleLoginPath => {
             let on = !settings::settings(cx).login_path;
@@ -220,6 +225,7 @@ fn show(tab: &mut Tab, section: Section, cx: &mut Context<Tab>) {
     let state = &mut tab.ui.preferences;
     let was = state.section;
     state.section = section;
+    if was == Section::Repository { state.agent.close(); }
     if was == Section::Accounts && section != Section::Accounts {
         crate::publish::hide_account(tab);
     }
@@ -234,6 +240,7 @@ fn show(tab: &mut Tab, section: Section, cx: &mut Context<Tab>) {
         }
         Section::Diff => crate::diff_text::look(tab, cx),
         Section::Repository => {
+            crate::agent_ui::show(tab, cx);
             crate::lfs::read_patterns(tab, cx);
             crate::sparse::read_tree(tab, cx);
         }
@@ -683,6 +690,7 @@ fn repository<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
     div()
         .flex()
         .flex_col()
+        .child(crate::agent_ui::preferences(ui, cx))
         .child(kit::muted("Chosen for this repository alone, as the Pull and Merge menus’ Set as default marks are."))
         .child(setting("What the Pull button does", Some("The pull menu still offers the others.".into()), pull))
         .child(setting("How merges run", Some("Merge menus still offer the others.".into()), merges))
@@ -746,6 +754,8 @@ fn shortcuts<T: Desk>(ui: &Ui, cx: &mut Context<T>) -> Div {
 
 pub(crate) fn field_focused(ui: &Ui, window: &Window, cx: &App) -> bool {
     (!ui.preferences.shows_branch() && ui.preferences.branch.focus_handle(cx).is_focused(window))
+        || ((!ui.preferences.open || ui.preferences.section != Section::Repository)
+            && ui.preferences.agent.label.focus_handle(cx).is_focused(window))
         || (!ui.preferences.shows_filter() && ui.preferences.filter.focus_handle(cx).is_focused(window))
         || (!ui.preferences.shows_identity()
             && (ui.identity.global_name.focus_handle(cx).is_focused(window)

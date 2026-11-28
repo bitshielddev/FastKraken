@@ -57,6 +57,8 @@ pub struct Repository {
     engine: Engine,
     git_dir: PathBuf,
     common_dir: PathBuf,
+    opened_identity: [(u64, u64); 3],
+    pub(crate) agent_pins: Option<crate::agent_git::pinned::Pins>,
 }
 
 #[derive(Clone, Debug)]
@@ -372,6 +374,7 @@ impl Engine {
     fn command(&self, dir: &Path) -> Command {
         let mut cmd = Command::new(&self.executable);
         cmd.current_dir(dir)
+            .env_remove("FASTKRAKEN_MCP_TOKEN")
             .env("PATH", self.search_path())
             .env("GIT_TERMINAL_PROMPT", "0")
             .arg("--no-pager");
@@ -588,12 +591,36 @@ impl Repository {
                 .map(|flag| query(&[flag]).map(|bytes| raw_path(without_final_newline(&bytes))))
                 .collect::<Result<_>>()?
         };
-        Ok(Self {
-            root: paths[0].clone(),
-            engine,
-            git_dir: paths[1].clone(),
-            common_dir: paths[2].clone(),
-        })
+        let root = paths[0].canonicalize().map_err(|e| e.to_string())?;
+        let git_dir = paths[1].canonicalize().map_err(|e| e.to_string())?;
+        let common_dir = paths[2].canonicalize().map_err(|e| e.to_string())?;
+        use std::os::unix::fs::MetadataExt;
+        let identity = |p: &Path| -> Result<_> {
+            let info = std::fs::metadata(p).map_err(|e| e.to_string())?;
+            Ok((info.dev(), info.ino()))
+        };
+        let opened_identity = [identity(&root)?, identity(&git_dir)?, identity(&common_dir)?];
+        Ok(Self { root, engine, git_dir, common_dir, opened_identity, agent_pins: None })
+    }
+
+    pub(crate) fn opened_identity(&self) -> [(u64, u64); 3] { self.opened_identity }
+    pub(crate) fn agent_matches_identity(&self, expected: [(u64,u64);3]) -> bool { self.opened_identity == expected }
+
+    /// Agent operations use only the bundled engine. Retain the directory file
+    /// descriptions so every real mutation can be relative to an authorized inode.
+    pub(crate) fn agent_repository(root: PathBuf, git_dir: PathBuf, common_dir: PathBuf) -> Result<Self> {
+        let pins = crate::agent_git::pinned::Pins::open([&root, &git_dir, &common_dir]).map_err(|e|e.to_string())?;
+        let opened_identity = pins.identity().map_err(|e|e.to_string())?;
+        Ok(Self { root, git_dir, common_dir, engine: Engine::at(&Self::agent_program()?)?, opened_identity, agent_pins: Some(pins) })
+    }
+
+    pub(crate) fn agent_program() -> Result<PathBuf> {
+        #[cfg(test)]
+        if env::var_os("FASTKRAKEN_GIT_ROOT").is_none() {
+            return Path::new(env!("CARGO_MANIFEST_DIR")).join("target/portable-git/runtime/bin/git")
+                .canonicalize().map_err(|e| e.to_string());
+        }
+        Ok(Engine::bundled()?.executable)
     }
 
     pub fn watch_paths(&self) -> Vec<PathBuf> {
@@ -894,6 +921,24 @@ impl Repository {
             "--untracked-files=all",
             "-z",
         ]))?;
+        let (mut result, unmerged) = Self::parse_status(&output)?;
+        if result.branch == "(detached)" {
+            result.head_ref = self.head_reference()?;
+        }
+        result.operation = crate::operation::detect(&self.git_dir, || Ok(unmerged))?;
+        if result.branch == "(detached)" && result.head_ref.is_none() {
+            result.detached = true;
+            result.branch = result
+                .head
+                .as_deref()
+                .and_then(|oid| oid.get(..8))
+                .map(|short| format!("Detached at {short}"))
+                .unwrap_or_else(|| "Detached HEAD".into());
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn parse_status(output: &[u8]) -> Result<(Status, bool)> {
         let mut result = Status::default();
         let mut unmerged = false;
         let mut entries = output.split(|&b| b == 0);
@@ -904,7 +949,7 @@ impl Repository {
             if let Some(name) = entry.strip_prefix(b"# branch.head ") {
                 result.branch = String::from_utf8_lossy(name).into_owned();
                 result.head_ref = if name == b"(detached)" {
-                    self.head_reference()?
+                    None
                 } else {
                     Some(OsString::from_vec([b"refs/heads/", name].concat()))
                 };
@@ -968,17 +1013,7 @@ impl Repository {
                 }
             }
         }
-        result.operation = crate::operation::detect(&self.git_dir, || Ok(unmerged))?;
-        if result.branch == "(detached)" && result.head_ref.is_none() {
-            result.detached = true;
-            result.branch = result
-                .head
-                .as_deref()
-                .and_then(|oid| oid.get(..8))
-                .map(|short| format!("Detached at {short}"))
-                .unwrap_or_else(|| "Detached HEAD".into());
-        }
-        Ok(result)
+        Ok((result, unmerged))
     }
 
     #[cfg(test)]

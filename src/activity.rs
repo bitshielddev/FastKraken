@@ -169,6 +169,16 @@ fn entry(command: &Command, started: Instant, at: SystemTime, result: &io::Resul
     Entry { id: 0, at, argv, dir, read_only, duration: started.elapsed(), exit, note, stdout, stderr }
 }
 
+/// The agent publishes a conditional ref transaction. Record its local outcome
+/// without recording the credential, commit message or intermediate Git output.
+pub(crate) fn agent_commit(root: &Path, client: &str, oid: &str, at: SystemTime, duration: Duration) -> u64 {
+    log().push(Entry {
+        id: 0, at, dir: root.to_owned(), duration, read_only: false, exit: Some(0),
+        argv: vec!["FastKraken".into(), "agent".into(), client.into(), "commit_staged".into()],
+        note: Some(format!("Committed {oid}")), stdout: String::new(), stderr: String::new(),
+    })
+}
+
 pub(crate) fn newest() -> u64 {
     log().newest
 }

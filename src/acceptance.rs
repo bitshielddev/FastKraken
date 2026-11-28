@@ -13,6 +13,8 @@ mod gap12;
 mod gap13;
 mod hosting_mock;
 mod merges;
+mod mcp;
+pub(crate) use mcp::pause_agent_write;
 #[cfg(feature = "publish-replay")]
 mod publishing;
 #[cfg(feature = "publish-replay")]
@@ -73,6 +75,7 @@ pub enum Wave {
     One,
     Two,
     Three,
+    Mcp,
     Gap(u8),
     #[cfg(feature = "publish-replay")]
     Publish,
@@ -84,6 +87,7 @@ impl Wave {
             Self::One => "--acceptance-wave-1".into(),
             Self::Two => "--acceptance-wave-2".into(),
             Self::Three => "--acceptance-wave-3".into(),
+            Self::Mcp => "--acceptance-mcp".into(),
             Self::Gap(phase) => format!("--acceptance-gap-{phase:02}"),
             #[cfg(feature = "publish-replay")]
             Self::Publish => "--acceptance-publish".into(),
@@ -102,6 +106,7 @@ impl Wave {
             Self::One,
             Self::Two,
             Self::Three,
+            Self::Mcp,
             #[cfg(feature = "publish-replay")]
             Self::Publish,
         ]
@@ -113,6 +118,7 @@ impl Wave {
         match self {
             Self::One => FIRST_WAVE,
             Self::Two => SECOND_WAVE,
+            Self::Mcp => &["MCP"],
             Self::Three => &["OBS14", "OBS15", "OBS16", "EXT14", "EXT15"],
             Self::Gap(phase) => GAP_WAVES
                 .iter()
@@ -892,10 +898,14 @@ pub fn run(wave: Wave) {
     crate::diagnostics::install(crate::diagnostics::folder_for(Some(&state), None));
     Application::new().with_assets(crate::assets::Assets).run(move |cx: &mut App| {
         view::bindings(cx);
-        settings::load(Some(state), cx);
+        settings::load(Some(state.clone()), cx);
         let handle = cx
             .open_window(hidden(cx), |window, cx| cx.new(|cx| crate::tabs::Workspace::new(window, cx, None)))
             .unwrap_or_else(|err| fail(err));
+        if matches!(wave, Wave::Mcp) {
+            crate::agent_ui::start_fixture(&state, crate::tabs::Front(handle), cx, &sandbox).unwrap_or_else(|err| fail(err));
+            crate::instance::serve_app(&state, cx).unwrap_or_else(|err| fail(err));
+        }
         cx.spawn(async move |cx| {
             let mut replay = Replay { tab: crate::tabs::Front(handle), cx, active: "setup", passed: Vec::new() };
             let scenarios = wave.scenarios();
@@ -912,6 +922,7 @@ pub fn run(wave: Wave) {
                         replay.reversals(&sandbox).await
                     }
                     Wave::Three => replay.upstream(&sandbox).await,
+                    Wave::Mcp => replay.mcp(&sandbox).await,
                     Wave::Gap(phase) => replay.gap(phase, &sandbox).await,
                     #[cfg(feature = "publish-replay")]
                     Wave::Publish => replay.publishing(&sandbox).await,
